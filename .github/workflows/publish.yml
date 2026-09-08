@@ -69,7 +69,7 @@ jobs:
     permissions:
       id-token: write # доверенная публикация: токен выдаёт сам GitHub
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
