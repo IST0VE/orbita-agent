@@ -1,0 +1,97 @@
+# LangGraph runtime checkpoints (not source — regenerated on every `langgraph dev`)
+.langgraph_api/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.pytest-audit/
+.coverage
+htmlcov/
+.tmp/
+.npm-audit-cache/
+.pip-audit-cache*/
+.venv/
+venv/
+*.egg-info/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.env
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+.npmrc
+.pypirc
+credentials.json
+service-account*.json
+.secrets/
+
+# Данные инструментов и собранные документы: результат прогонов, не исходники
+data/
+published/
+*.jsonl
+# ...кроме сырых логов замеров: на них ссылается статья, и без них цифры
+# в ней пришлось бы принимать на веру
+!docs/measurements/calls-broken-prefix.jsonl
+!docs/measurements/calls-stable-prefix.jsonl
+!docs/measurements/turns-broken-prefix.jsonl
+!docs/measurements/turns-stable-prefix.jsonl
+
+# Рабочие материалы закрыты по умолчанию. Разрешены только проверенные примеры.
+/input/**
+!/input/example/
+!/input/example/accounts.csv
+!/input/example/ticket.md
+!/input/diagram/
+!/input/diagram/orders-export.drawio
+!/input/partial-refund/
+!/input/partial-refund/current-api.md
+!/input/partial-refund/mail-finance.md
+!/input/partial-refund/meeting-2026-08-18.md
+!/input/partial-refund/refunds-export.csv
+!/input/partial-refund/ticket.md
+!/input/partial-refund-package/
+!/input/partial-refund-package/01-requirements.md
+!/input/partial-refund-package/02-api.md
+!/input/partial-refund-package/03-data.md
+!/input/partial-refund-package/04-architecture.md
+
+# Логи, базы, выгрузки, резервные копии и архивы могут содержать данные пользователей.
+*.log
+*.har
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.dump
+*.bak
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# Сборки и кеши: общие правила вместо локального .git/info/exclude.
+node_modules/
+dist/
+build/
+.astro/
+.vite/
+.next/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

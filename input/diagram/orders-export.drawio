@@ -1,0 +1,109 @@
+<mxfile host="app.diagrams.net" agent="orbita-sample" version="24.7.17">
+  <diagram id="orders-export-flow" name="Выгрузка заказов">
+    <mxGraphModel dx="1102" dy="731" grid="1" gridSize="10" page="1" pageWidth="1169" pageHeight="826" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="lane-sync" value="Синхронный контур" style="swimlane;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="480" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="client" value="Клиентская система" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="lane-sync">
+          <mxGeometry x="40" y="60" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="&lt;b&gt;Export API&lt;/b&gt;&lt;br&gt;POST /exports" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="lane-sync">
+          <mxGeometry x="260" y="60" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="check" value="Лимит активных выгрузок исчерпан?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="lane-sync">
+          <mxGeometry x="260" y="180" width="160" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-async" value="Асинхронный контур" style="swimlane;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="40" width="520" height="420" as="geometry" />
+        </mxCell>
+        <mxCell id="queue" value="Kafka: export.requested" style="shape=hexagon;whiteSpace=wrap;html=1;" vertex="1" parent="lane-async">
+          <mxGeometry x="40" y="60" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="worker" value="Export Worker" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="lane-async">
+          <mxGeometry x="40" y="180" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="PostgreSQL: export_jobs" style="shape=cylinder;whiteSpace=wrap;html=1;" vertex="1" parent="lane-async">
+          <mxGeometry x="290" y="180" width="180" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="S3: orders/{job_id}.csv" style="shape=cylinder;whiteSpace=wrap;html=1;" vertex="1" parent="lane-async">
+          <mxGeometry x="290" y="310" width="180" height="80" as="geometry" />
+        </mxCell>
+        <object id="notify" label="Notifier&#10;вебхук о готовности" type="service">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="lane-async">
+            <mxGeometry x="40" y="310" width="180" height="60" as="geometry" />
+          </mxCell>
+        </object>
+        <mxCell id="note-retention" value="Файлы в S3 живут 7 суток, дальше удаляются lifecycle-правилом" style="shape=note;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="240" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-api" value="POST /exports {period, filters, format}" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="client" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-api-check" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="api" target="check">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-check-queue" value="нет: 202 Accepted + job_id" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="check" target="queue">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-queue-worker" value="export.requested" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="queue" target="worker">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-worker-db" value="status: running → done" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="worker" target="db">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-worker-s3" value="PUT csv" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="worker" target="s3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-worker-notify" value="job done" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="worker" target="notify">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-notify-client" value="webhook: ссылка на файл" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="notify" target="client">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-dangling" value="метрики?" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;" edge="1" parent="1" source="worker">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="520" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="orders-export-errors" name="Ошибки и повторы">
+    <mxGraphModel dx="1102" dy="731" grid="1" gridSize="10" page="1" pageWidth="1169" pageHeight="826" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="w2" value="Export Worker" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="80" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="retry" value="Повтор с backoff 1m/5m/15m" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="340" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="dlq" value="Kafka: export.failed (DLQ)" style="shape=hexagon;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="ops" value="Дежурный инженер" style="shape=actor;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="220" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="note-idem" value="Ключ идемпотентности: hash(период + фильтры + формат + клиент)" style="shape=note;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="220" width="280" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-w2-retry" value="ошибка выгрузки" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="w2" target="retry">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-retry-w2" value="попытка 2 и 3" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="retry" target="w2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-retry-dlq" value="после 3 попыток" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="retry" target="dlq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-dlq-ops" value="алерт" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="dlq" target="ops">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

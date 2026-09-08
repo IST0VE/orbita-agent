@@ -1,0 +1,92 @@
+[project]
+name = "orbita-agent"
+version = "0.1.0"
+description = "LangGraph support agent with per-turn token accounting, prompt-cache economics and Confluence publishing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "IST0VE" }]
+keywords = ["langgraph", "prompt-caching", "llm-cost", "deepseek", "confluence"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Счётчик денег — отдельный пакет из этого же репозитория
+    # (packages/costmeter). До публикации на PyPI он ставится из папки:
+    # pip install -e ./packages/costmeter, либо одной строкой через
+    # requirements.txt.
+    # Уникальное имя дистрибутива снижает риск dependency confusion; импорт
+    # остаётся коротким `costmeter`.
+    "orbita-costmeter>=0.1",
+    "langgraph>=0.4",
+    "langchain-deepseek>=0.1",
+    "langchain-openai>=0.1",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+]
+
+# Всё, что нужно для разработки и для запуска Studio, но не нужно
+# приложению в проде. Ставится вместе с пакетом: pip install -e ".[dev]"
+[project.optional-dependencies]
+server = [
+    "langgraph-cli[inmem]>=0.2",
+    "starlette>=0.47",
+]
+anthropic = [
+    "langchain-anthropic>=0.3",
+]
+dev = [
+    "langgraph-cli[inmem]>=0.2",
+    "pytest>=8.0",
+    "responses>=0.25",
+    "ruff>=0.6",
+]
+
+# Постоянные чекпоинты и долгая память в Postgres (см. checkpointer.py и
+# docker-compose.yml). Отдельным экстра, потому что нужны не всем: по умолчанию
+# всё живёт в процессе.
+postgres = [
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary,pool]>=3.2",
+]
+
+# [project.urls]
+# Homepage = "https://github.com/<user>/<repo>"
+# Repository = "https://github.com/<user>/<repo>"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"agent.ui_engine" = ["schemas/*.json"]
+
+# Тесты пакета costmeter лежат рядом с ним и запускаются из корня вместе со
+# всеми: пакет отдельный, но репозиторий один, и красный CI должен быть один.
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages/costmeter/tests"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".pytest-*", ".pip-audit-*", ".npm-audit-*"]
+
+# Корни исходников: пакетов в репозитории два, и оба свои. Без этой строки
+# сортировщик импортов считает costmeter сторонним пакетом в его же тестах.
+src = ["src", "packages/costmeter/src"]
+
+# Набор правил задан явно, а не унаследован от версии ruff: иначе обновление
+# линтера красит CI в красный без единой правки в коде. E4/E7/E9 + F — дефолт
+# ruff, I — сортировка импортов, B — bugbear, UP — устаревшие конструкции.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "S102", "S301", "S302", "S307", "S501", "S506", "S602", "S605"]

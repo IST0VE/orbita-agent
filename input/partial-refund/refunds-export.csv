@@ -1,0 +1,15 @@
+refund_id,order_id,order_status_at_refund,amount,currency,created_at,acquirer_status,note
+rfn-88101,ord-10188,delivered,5000,RUB,2026-07-02T10:14:00Z,settled,
+rfn-88102,ord-10190,delivered,1200,RUB,2026-07-02T15:41:00Z,settled,оператор вернул только доставку вручную
+rfn-88103,ord-10190,partially_refunded,800,RUB,2026-07-03T09:05:00Z,settled,второй возврат по тому же заказу
+rfn-88104,ord-10201,shipped,3400,RUB,2026-07-05T12:00:00Z,settled,возврат до вручения по просьбе клиента
+rfn-88105,ord-10201,shipped,3400,RUB,2026-07-05T12:00:31Z,settled,ДУБЛЬ, вернули дважды, списывали с клиента обратно
+rfn-88106,ord-10233,delivered,0,RUB,2026-07-08T08:20:00Z,rejected,нулевая сумма, эквайер отказал
+rfn-88107,ord-10240,delivered,15000,RUB,2026-07-11T19:33:00Z,pending,висит 9 дней
+rfn-88108,ord-10240,delivered,15000,RUB,2026-07-21T09:00:00Z,settled,повтор после зависшего, деньги ушли дважды
+rfn-88109,ord-10255,partially_refunded,600,RUB,2026-07-14T11:02:00Z,settled,
+rfn-88110,ord-10255,partially_refunded,600,RUB,2026-07-16T13:45:00Z,settled,
+rfn-88111,ord-10255,partially_refunded,600,RUB,2026-07-18T10:11:00Z,settled,сумма трёх возвратов = сумме заказа, статус остался partially_refunded
+rfn-88112,ord-10262,cancelled,2200,RUB,2026-07-19T16:28:00Z,settled,возврат по отменённому заказу, как так вышло — неизвестно
+rfn-88113,ord-10271,delivered,4990.005,RUB,2026-07-22T14:00:00Z,rejected,дробные копейки после пропорциональной скидки
+rfn-88114,ord-10288,delivered,1000,USD,2026-07-25T07:40:00Z,settled,валюта отличается от валюты заказа

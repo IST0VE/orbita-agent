@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orbita.local/schemas/ui-manifest-v1.schema.json",
+  "title": "Orbita UI Manifest v1",
+  "type": "object",
+  "required": ["schema_version", "manifest_version", "graph_id", "title"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "manifest_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9A-Za-z_-]+)*$" },
+    "graph_id": { "$ref": "#/$defs/id" },
+    "title": { "$ref": "#/$defs/localized" },
+    "description": { "$ref": "#/$defs/localized" },
+    "icon": { "type": "string", "maxLength": 128 },
+    "tags": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "maxItems": 64 },
+    "capabilities": { "type": "object", "additionalProperties": { "type": "boolean" } },
+    "input": { "type": "array", "items": { "$ref": "#/$defs/input" }, "maxItems": 100 },
+    "nodes": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" }, "maxProperties": 1000 },
+    "state": { "type": "array", "items": { "$ref": "#/$defs/state" }, "maxItems": 500 },
+    "interrupts": { "type": "array", "items": { "$ref": "#/$defs/interrupt" }, "maxItems": 100 },
+    "surfaces": { "type": "array", "items": { "$ref": "#/$defs/surface" }, "maxItems": 50 },
+    "actions": { "type": "array", "items": { "$ref": "#/$defs/action" }, "maxItems": 100 },
+    "redaction": { "type": "array", "items": { "$ref": "#/$defs/redaction" }, "maxItems": 500 },
+    "theme": { "type": "object" }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "localized": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 4000 },
+        { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "maxLength": 4000 } }
+      ]
+    },
+    "condition": { "type": "object", "maxProperties": 10 },
+    "binding": {
+      "type": "object",
+      "required": ["path", "widget"],
+      "properties": {
+        "path": { "type": "string", "maxLength": 512 },
+        "widget": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "maxLength": 1000 },
+        "surface": { "$ref": "#/$defs/id" },
+        "order": { "type": "integer" },
+        "visible_when": { "$ref": "#/$defs/condition" },
+        "options": { "type": "object" },
+        "empty": { "enum": ["hide", "placeholder", "show"] }
+      },
+      "additionalProperties": true
+    },
+    "input": {
+      "type": "object",
+      "required": ["id", "target", "widget"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "target": { "type": "string", "maxLength": 512 },
+        "widget": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "maxLength": 1000 },
+        "required": { "type": "boolean" },
+        "source": {
+          "type": "object",
+          "required": ["resource_id", "operation"],
+          "properties": { "resource_id": { "$ref": "#/$defs/id" }, "operation": { "$ref": "#/$defs/id" } },
+          "additionalProperties": false
+        },
+        "options": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "state": { "allOf": [{ "$ref": "#/$defs/binding" }, { "type": "object", "required": ["id"] }] },
+    "node": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 1000 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "kind": { "enum": ["task", "router", "tool", "approval", "system"] },
+        "group": { "$ref": "#/$defs/id" },
+        "color": { "enum": ["neutral", "info", "success", "warning", "danger"] },
+        "hidden": { "type": "boolean" },
+        "output": { "$ref": "#/$defs/binding" },
+        "details": { "type": "array", "items": { "$ref": "#/$defs/binding" } },
+        "layout": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "interrupt": {
+      "type": "object",
+      "required": ["id", "widget", "resume_schema"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "priority": { "type": "integer" },
+        "match": { "$ref": "#/$defs/condition" },
+        "widget": { "$ref": "#/$defs/id" },
+        "resume_schema": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "surface": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": { "type": "string" },
+        "order": { "type": "integer" },
+        "widgets": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "collapsible": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "action": {
+      "type": "object",
+      "required": ["id", "kind", "label"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "kind": { "$ref": "#/$defs/id" }, "label": { "type": "string" } },
+      "additionalProperties": true
+    },
+    "redaction": {
+      "type": "object",
+      "required": ["path", "mode"],
+      "properties": {
+        "path": { "type": "string", "maxLength": 512 },
+        "mode": { "enum": ["remove", "mask", "truncate", "metadata_only", "role"] },
+        "max_length": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/id" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

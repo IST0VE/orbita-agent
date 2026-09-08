@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orbita.local/schemas/runtime-event-v1.schema.json",
+  "title": "Orbita Runtime Event v1",
+  "type": "object",
+  "required": ["eventId", "sequence", "timestamp", "graphId", "assistantId", "threadId", "runId", "type", "data", "schemaVersion"],
+  "properties": {
+    "eventId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "graphId": { "type": "string", "minLength": 1 },
+    "assistantId": { "type": "string", "minLength": 1 },
+    "threadId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "type": { "type": "string", "minLength": 1 },
+    "data": {},
+    "schemaVersion": { "const": "1.0" }
+  },
+  "additionalProperties": false
+}

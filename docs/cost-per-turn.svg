@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+<rect width="760" height="380" fill="#FFFFFF"/>
+<text x="78" y="30" font-size="17" font-weight="600" fill="#141E27">Стоимость хода: стабильный префикс против сломанного</text>
+<line x1="78" y1="304.0" x2="736" y2="304.0" stroke="#D2D9E0" stroke-width="1"/>
+<text x="68" y="308.0" font-size="11" fill="#5A6875" text-anchor="end">$0</text>
+<line x1="78" y1="244.0" x2="736" y2="244.0" stroke="#D2D9E0" stroke-width="1"/>
+<text x="68" y="248.0" font-size="11" fill="#5A6875" text-anchor="end">$0.000217</text>
+<line x1="78" y1="184.0" x2="736" y2="184.0" stroke="#D2D9E0" stroke-width="1"/>
+<text x="68" y="188.0" font-size="11" fill="#5A6875" text-anchor="end">$0.000434</text>
+<line x1="78" y1="124.0" x2="736" y2="124.0" stroke="#D2D9E0" stroke-width="1"/>
+<text x="68" y="128.0" font-size="11" fill="#5A6875" text-anchor="end">$0.00065</text>
+<line x1="78" y1="64.0" x2="736" y2="64.0" stroke="#D2D9E0" stroke-width="1"/>
+<text x="68" y="68.0" font-size="11" fill="#5A6875" text-anchor="end">$0.000867</text>
+<rect x="123.7" y="258.0" width="60.0" height="46.0" fill="#4D6BFE" rx="2"/>
+<text x="153.7" y="242.0" font-size="10" fill="#141E27" text-anchor="middle">$0.000166</text>
+<text x="153.7" y="253.0" font-size="10" fill="#5A6875" text-anchor="middle">94% из кеша</text>
+<rect x="187.7" y="205.0" width="60.0" height="99.0" fill="#9B3B36" rx="2"/>
+<text x="217.7" y="189.0" font-size="10" fill="#141E27" text-anchor="middle">$0.000358</text>
+<text x="217.7" y="200.0" font-size="10" fill="#5A6875" text-anchor="middle">0% из кеша</text>
+<text x="187.7" y="324.0" font-size="12" fill="#141E27" text-anchor="middle">ход 1</text>
+<rect x="343.0" y="251.0" width="60.0" height="53.0" fill="#4D6BFE" rx="2"/>
+<text x="373.0" y="235.0" font-size="10" fill="#141E27" text-anchor="middle">$0.000191</text>
+<text x="373.0" y="246.0" font-size="10" fill="#5A6875" text-anchor="middle">89% из кеша</text>
+<rect x="407.0" y="95.3" width="60.0" height="208.7" fill="#9B3B36" rx="2"/>
+<text x="437.0" y="79.3" font-size="10" fill="#141E27" text-anchor="middle">$0.000754</text>
+<text x="437.0" y="90.3" font-size="10" fill="#5A6875" text-anchor="middle">0% из кеша</text>
+<text x="407.0" y="324.0" font-size="12" fill="#141E27" text-anchor="middle">ход 2</text>
+<rect x="562.3" y="271.1" width="60.0" height="32.9" fill="#4D6BFE" rx="2"/>
+<text x="592.3" y="255.1" font-size="10" fill="#141E27" text-anchor="middle">$0.000119</text>
+<text x="592.3" y="266.1" font-size="10" fill="#5A6875" text-anchor="middle">85% из кеша</text>
+<rect x="626.3" y="195.5" width="60.0" height="108.5" fill="#9B3B36" rx="2"/>
+<text x="656.3" y="179.5" font-size="10" fill="#141E27" text-anchor="middle">$0.000392</text>
+<text x="656.3" y="190.5" font-size="10" fill="#5A6875" text-anchor="middle">0% из кеша</text>
+<text x="626.3" y="324.0" font-size="12" fill="#141E27" text-anchor="middle">ход 3</text>
+<line x1="78" y1="304.0" x2="736" y2="304.0" stroke="#B6C1CA" stroke-width="1.5"/>
+<rect x="78" y="342" width="12" height="12" fill="#4D6BFE" rx="2"/>
+<text x="96" y="352" font-size="12" fill="#141E27">стабильный префикс — весь тред $0.000477</text>
+<rect x="362.0" y="342" width="12" height="12" fill="#9B3B36" rx="2"/>
+<text x="380.0" y="352" font-size="12" fill="#141E27">--bad: время в промпте — весь тред $0.001504</text>
+</svg>

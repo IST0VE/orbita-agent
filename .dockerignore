@@ -1,0 +1,66 @@
+# Контекст сборки должен быть маленьким: без этого файла в демон уезжают
+# node_modules веб-интерфейса и локальное виртуальное окружение. В образе
+# только Python-агент — чат поднимается отдельно, см. README.
+.git/
+.venv/
+venv/
+web/
+
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Секреты внутрь образа не копируются: .env приезжает в контейнер
+# переменными окружения, см. docker-compose.yml.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/.env
+**/.env.*
+**/*.env
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_ed25519
+**/.npmrc
+**/.pypirc
+**/credentials.json
+**/service-account*.json
+.secrets/
+.idea/
+.vscode/
+.tmp/
+.pip-audit-cache*/
+.npm-audit-cache/
+site/
+input/
+**/node_modules/
+**/dist/
+**/build/
+**/*.log
+**/*.har
+**/*.db
+**/*.sqlite*
+**/*.dump
+**/*.bak
+**/*.zip
+**/*.7z
+**/*.tar*
+**/*.tgz
+
+# Единственный env-файл, нужный образу, — шаблон без секретов в корне.
+!.env.example
+
+# Локальные данные и результаты прогонов: в контейнере они живут на томе.
+.langgraph_api/
+data/
+published/
+*.jsonl

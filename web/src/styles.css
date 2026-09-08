@@ -1,0 +1,1403 @@
+/*
+ * ASCII-терминал.
+ *
+ * Весь интерфейс держится на одной сетке моноширинного шрифта: рамки, стрелки
+ * графа и полосы расхода — это символы, а не картинки. Отсюда правила: шрифт
+ * задан один на всё, межстрочный интервал целый, а размеры блоков считаются
+ * в ch и в строках, а не в пикселях. Стоит подмешать пропорциональный шрифт —
+ * и рамки перестанут сходиться.
+ *
+ * Палитра люминофорная: почти чёрный фон, зелёный текст, янтарь на предупреждения.
+ */
+
+:root {
+  color-scheme: dark;
+  --font: "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+
+  --bg: #070a08;
+  --bg-panel: #0b100c;
+  /* Панель поверх фоновой сцены: почти тот же цвет, но сквозь него видно
+     вращение. Совсем глухая панель прятала бы сцену целиком. */
+  --bg-panel-veil: rgba(11, 16, 12, 0.78);
+  --bg-input: #060806;
+  --line: #1e2c20;
+  --line-hot: #2f4a33;
+
+  --fg: #a8c4a2;
+  --fg-dim: #789275;
+  --fg-faint: #334534;
+  --fg-bright: #d8f0d0;
+
+  --green: #62e08a;
+  --amber: #e0b062;
+  --cyan: #62c6e0;
+  --red: #e06a6a;
+  --violet: #a98ae0;
+
+  --row: 1.45em;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: var(--row);
+  font-variant-ligatures: none;
+  overflow: hidden;
+  /* Люминофор: очень слабое свечение по всему полотну. */
+  text-shadow: 0 0 1px rgba(98, 224, 138, 0.18);
+}
+
+/* Развёртка ЭЛТ. Держится на грани заметности: интерфейс рабочий, а не декорация. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.16) 3px
+  );
+}
+
+::selection {
+  background: var(--green);
+  color: var(--bg);
+}
+
+/* Полосы прокрутки тоже терминальные: тонкая колея без скруглений. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-hot) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-hot);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  outline: none;
+}
+
+/* У <pre> шрифт по умолчанию свой — браузерный `monospace`. В нём знаки
+   рисования моноширинные, а ▶ ◆ ◇ приезжают подстановкой из другого шрифта
+   и шире клетки: столбцы схемы разъезжаются. Наследование возвращает полотно
+   в ту же сетку, что и весь остальной экран. */
+pre {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  padding: 0 0.6ch;
+  color: var(--fg-dim);
+  border-color: transparent;
+}
+button:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--line-hot);
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--green);
+  color: var(--fg-bright);
+}
+
+/* ======================================================================
+   Каркас: шапка, три колонки, подвал
+   ====================================================================== */
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  /* Колонка задана явно и с нулевым минимумом. Неявная колонка `auto`
+     растёт до max-content содержимого, и широкая схема графа распирала бы
+     весь экран: правая колонка с выбором агента уезжала за край окна, а
+     `overflow: hidden` у body делал её недостижимой. Здесь ширина упирается
+     в окно, а прокрутка остаётся внутри того блока, которому она нужна. */
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+}
+
+.columns {
+  display: grid;
+  /* Ширину левой колонки задаёт оператор мышью: длина имён документов у
+     каждого своя, и угадать её медиазапросом нельзя. */
+  grid-template-columns: var(--col-left, 30ch) 1fr 32ch;
+  min-height: 0;
+}
+
+.columns > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Левая колонка делится ровно пополам: сверху то, что уезжает в ход, снизу
+   то, что из него вернулось. Поровну, потому что ни один из двух списков не
+   важнее другого — материалы читают до прогона, документы после. */
+.col-left {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  min-height: 0;
+  position: relative;
+  /* Прокрутки вбок у колонки нет: длинные имена обрезаются многоточием,
+     а ширину, если её мало, оператор тянет сам. */
+  overflow-x: hidden;
+}
+
+/* Ручка внутри колонки, а не за её краем: вылет наружу добавлял бы четыре
+   пикселя ширины прокрутки, которую эта же правка и убирает. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  z-index: 3;
+  cursor: col-resize;
+}
+
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: var(--line);
+}
+
+.col-resizer:hover::after { background: var(--cyan); }
+
+/* Средняя колонка: схема сверху ровно по своей высоте, ход — на весь остаток. */
+.col-center {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+/* Правая: список агентов растягивается, счётчик денег прижат к низу. */
+.col-right {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+
+/* Элемент сетки по умолчанию не ужимается уже своего содержимого, и одна
+   длинная строка — схема графа, ответ без пробелов — распирает колонку на
+   всю свою ширину, ломая раскладку целиком. Ноль здесь возвращает право
+   ужиматься, а прокрутка остаётся внутри того блока, которому она нужна. */
+.col-left > *,
+.col-center > *,
+.col-right > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Узкий экран: правая колонка уходит, левая ужимается. Правило задаёт
+   display, поэтому у самих колонок раскладка живёт в классах выше, а не в
+   инлайновых стилях — инлайновый display перебил бы это скрытие. */
+@media (max-width: 1100px) {
+  .columns {
+    grid-template-columns: 26ch 1fr;
+  }
+  .columns > .col-right {
+    display: none;
+  }
+}
+
+/* ======================================================================
+   Панель в рамке
+   ======================================================================
+   Рамка нарисована border'ом, а заголовок сидит верхом на ней в скобках из
+   символов рисования — так подпись читается как ┤ ЗАГОЛОВОК ├ на настоящей
+   ASCII-рамке, но блок остаётся резиновым, а не привязанным к числу колонок.
+*/
+.panel {
+  position: relative;
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel-veil);
+}
+
+.panel + .panel {
+  border-top: none;
+}
+
+.panel-title {
+  position: absolute;
+  top: calc(var(--row) / -2 - 1px);
+  left: 2ch;
+  padding: 0 0.5ch;
+  background: var(--bg-panel);
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  z-index: 2;
+  /* Подпись сидит верхом на рамке и не переносится: длинный заголовок без
+     этого уезжает за панель и за край экрана вместе с закрывающей скобкой. */
+  max-width: calc(100% - 4ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-title b {
+  color: var(--green);
+  font-weight: 400;
+}
+.panel-title .bracket {
+  color: var(--line-hot);
+}
+
+.panel-body {
+  overflow: auto;
+  padding: calc(var(--row) * 0.75) 1.5ch 1ch;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel-foot {
+  border-top: 1px solid var(--line);
+  padding: 0.2em 1.5ch;
+  display: flex;
+  gap: 1ch;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Подпись в подвале — про панель, а не вместо неё: путь публикации в узкой
+   колонке иначе разворачивается на три строки и съедает список. */
+.panel-foot .hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ======================================================================
+   Шапка
+   ====================================================================== */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 2ch;
+  padding: 0.25em 1.5ch;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+.brand {
+  color: var(--green);
+  letter-spacing: 0.35em;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Развилка графов в шапке — запасная. Пока на экране есть правая колонка со
+   списком агентов, вторая копия того же выбора в шапке только дублирует её,
+   поэтому здесь она скрыта и включается ниже, вместе с уходом колонки. */
+.pick {
+  display: none;
+  align-items: baseline;
+  gap: 1ch;
+  white-space: nowrap;
+}
+
+/* Тот же порог, что и у правой колонки: она ушла — выбор графа переезжает
+   в шапку. Запрос стоит после самого правила, иначе `display: none` выше
+   перебил бы его по порядку при равной специфичности. */
+@media (max-width: 1100px) {
+  .pick {
+    display: flex;
+  }
+}
+.pick button:hover:not(:disabled),
+.pick button.on {
+  color: var(--cyan);
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.pick button:disabled {
+  border-color: transparent;
+}
+
+.header .rule {
+  flex: 1;
+  color: var(--fg-faint);
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.status {
+  display: flex;
+  gap: 1.5ch;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.dot-ok {
+  color: var(--green);
+}
+.dot-bad {
+  color: var(--red);
+}
+.dot-idle {
+  color: var(--fg-faint);
+}
+
+/* ======================================================================
+   Левая колонка: файлы задачи
+   ====================================================================== */
+.task {
+  margin-bottom: 0.4em;
+}
+
+.task-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5ch;
+  cursor: pointer;
+  color: var(--fg-dim);
+  width: 100%;
+  text-align: left;
+  border: none;
+  padding: 0;
+}
+.task-head:hover {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+  border-color: color-mix(in srgb, var(--cyan) 55%, var(--line));
+}
+.task-head .caret {
+  color: var(--line-hot);
+  width: 1ch;
+  display: inline-block;
+}
+.task-head .name {
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Заголовок треда в списке документов длиной в строку задачи. Без запрета
+     переноса он разворачивается на пять строк и хоронит под собой сам список. */
+  white-space: nowrap;
+}
+.task.selected .task-head .name {
+  color: var(--cyan);
+}
+.task.selected .task-head .caret {
+  color: var(--cyan);
+}
+.task-head .count {
+  color: var(--fg-faint);
+  margin-left: auto;
+  padding-left: 1ch;
+}
+
+.file {
+  display: flex;
+  gap: 0.5ch;
+  padding-left: 2ch;
+  color: var(--fg);
+  width: 100%;
+  text-align: left;
+  border: none;
+}
+.file .tree {
+  color: var(--line-hot);
+}
+/* Имя не переносится: в колонке шириной в тридцать знаков `orders-export.drawio`
+   разворачивался на две строки и читался как две разные записи. Целиком оно
+   лежит в подсказке. */
+.file .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file .size {
+  margin-left: auto;
+  color: var(--fg-faint);
+  padding-left: 1ch;
+  white-space: nowrap;
+}
+
+/* Наведение красит всю строку, а не только буквы: в списке из двадцати файлов
+   одного оттенка мало, чтобы понять, куда попадёт щелчок. */
+.file:hover:not(:disabled) {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+  border-color: color-mix(in srgb, var(--cyan) 55%, var(--line));
+}
+.file:hover:not(:disabled) .tree,
+.file:hover:not(:disabled) .size {
+  color: var(--cyan);
+}
+
+/* Схема draw.io: материал прогона, а не мусор рядом с ним. Свой цвет — чтобы
+   файл, ради которого граф схем и запускают, находился глазом сразу. */
+.file.diagram {
+  color: #d8c7ff;
+  font-weight: 600;
+  text-shadow: 0 0 5px color-mix(in srgb, var(--violet) 55%, transparent);
+}
+.file.diagram:hover {
+  color: #efe8ff;
+  background: rgba(169, 138, 224, 0.16);
+  border-color: var(--violet);
+}
+.file.diagram:hover .tree,
+.file.diagram:hover .size {
+  color: #efe8ff;
+}
+
+/* Настоящий бинарник: читать нечего и показывать нечего — но имя всё равно
+   должно читаться, иначе непонятно, что именно лежит в папке. */
+.file.binary {
+  color: var(--fg-dim);
+  cursor: default;
+}
+.file.binary:disabled {
+  opacity: 0.75;
+}
+
+/* Готовые документы — не задача из `input/`, и спутать их выбор с выбором
+   сырья нельзя: своя метка, свой цвет и подпись `out` у счётчика файлов. */
+.task.output .task-head .name,
+.task.output .task-head .caret,
+.task.output .task-head .mark {
+  color: var(--amber);
+}
+.task.output.selected .task-head .name,
+.task.output.selected .task-head .caret,
+.task.output.selected .task-head .mark {
+  color: var(--cyan);
+}
+.task.output .badge {
+  color: var(--bg);
+  background: var(--amber);
+  padding: 0 0.5ch;
+  margin-left: 0.5ch;
+  font-size: 0.78em;
+  letter-spacing: 0.1em;
+}
+
+.new-task {
+  display: flex;
+  gap: 0.5ch;
+  margin-top: 0.5em;
+}
+.new-task input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 0.5ch;
+  background: var(--bg-input);
+}
+
+/* ======================================================================
+   Правая колонка: агенты и деньги
+   ====================================================================== */
+.agent {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  padding: 0 0.5ch;
+  margin-bottom: 0.25em;
+}
+.agent:hover {
+  border-color: color-mix(in srgb, var(--cyan) 55%, var(--line));
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.agent.selected {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.agent .mark {
+  color: var(--green);
+}
+.agent:hover .mark,
+.agent.selected .mark {
+  color: var(--cyan);
+}
+.agent .meta {
+  color: var(--fg-faint);
+  font-size: 0.85em;
+  padding-left: 2ch;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 1ch;
+}
+.kv .k {
+  color: var(--fg-dim);
+}
+.kv .v {
+  color: var(--fg-bright);
+  white-space: nowrap;
+}
+
+.bar {
+  color: var(--fg-faint);
+  letter-spacing: -0.05em;
+}
+.bar .fill {
+  color: var(--green);
+}
+.bar.warn .fill {
+  color: var(--amber);
+}
+.bar.bad .fill {
+  color: var(--red);
+}
+
+.hint {
+  color: var(--fg-faint);
+  font-size: 0.85em;
+}
+
+/* ======================================================================
+   Граф: символьное полотно
+   ====================================================================== */
+/* Схема и сцена лежат в одном месте: сцена под схемой, курсор ведёт обеих. */
+.graph-stage {
+  position: relative;
+}
+
+.graph {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: pre;
+  line-height: 1.05;
+  font-size: 12px;
+  color: var(--fg-faint);
+  /* Выделение мышью выключено. Выделенная строка знаков рисования — это
+     сплошной зелёный прямоугольник поверх половины схемы, и к нему же
+     цепляется всплывающий переводчик браузера; а получалось оно само, стоило
+     потянуть схему вбок. Копия берётся кнопкой в подвале — целиком и текстом. */
+  user-select: none;
+  cursor: grab;
+}
+.graph:active {
+  cursor: grabbing;
+}
+
+/*
+ * Трёхмерная сцена за схемой.
+ *
+ * Кадр приходит текстом из `lib/orbit3d.ts` — здесь только место, цвет и то,
+ * что слой не ловит мышь: курсор проходит сквозь него к схеме, а камеру всё
+ * равно ведёт, потому что события слушает общий родитель.
+ */
+/* Слой фоновой сцены: на всё окно, позади интерфейса и сквозной для мыши. */
+.orbit-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.app > *:not(.orbit-stage) {
+  position: relative;
+  z-index: 1;
+}
+
+.orbit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: pre;
+  line-height: 1.05;
+  font-size: 12px;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: none;
+  color: var(--o-far);
+  --o-near: var(--green);
+  --o-far: #1b3527;
+  opacity: 0.55;
+  transition: opacity 0.6s ease;
+}
+/* Пока считает модель — сцена гонит и уходит в холодный цвет; на воротах,
+   где ждут человека, — почти замирает в янтаре. */
+.orbit-run {
+  --o-near: var(--cyan);
+  --o-far: #16303a;
+  opacity: 0.9;
+}
+.orbit-wait {
+  --o-near: var(--amber);
+  --o-far: #38301a;
+  opacity: 0.8;
+}
+/* Ближе к центру сцена ярче. Градиент по знакам, а не по фону: заливать
+   прямоугольник нельзя, под ним лежит схема. */
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .orbit {
+    background-image: radial-gradient(
+      42% 130% at 50% 50%,
+      var(--o-near) 0%,
+      var(--o-far) 72%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Рамки узлов кладутся на непрозрачный фон панели: под схемой крутится
+   сцена, и без этого её знаки просвечивали бы внутри рамок — там, где полотно
+   специально затёрто пробелами. С фоном узлы читаются карточками, лежащими
+   поверх сцены, а рёбра остаются прозрачными и идут прямо по ней. */
+.g-idle,
+.g-done,
+.g-active,
+.g-wait {
+  background: var(--bg-panel);
+}
+
+.g-idle {
+  color: var(--fg-faint);
+}
+.g-done {
+  color: var(--green);
+}
+.g-active {
+  color: var(--cyan);
+  animation: pulse 0.9s steps(2, end) infinite;
+}
+.g-wait {
+  color: var(--amber);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.g-edge {
+  color: var(--fg-faint);
+}
+.g-edge-hot {
+  color: var(--line-hot);
+}
+.g-flow {
+  color: var(--green);
+  animation: flow 1.1s linear infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes flow {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.route {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.route b {
+  color: var(--green);
+  font-weight: 400;
+}
+
+/* ======================================================================
+   Чат
+   ====================================================================== */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.msg {
+  border-left: 1px solid var(--line);
+  padding-left: 1.5ch;
+}
+.msg-human {
+  border-left-color: var(--line-hot);
+}
+.msg-tool {
+  border-left-color: var(--line);
+}
+
+.msg-role {
+  color: var(--fg-faint);
+  font-size: 0.85em;
+  letter-spacing: 0.1em;
+}
+.msg-human .msg-role {
+  color: var(--amber);
+}
+.msg-ai .msg-role {
+  color: var(--green);
+}
+.msg-tool .msg-role {
+  color: var(--violet);
+}
+
+.msg-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.msg-human .msg-text {
+  color: var(--fg-bright);
+}
+.msg-tool .msg-text {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.tool-call {
+  color: var(--violet);
+  font-size: 0.9em;
+}
+.tool-call .args {
+  color: var(--fg-dim);
+}
+
+/* Каретка: единственная мигающая вещь на экране, поэтому глаз идёт к ней. */
+.caret-blink::after {
+  content: "\2588";
+  color: var(--green);
+  animation: blink 1s steps(1, end) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.composer {
+  display: flex;
+  align-items: flex-start;
+  gap: 1ch;
+  border-top: 1px solid var(--line);
+  padding: 0.35em 1.5ch;
+  background: var(--bg-input);
+}
+.composer .prompt {
+  color: var(--green);
+  padding-top: 0.1em;
+  white-space: nowrap;
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--fg-bright);
+  min-height: var(--row);
+  max-height: calc(var(--row) * 6);
+  padding: 0.1em 0;
+}
+.composer textarea::placeholder {
+  color: var(--fg-faint);
+}
+
+/* ======================================================================
+   Подтверждение публикации
+   ====================================================================== */
+.approve {
+  border: 1px solid var(--amber);
+  padding: 0.4em 1.5ch;
+  margin: 0.4em 0;
+}
+.approve h4 {
+  margin: 0 0 0.3em;
+  color: var(--amber);
+  font-weight: 400;
+  font-size: 1em;
+  letter-spacing: 0.1em;
+}
+.approve pre {
+  margin: 0.3em 0;
+  max-height: 14em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  border-left: 1px solid var(--line);
+  padding-left: 1.5ch;
+}
+.approve .row {
+  display: flex;
+  gap: 1ch;
+  align-items: center;
+  margin-top: 0.3em;
+}
+.approve input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 0.5ch;
+  background: var(--bg-input);
+}
+.btn-yes {
+  color: var(--green);
+  border-color: var(--line-hot);
+}
+.btn-no {
+  color: var(--red);
+  border-color: var(--line-hot);
+}
+
+/* ======================================================================
+   Настройки: полноэкранная накладка
+   ====================================================================== */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(4, 6, 5, 0.94);
+  display: flex;
+  flex-direction: column;
+  padding: 2ch;
+}
+
+.overlay .panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.set-section {
+  margin-bottom: 1em;
+}
+.set-section > h3 {
+  margin: 0 0 0.3em;
+  color: var(--amber);
+  font-weight: 400;
+  font-size: 1em;
+  letter-spacing: 0.1em;
+}
+
+.set-field {
+  display: grid;
+  grid-template-columns: 30ch 1fr;
+  gap: 1ch;
+  align-items: start;
+  padding: 0.1em 0;
+}
+@media (max-width: 800px) {
+  .set-field {
+    grid-template-columns: 1fr;
+  }
+}
+
+.set-name {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+}
+.set-name.changed {
+  color: var(--amber);
+}
+.set-name .lock {
+  color: var(--violet);
+}
+
+.set-field input[type="text"],
+.set-field input[type="password"],
+.set-field select {
+  width: 100%;
+  padding: 0 0.5ch;
+  background: var(--bg-input);
+  color: var(--fg-bright);
+}
+.set-field input::placeholder {
+  color: var(--fg-faint);
+}
+.set-field .swatch {
+  color: var(--fg-faint);
+  padding-left: 0.5ch;
+}
+
+.set-desc {
+  grid-column: 2;
+  color: var(--fg-faint);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  padding-bottom: 0.3em;
+}
+
+/* Комментарий оператора: он лежит в `.env`, поэтому и выглядит как строка файла. */
+.set-comment {
+  grid-column: 2;
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+  padding-bottom: 0.4em;
+}
+
+.set-comment textarea {
+  flex: 1;
+  resize: vertical;
+}
+
+.set-note {
+  color: var(--fg-faint);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+}
+
+.set-new {
+  border-left: 1px solid var(--fg-faint);
+  padding-left: 1ch;
+  margin-bottom: 0.6em;
+}
+@media (max-width: 800px) {
+  .set-desc {
+    grid-column: 1;
+  }
+}
+
+.toggle {
+  color: var(--fg-dim);
+  border-color: var(--line);
+  padding: 0 0.75ch;
+}
+.toggle.on {
+  color: var(--green);
+  border-color: var(--line-hot);
+}
+
+.notice {
+  color: var(--amber);
+}
+.error {
+  color: var(--red);
+}
+.ok {
+  color: var(--green);
+}
+
+/* Declarative UI engine */
+.engine-warning { padding: 8px 12px; border-bottom: 1px solid var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 8%, transparent); }
+.connection { padding: 1px 5px; border: 1px solid var(--line); text-transform: uppercase; font-size: 10px; }
+.connection-live { color: var(--green); }
+.connection-reconnecting { color: var(--amber); }
+.connection-offline { color: var(--red); }
+.engine-widget { margin: 0 0 12px; min-width: 0; }
+.engine-widget > h3, .node-details h3 { margin: 0 0 7px; color: var(--cyan); font-size: 12px; text-transform: uppercase; }
+.engine-widget textarea, .engine-widget input, .engine-widget select, .canvas-tools input, .timeline-tools input, .timeline-tools select { max-width: 100%; }
+.engine-chat-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.engine-chat-input textarea { min-height: 72px; resize: vertical; }
+.engine-messages { max-height: 52vh; overflow: auto; }
+.safe-markdown { overflow-wrap: anywhere; line-height: 1.5; }
+.safe-markdown p { margin: 0 0 8px; white-space: pre-wrap; }
+.safe-markdown h1, .safe-markdown h2, .safe-markdown h3, .safe-markdown h4, .safe-markdown h5, .safe-markdown h6 { margin: 14px 0 6px; color: var(--fg); }
+.json-preview { max-height: 360px; margin: 6px 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.table-scroll { overflow: auto; }
+.table-scroll table, .graph-list { width: 100%; border-collapse: collapse; }
+.table-scroll th, .table-scroll td, .graph-list th, .graph-list td { padding: 5px 7px; border: 1px solid var(--line); text-align: left; }
+.graph-list small { display: block; color: var(--fg-dim); }
+.key-value { margin: 0; }
+.key-value > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dotted var(--line); }
+.key-value dt { color: var(--fg-dim); }
+.key-value dd { margin: 0; text-align: right; }
+.widget-error, .widget-unknown { padding: 8px; border: 1px solid var(--red); }
+/* Поле ввода обязано ужиматься: у input своя ширина по умолчанию, и без
+   min-width:0 он распирает колонку прокруткой вбок. */
+.resource-create { display: flex; gap: 6px; margin-top: 7px; min-width: 0; }
+.resource-create input { flex: 1; min-width: 0; }
+.resource-create button { flex: 0 0 auto; }
+/* Секция-outline: свёрнутая полоса внизу колонки. Заголовок кликабелен целиком,
+   маркер рисуем сами — стрелку браузера убирает list-style: none. */
+.engine-outline { border-top: 1px solid var(--line); }
+.engine-outline > summary { display: flex; align-items: center; gap: 6px; padding: 6px 0; color: var(--fg-dim); font-size: 11px; text-transform: uppercase; cursor: pointer; list-style: none; }
+.engine-outline > summary::-webkit-details-marker { display: none; }
+.engine-outline > summary:hover { color: var(--cyan); }
+.engine-outline > summary .hint { margin-left: auto; }
+.engine-outline-mark { flex: 0 0 1ch; color: var(--fg-faint); }
+.engine-outline[open] > summary { color: var(--cyan); }
+.resource-list { margin: 8px 0; padding: 0; list-style: none; }
+.resource-list li { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted var(--line); }
+.resource-list button { max-width: calc(100% - 70px); overflow: hidden; text-overflow: ellipsis; }
+.task-picker-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.task-picker-current { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* minmax(0, 1fr) вместо умолчания: иначе дорожка грида растёт по самому
+   длинному имени файла и распирает колонку прокруткой вбок. */
+.task-picker-folders { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.task-picker-row { display: flex; align-items: stretch; min-width: 0; }
+.task-picker-row > button:last-child { flex: 1; min-width: 0; }
+.task-picker-toggle {
+  flex: 0 0 2ch;
+  padding: 0;
+  color: var(--fg-faint);
+  text-align: center;
+}
+.task-picker-toggle:hover { color: var(--cyan); }
+
+/* Папка вывода раскрыта всегда, поэтому её файлы отбиты от списка папок. */
+.task-picker-folder { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; min-width: 0; }
+.task-picker-folder .task-picker-files { margin: 0 0 4px 2ch; }
+
+/* Документ занимает главный экран: ширина текста, а не колонки. */
+.engine-document { overflow: auto; padding: 0 1ch; }
+.engine-document .safe-markdown { max-width: 90ch; }
+.task-picker-folders button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 5px;
+  text-align: left;
+  border: 1px solid transparent;
+}
+.task-picker-folders .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-picker-folders .count { margin-left: auto; color: var(--fg-faint); }
+.task-picker-folders .badge { color: var(--amber); font-size: 10px; text-transform: uppercase; }
+.task-picker-folders button:hover:not(:disabled),
+.task-picker-folders button.selected {
+  color: var(--cyan);
+  border-color: color-mix(in srgb, var(--cyan) 55%, var(--line));
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.task-picker-folders button.selected .count,
+.task-picker-folders button:hover:not(:disabled) .count { color: var(--cyan); }
+.task-picker-files li { align-items: baseline; padding: 1px 4px; }
+.task-picker-files li:hover {
+  border-color: color-mix(in srgb, var(--cyan) 55%, var(--line));
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.task-picker-files button {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Ширину строки делит не поровну, а по делу: имя — это то, по чему выбирают,
+   а `[?]` размером со свой знак.
+
+   Двух правил не хватает по отдельности. `flex: 1` выше достаётся ОБЕИМ
+   кнопкам строки, и они делят её пополам. А `width: 100%` из
+   `.task-picker-folders button` — правила для папок, под которое строки файлов
+   попали заодно — делает `flex-basis: auto` у `[?]` шириной во всю строку,
+   так что одного `flex: 0 0 auto` мало: базис берётся из `width`. Пока кнопка
+   в строке была одна, ни то ни другое не было видно; со второй имя файла
+   сжалось до «Or…», и выбирать стало нечем.
+
+   `max-width` из `.resource-list` здесь тоже лишний: место под размер уже
+   отняли соседи по флексу. */
+.task-picker-files li > button { width: auto; max-width: none; }
+.task-picker-files li > .hint { flex: 0 0 auto; }
+/* Превью показывается на строке, к которой потянулись, и держится, пока в ней
+   стоит фокус. Ширины оно при этом не занимает вообще: имя — то, по чему
+   выбирают на каждой строке, а содержимое открывают изредка и уже наведясь
+   на нужную.
+
+   Кнопка вынута из потока, а не сжата до нуля. Сжатая, она раздвигала строку
+   на наведении — и кнопка выбора уезжала из-под курсора ровно в тот момент,
+   когда по ней целятся: клик по имени открывал превью. Вне потока не двигается
+   ничего; на время наведения `[?]` встаёт на место размера файла, потому что
+   из двух чисел строки размер — то, без которого выбирают.
+
+   Кнопка остаётся в разметке и в порядке обхода табом: спрятана видимость,
+   а не элемент. */
+.task-picker-files li { position: relative; }
+.task-picker-files li > .task-picker-open {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  bottom: 0;
+  padding: 0 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+.task-picker-files li:hover > .task-picker-open,
+.task-picker-files li:focus-within > .task-picker-open { opacity: 1; pointer-events: auto; }
+.task-picker-files li:hover > .hint,
+.task-picker-files li:focus-within > .hint { visibility: hidden; }
+.task-picker-files li:hover button:not(:disabled),
+.task-picker-files li:hover .hint { color: var(--cyan); }
+.task-picker-files .diagram button {
+  color: #d8c7ff;
+  font-weight: 600;
+  text-shadow: 0 0 5px color-mix(in srgb, var(--violet) 55%, transparent);
+}
+.task-picker-files .diagram:hover {
+  background: color-mix(in srgb, var(--violet) 16%, transparent);
+  border-color: var(--violet);
+}
+.task-picker-files .diagram:hover button,
+.task-picker-files .diagram:hover .hint { color: #efe8ff; }
+.task-picker-files .binary { opacity: 0.65; }
+/* Что выбрано источником: имя и `[×]`. Тот же фиолетовый, что у выбранного
+   файла в дереве, — «выбрано» читается одинаково на обоих уровнях.
+
+   Имя обрезается с начала, как в дереве: хвост — это то, чем документы
+   различаются. */
+/* minmax(0, 1fr), а не умолчание: дорожка грида иначе растёт по самому
+   длинному имени, строка уезжает за край колонки, и обрезаться имени негде —
+   ровно как у дерева папок выше. */
+.file-picker { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.file-picker .resource-list { margin: 0; }
+.file-picker li {
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 5px;
+  border: 1px solid var(--violet);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--violet) 16%, transparent);
+}
+.file-picker .name {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  color: #efe8ff;
+}
+.file-picker .name .mark { flex: none; color: var(--violet); }
+.file-picker li.missing {
+  border-color: var(--red, #ff6b6b);
+  background: transparent;
+}
+.file-picker li.missing .name { color: var(--red, #ff6b6b); text-decoration: line-through; }
+.file-picker-drop { flex: none; padding: 0 2px; color: #d8c7ff; opacity: 0.6; }
+.file-picker-drop:hover:not(:disabled) { opacity: 1; color: var(--cyan); }
+/* Выбранный файл в дереве папки задачи: та же рамка, что у выбранной папки,
+   чтобы «выбрано» читалось одинаково на обоих уровнях. */
+/* Обрезается начало имени, а не конец.
+   Имена документов различаются хвостом — «…_01_Системные_требования.md»
+   против «…_02_Контракт_API.md», — а начало у них общее на восемьдесят
+   символов. Обрезанные с конца, в узкой колонке они выглядят одним и тем же
+   файлом, повторённым семь раз. `direction: rtl` уводит многоточие в начало;
+   само имя остаётся слева направо — латиница и кириллица это сильные
+   символы, и порядок внутри них двунаправленность не трогает.
+
+   Правило висит на самом имени, а не на строке: строка — флекс-контейнер,
+   и rtl развернул бы в ней порядок ромба и текста. */
+.task-picker-files .name,
+.file-picker .name .text {
+  flex: 1 1 auto;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-picker-files li.picked {
+  border-color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 18%, transparent);
+}
+.task-picker-files li.picked button,
+.task-picker-files li.picked .hint { color: #efe8ff; }
+.task-picker-open {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  color: var(--fg-faint);
+}
+.task-picker-open:hover:not(:disabled) { color: var(--cyan); }
+/* Проект Jira: единственный вопрос конвейера декомпозиции — и одно поле. */
+.jira-project { display: grid; gap: 4px; }
+.jira-project input { width: 100%; }
+/* Заведённые задачи: ключ слева, заголовок справа — как в списке файлов. */
+.issue-list { display: grid; gap: 4px; }
+.issue-list-head { display: flex; justify-content: space-between; gap: 8px; }
+.issue-project { color: var(--cyan); }
+.issue-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+/* Черновики: то, что уедет наружу, до того как уедет. Каждая карточка
+   раскрывается отдельно — решение принимают по содержанию, а не по счётчику. */
+.draft-list { display: grid; gap: 4px; margin: 0.3em 0; }
+.draft-open-label { color: var(--green); white-space: nowrap; }
+.external-drafts-action { display: flex; gap: 0.5em; flex-wrap: wrap; align-items: baseline; margin: 0.5em 0; }
+.external-drafts-action p { flex-basis: 100%; margin: 0; }
+.external-draft-result { margin: 0.6em 0; overflow-wrap: anywhere; }
+.draft-list-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.draft { border: 1px solid var(--line); padding: 0 1ch; }
+.draft > summary { display: flex; gap: 1ch; align-items: baseline; cursor: pointer; flex-wrap: wrap; }
+.draft > summary b { min-width: 0; overflow-wrap: anywhere; }
+.draft[open] { border-color: var(--line-hot); }
+.draft-action { color: var(--fg-dim); white-space: nowrap; }
+.draft-action-create { color: var(--green); }
+/* Перезапись существующей страницы — единственное необратимое действие в
+   списке: версия уедет всем подписчикам пространства. Поэтому янтарный. */
+.draft-action-update { color: var(--amber); }
+.draft-action-unknown { color: var(--red); }
+.draft-fields { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 0 1.5ch; margin: 0.3em 0; }
+.draft-fields > div { display: contents; }
+.draft-fields dt { color: var(--fg-dim); }
+.draft-fields dd { margin: 0; overflow-wrap: anywhere; }
+.draft-body, .draft .safe-markdown {
+  margin: 0.3em 0;
+  max-height: 22em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-left: 1px solid var(--line);
+  padding-left: 1.5ch;
+  font-size: 0.9em;
+}
+.draft-warnings { margin: 0.3em 0; padding-left: 2.5ch; color: var(--amber); }
+.draft-whole > summary { cursor: pointer; color: var(--fg-dim); }
+.status-created, .status-partial { color: var(--green); }
+.status-rejected, .status-disabled, .status-skipped { color: var(--amber); }
+.engine-canvas { position: relative; min-height: 250px; }
+.canvas-tools, .timeline-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.canvas-viewport { position: relative; max-height: 56vh; overflow: auto; border: 1px solid var(--line); }
+.canvas-viewport svg { display: block; transform-origin: top left; background: color-mix(in srgb, var(--bg) 92%, var(--cyan)); }
+.canvas-edge { fill: none; stroke: var(--fg-dim); stroke-width: 1.5; }
+.canvas-edge.conditional { stroke-dasharray: 5 3; }
+.canvas-viewport marker path { fill: var(--fg-dim); }
+.canvas-node { cursor: pointer; outline: none; }
+.canvas-node rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+.canvas-node text { fill: var(--fg); font-family: inherit; font-size: 12px; pointer-events: none; }
+.canvas-node .node-meta { fill: var(--fg-dim); font-size: 10px; }
+.canvas-node.node-running rect, .canvas-node.node-queued rect { stroke: var(--cyan); stroke-width: 3; }
+.canvas-node.node-completed rect { stroke: var(--green); }
+.canvas-node.node-failed rect { stroke: var(--red); }
+.canvas-node.node-interrupted rect { stroke: var(--amber); stroke-width: 3; }
+.canvas-node.selected rect { filter: drop-shadow(0 0 5px var(--cyan)); }
+.canvas-node.kind-router rect { stroke-dasharray: 4 2; }
+.canvas-node.kind-approval rect { fill: color-mix(in srgb, var(--amber) 8%, var(--bg)); }
+.canvas-minimap { position: sticky; right: 5px; bottom: 5px; float: right; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg-dim); font-size: 10px; }
+.node-details { position: absolute; z-index: 2; top: 42px; right: 8px; width: min(320px, calc(100% - 16px)); max-height: calc(100% - 50px); overflow: auto; padding: 10px; border: 1px solid var(--cyan); background: var(--bg); box-shadow: 0 8px 30px #0008; }
+.node-details > button { float: right; }
+.engine-timeline { max-height: 300px; overflow: auto; }
+.engine-timeline ol { margin: 0; padding-left: 30px; }
+.engine-timeline li { padding: 3px 0; border-bottom: 1px dotted var(--line); }
+.engine-timeline time { color: var(--fg-dim); margin-right: 8px; }
+.engine-timeline li button { margin-left: 8px; color: var(--cyan); }
+.engine-timeline li .hint { float: right; }
+.engine-interrupt-overlay { display: grid; place-items: center; z-index: 20; }
+.engine-interrupt-overlay > * { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; background: var(--bg); border: 1px solid var(--amber); padding: 14px; }
+.runtime-status { text-transform: uppercase; }
+.status-failed, .status-cancelled { color: var(--red); }
+.status-completed { color: var(--green); }
+.status-running, .status-queued { color: var(--cyan); }
+.status-interrupted { color: var(--amber); }
+
+@media (max-width: 1000px) {
+  .engine-columns { grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr); }
+  .engine-columns .col-right { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+}
+
+@media (max-width: 700px) {
+  .engine-columns { display: block; }
+  .engine-columns > div, .engine-columns .col-right { display: block; margin-bottom: 8px; }
+  .canvas-viewport { max-height: 62vh; }
+  .engine-chat-input { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .engine-app *, .engine-app *::before, .engine-app *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Keep the working area reachable when errors, the journal or a small screen
+   add more rows. The previous fixed grid assigned its flexible row to alerts. */
+.engine-app { display: flex; flex-direction: column; overflow: auto; }
+.engine-app > .header, .engine-app > .error, .engine-app > .engine-warning { flex-shrink: 0; }
+.engine-app > .header { flex-wrap: wrap; gap: 8px; }
+.engine-app .header .status { flex-wrap: wrap; }
+.engine-app .pick { display: flex; min-width: 0; max-width: 100%; }
+.engine-app .pick select { min-width: 0; max-width: min(42ch, 70vw); }
+.engine-app .pick select { background: var(--bg-input); padding: 4px 8px; }
+.engine-app .pick option { background: var(--bg-input); color: var(--fg-bright); }
+.engine-app > footer { margin-top: auto; overflow-wrap: anywhere; }
+.engine-app .engine-columns {
+  flex: 1 0 auto;
+  grid-template-columns: minmax(180px, var(--col-left, 30ch)) minmax(0, 1fr) minmax(200px, 26ch);
+  align-items: start;
+}
+.engine-app .col-left, .engine-app .col-center, .engine-app .col-right {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+.engine-app .col-left > .panel { min-height: 260px; }
+.engine-app .col-center > .panel { flex-shrink: 0; }
+.engine-app .col-right > .panel { width: 100%; }
+.engine-app .engine-canvas { min-height: 0; }
+.engine-app .graph { max-height: 36vh; overflow: auto; cursor: auto; user-select: text; }
+.engine-app .timeline-panel { flex: 0 0 auto; max-height: 260px; }
+.engine-app .engine-messages { max-height: 42vh; overflow: auto; }
+.engine-app button[aria-pressed="true"] { color: var(--green); }
+.engine-app .col-resizer { touch-action: none; }
+.engine-app .graph-list tr { cursor: pointer; }
+.engine-app .graph-list tr:focus-visible { outline: 1px solid var(--green); }
+.engine-app .overlay { position: fixed; z-index: 20; }
+@media (max-width: 1100px) {
+  .engine-app .engine-columns { grid-template-columns: minmax(180px, 26ch) minmax(0, 1fr); }
+  .engine-app .col-right { grid-column: 1 / -1; }
+  .engine-app .col-resizer { display: none; }
+}
+@media (max-width: 700px) {
+  .engine-app .engine-columns { display: flex; flex-direction: column; }
+  .engine-app .engine-columns > div { width: 100%; }
+  .engine-app .header .rule { display: none; }
+  .engine-app .header .status { margin-left: 0; }
+  .engine-app .engine-chat-input { grid-template-columns: minmax(0, 1fr); }
+}

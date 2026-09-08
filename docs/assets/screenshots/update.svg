@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="640" viewBox="0 0 1440 640" role="img" aria-labelledby="title desc">
+<title id="title">Место для скриншота 08: Обновление документа</title>
+<desc id="desc">Заглушка, не снимок приложения. Проверка предложенных изменений. Исходник · новые материалы · основания и разница.</desc>
+<rect width="1440" height="640" rx="18" fill="#101923"/>
+<path d="M48 90H1392 M48 551H1392" stroke="#2b3b49"/>
+<rect x="48" y="122" width="1344" height="398" rx="10" fill="#121f2b" stroke="#304958" stroke-dasharray="8 10"/>
+<path d="M92 178V158H112 M1328 158H1348V178 M92 464V484H112 M1328 484H1348V464" fill="none" stroke="#66d9c7" stroke-width="2"/>
+<g font-family="Segoe UI, Arial, sans-serif"><text x="48" y="59" font-size="17" font-weight="600" letter-spacing="3" fill="#edf4f8">ORBITA</text><text x="1392" y="59" text-anchor="end" font-size="14" letter-spacing="2" fill="#8da6b8">КАДР 08 / UPDATE</text>
+<text x="720" y="218" text-anchor="middle" font-size="14" letter-spacing="3" fill="#66d9c7">МЕСТО ДЛЯ РЕАЛЬНОГО СКРИНШОТА</text>
+<text x="720" y="298" text-anchor="middle" font-size="43" font-weight="600" fill="#f2f6fa">Обновление документа</text>
+<text x="720" y="351" text-anchor="middle" font-size="24" fill="#c0d1dc">Проверка предложенных изменений</text>
+<text x="720" y="411" text-anchor="middle" font-size="19" fill="#8da6b8">Исходник · новые материалы · основания и разница</text>
+<text x="48" y="594" font-size="16" fill="#8da6b8">Заглушка · заменить снимком работающего приложения</text><text x="1392" y="594" text-anchor="end" font-size="15" fill="#66d9c7">ПЛАН КАДРА → docs/VISUALS.md</text></g>
+</svg>

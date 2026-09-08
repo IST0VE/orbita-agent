@@ -1,0 +1,18 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "agent": "./src/agent/graph.py:graph",
+    "jira": "./src/agent/jira_graph.py:graph",
+    "drawio": "./src/agent/drawio_graph.py:graph",
+    "prep": "./src/agent/prep_graph.py:graph",
+    "audit": "./src/agent/audit_graph.py:graph",
+    "update": "./src/agent/update_graph.py:graph"
+  },
+  "env": ".env",
+  "http": {
+    "app": "./src/agent/api.py:app",
+    "middleware_order": "middleware_first"
+  }
+}

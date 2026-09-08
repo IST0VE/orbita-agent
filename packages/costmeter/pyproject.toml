@@ -1,0 +1,65 @@
+# costmeter — самостоятельный пакет, отдельный от агента.
+#
+# Он лежит в этом репозитории, но собирается и ставится сам по себе: у него своё
+# имя, своя версия и одна зависимость. Тому, кто пришёл за счётчиком денег, не
+# нужны ни langgraph, ни requests, ни Confluence — и он их не получит.
+#
+# Сборка и установка в чистое окружение:
+#
+#     python -m pip install build
+#     python -m build packages/costmeter
+#     pip install packages/costmeter/dist/orbita_costmeter-0.1.0-py3-none-any.whl
+[project]
+name = "orbita-costmeter"
+version = "0.1.0"
+description = "Token cost accounting for LLM calls, with a prompt-cache breakdown"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "IST0VE" }]
+keywords = ["llm", "prompt-caching", "cost", "langchain", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+# Единственная зависимость — базовый класс обработчика. tomllib для таблицы
+# тарифов лежит в стандартной библиотеке начиная с 3.11, поэтому requires-python
+# именно такой.
+dependencies = ["langchain-core>=0.3"]
+
+[project.optional-dependencies]
+# langgraph нужен только тестам: они проверяют, что счётчик работает на чужом
+# графе, а не на нашем. Самому пакету он не нужен и в зависимости не попадает.
+dev = [
+    "langgraph>=0.4",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+# [project.urls]
+# Homepage = "https://github.com/<user>/<repo>"
+# Repository = "https://github.com/<user>/<repo>"
+# Changelog = "https://github.com/<user>/<repo>/blob/main/packages/costmeter/CHANGELOG.md"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Таблица тарифов ставится вместе с пакетом: costmeter читает её из своих
+# ресурсов через importlib.resources, а не из рабочей папки.
+[tool.setuptools.package-data]
+costmeter = ["prices.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"

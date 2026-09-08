@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="480" viewBox="0 0 1440 480" role="img" aria-labelledby="title desc">
+<title id="title">Orbita — проектная аналитика</title>
+<desc id="desc">Обложка документации. От материалов задачи к проверяемому решению.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101d29"/><stop offset="1" stop-color="#080e16"/></linearGradient><linearGradient id="line"><stop stop-color="#66d9c7"/><stop offset="1" stop-color="#418cb5"/></linearGradient></defs>
+<rect width="1440" height="480" rx="20" fill="url(#bg)"/>
+<path d="M64 82H1376 M64 400H1376" stroke="#273543"/>
+<g fill="none" stroke="#345365" opacity=".6"><ellipse cx="1130" cy="239" rx="192" ry="85" transform="rotate(-30 1130 239)"/><ellipse cx="1130" cy="239" rx="192" ry="85" transform="rotate(30 1130 239)"/><circle cx="1130" cy="239" r="139"/></g>
+<circle cx="1130" cy="239" r="33" fill="#122f36" stroke="#66d9c7"/><circle cx="1130" cy="239" r="8" fill="#66d9c7"/>
+<circle cx="996" cy="172" r="5" fill="#66d9c7"/><circle cx="1264" cy="305" r="5" fill="#66d9c7"/>
+<g font-family="Segoe UI, Arial, sans-serif"><text x="64" y="55" font-size="14" letter-spacing="4" fill="#8da6b8">PRODUCT DOCUMENTATION</text><text x="1376" y="55" text-anchor="end" font-size="14" letter-spacing="2" fill="#66d9c7">MVP / 2026</text><text x="60" y="218" font-size="110" font-weight="650" letter-spacing="3" fill="#f3f7fa">ORBITA</text><text x="66" y="284" font-size="30" fill="#d6e4ec">От материалов к проверяемому решению.</text><text x="66" y="332" font-size="19" fill="#8da6b8">Аналитика · Документы · Согласование · Результат</text><text x="64" y="441" font-size="14" fill="#8da6b8">PYTHON / LANGGRAPH / REACT</text><text x="1376" y="441" text-anchor="end" font-size="14" fill="#8da6b8">РУКОВОДСТВО ПО РАБОТЕ С ПРОЕКТОМ</text></g>
+</svg>

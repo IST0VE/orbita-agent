@@ -1,0 +1,82 @@
+# Агент на порту 2024 и Postgres рядом с ним.
+#
+#     docker compose up            сервер LangGraph, Studio цепляется к :2024
+#     docker compose run --rm demo три хода демо с постоянными чекпоинтами
+#
+# Ключ модели берётся из окружения или из .env рядом с этим файлом; без него
+# сервер поднимется, но на первом же ходе ответит ошибкой авторизации.
+#
+# Что где хранится. Сервер разработки (`langgraph dev`) держит состояние тредов
+# сам, в своей папке внутри контейнера. Postgres здесь — для собственного
+# рантайма: `run_demo.py` и любой свой скрипт получают из него чекпоинтер и
+# store, поэтому долгая память (memory.py) переживает перезапуск контейнеров.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orbita
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random URL-safe POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: orbita
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Агент стартует только после того, как база начала отвечать: иначе первый
+    # же setup() упадёт на пустом месте.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbita -d orbita"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  agent:
+    build: .
+    init: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Служебные роуты меняют .env и читают материалы задач, а встроенные
+      # роуты LangGraph запускают платные LLM-вызовы. Наружу порт открывают
+      # только через аутентифицирующий reverse proxy.
+      - "127.0.0.1:2024:2024"
+    # required: false — чтобы `docker compose up` работал на чистой машине,
+    # где .env ещё не создан.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Пробрасывается, если задан снаружи; иначе значение приедет из .env.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      CHECKPOINT_BACKEND: postgres
+      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+    volumes:
+      - data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Профиль, а не обычный сервис: `docker compose up` не должен тратить деньги
+  # на вызовы модели без явной команды.
+  demo:
+    build: .
+    init: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["demo"]
+    command: ["python", "run_demo.py"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      CHECKPOINT_BACKEND: postgres
+      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+    volumes:
+      - data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  data:
