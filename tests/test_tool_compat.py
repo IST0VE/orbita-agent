@@ -64,7 +64,8 @@ def completion(content):
     )
 
 
-def test_auto_fallback_completes_graph_and_reads_real_file(monkeypatch, tmp_path):
+@pytest.mark.parametrize("stale_source", ["none", "configurable", "context", "both"])
+def test_auto_fallback_completes_graph_and_reads_real_file(monkeypatch, tmp_path, stale_source):
     task = tmp_path / "input" / "task"
     task.mkdir(parents=True)
     (task / "requirements.md").write_text("Refund limit is 731 units.", encoding="utf-8")
@@ -85,11 +86,19 @@ def test_auto_fallback_completes_graph_and_reads_real_file(monkeypatch, tmp_path
     def endpoint(request):
         payload = json.loads(request.content)
         payloads.append(payload)
+        assert payload["model"] == "company-model"
         if "tools" in payload:
             return httpx.Response(400, json={"error": {"message": UNSUPPORTED}})
         assert "tool_choice" not in payload
         assert all(m["role"] != "tool" and "tool_calls" not in m for m in payload["messages"])
         return completion(next(answers))
+
+    configurable = {"input_dir": "task", "thread_id": "compat-test"}
+    context = {}
+    if stale_source in ("configurable", "both"):
+        configurable["model"] = "qwen3.6-35b-a3b-fp8"
+    if stale_source in ("context", "both"):
+        context["model"] = "qwen3.6-35b-a3b-fp8"
 
     with install_endpoint(monkeypatch, endpoint):
         state = (
@@ -101,11 +110,13 @@ def test_auto_fallback_completes_graph_and_reads_real_file(monkeypatch, tmp_path
                         HumanMessage("Read the attached requirements and prepare the analysis.")
                     ]
                 },
-                {"configurable": {"input_dir": "task", "thread_id": "compat-test"}},
+                {"configurable": configurable},
+                context=context,
             )
         )
     assert sum("tools" in payload for payload in payloads) == 1
     assert len(payloads) == 7  # rejected probe + tool request + five documents
+    assert {key[1] for key in tool_compat._PROMPT_ENDPOINTS} == {"company-model"}
     assert set(state["artifacts"]) == set(roles.PIPELINE.keys)
     assert state["usage"]["calls"] == 6
     assert state["usage"]["output"] == 120

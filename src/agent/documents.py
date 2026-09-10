@@ -31,7 +31,6 @@ from agent import config as cfg
 from agent import confluence, jira, render, roles
 from agent.cost import estimate_cost, hit_rate
 from agent.pipeline import Pipeline
-from agent.runtime import MODEL, options
 from agent.state import State
 
 # Этой строкой начинаются оба подставляемых блока — и справка из базы знаний,
@@ -198,11 +197,10 @@ def document_header(
     каждом рендере, и если бы оно попадало в хеш, режим `changed` считал бы
     документ изменившимся всегда.
 
-    Модель берётся из переопределений треда, а не из константы модуля: тред
-    мог выбрать свою.
+    Модель берётся из конфигурации сервера, как и при вызове LLM.
     """
     stamp = datetime.now().isoformat(timespec="seconds")
-    model = options(config).get("model") or MODEL
+    model = cfg.model_name()
     return (renderer or render.STORAGE).paragraph(
         f"Страница собрана автоматически {pipeline.byline} {cfg.agent_name()} "
         f"(модель {model}). Обновлено: {stamp}. "

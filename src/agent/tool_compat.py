@@ -167,7 +167,7 @@ def invoke(model_for, messages: list, config, tools, *, allow_tools: bool) -> AI
     chosen = options(config)
     key = (
         *providers.resolve_key(
-            chosen.get("provider"), chosen.get("model"), chosen.get("temperature")
+            provider=chosen.get("provider"), temperature=chosen.get("temperature")
         ),
         cfg.env_str("LLM_API_BASE"),
     )

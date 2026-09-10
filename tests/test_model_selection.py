@@ -1,12 +1,14 @@
 """
-Задача 2.4: модель выбирается в момент вызова ноды, а не на импорте модуля.
+Модель выбирается из серверной LLM_MODEL в момент вызова ноды.
 
 Клиент по-прежнему создаётся один раз на комбинацию (провайдер, модель,
 temperature) — иначе на каждом ходе собирался бы новый HTTP-клиент. Но сама
-комбинация теперь свойство треда, а не процесса.
+модель из старой конфигурации треда не должна перекрывать серверную.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,13 +157,22 @@ def test_temperature_is_part_of_the_key(fake_factories):
 
 
 # --------------------------------------------------------------------------
-# Выбор на тред
+# Серверная модель имеет приоритет над сохранёнными настройками треда
 # --------------------------------------------------------------------------
-def test_model_comes_from_configurable(fake_factories):
-    model = model_for({"configurable": {"model": "deepseek-v4-pro"}})
+@pytest.mark.parametrize("source", ["configurable", "context", "both"])
+def test_stale_model_is_ignored(fake_factories, monkeypatch, source):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL", "qwen3.8-flash-next")
+    stale = {"model": "qwen3.6-35b-a3b-fp8"}
+    context = stale if source in ("context", "both") else {}
+    config = {"configurable": stale} if source in ("configurable", "both") else {}
+    monkeypatch.setattr("langgraph.runtime.get_runtime", lambda: SimpleNamespace(context=context))
 
-    assert model.model == "deepseek-v4-pro"
-    assert fake_factories == [("deepseek", "deepseek-v4-pro", 0.0)]
+    model = model_for(config)
+
+    assert model.model == "qwen3.8-flash-next"
+    assert fake_factories == [("openai", "qwen3.8-flash-next", 0.0)]
+    assert stale == {"model": "qwen3.6-35b-a3b-fp8"}
 
 
 def test_provider_and_temperature_come_from_configurable(fake_factories):
@@ -169,8 +180,8 @@ def test_provider_and_temperature_come_from_configurable(fake_factories):
         {"configurable": {"provider": "openai", "model": "gpt-mini", "temperature": 0.3}}
     )
 
-    assert (model.provider, model.model) == ("openai", "gpt-mini")
-    assert fake_factories == [("openai", "gpt-mini", 0.3)]
+    assert (model.provider, model.model) == ("openai", cfg.DEFAULT_MODEL)
+    assert fake_factories == [("openai", cfg.DEFAULT_MODEL, 0.3)]
 
 
 def test_without_overrides_environment_wins(
@@ -182,16 +193,42 @@ def test_without_overrides_environment_wins(
     assert model_for({}).model == "из-окружения"
 
 
-def test_two_threads_can_use_different_models(fake_factories):
-    """
-    Ровно то, ради чего задача: модель меняется между тредами. Внутри одного
-    треда её менять по-прежнему нельзя — сменится префикс и обнулится кеш.
-    """
+def test_two_stale_threads_share_the_server_model(fake_factories, monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "qwen3.8-flash-next")
     first = model_for({"configurable": {"thread_id": "a", "model": "m-a"}})
     second = model_for({"configurable": {"thread_id": "b", "model": "m-b"}})
 
-    assert first.model == "m-a"
-    assert second.model == "m-b"
+    assert first.model == second.model == "qwen3.8-flash-next"
+    assert first is second
+    assert len(fake_factories) == 1
+
+
+def test_server_model_change_does_not_reuse_stale_client(fake_factories, monkeypatch):
+    config = {"configurable": {"model": "qwen3.6-35b-a3b-fp8"}}
+    monkeypatch.setenv("LLM_MODEL", "qwen3.6-35b-a3b-fp8")
+    first = model_for(config)
+    monkeypatch.setenv("LLM_MODEL", "qwen3.8-flash-next")
+    second = model_for(config)
+
+    assert first.model == "qwen3.6-35b-a3b-fp8"
+    assert second.model == "qwen3.8-flash-next"
+    assert first is not second
+    assert len(fake_factories) == 2
+
+
+def test_document_header_uses_server_model(monkeypatch):
+    from agent.documents import document_header
+
+    monkeypatch.setenv("LLM_MODEL", "qwen3.8-flash-next")
+    header = document_header({"configurable": {"model": "qwen3.6-35b-a3b-fp8"}})
+    assert "qwen3.8-flash-next" in header
+    assert "qwen3.6-35b-a3b-fp8" not in header
+
+
+def test_studio_schema_does_not_offer_model_override():
+    from agent.graph import graph
+
+    assert "model" not in graph.get_context_jsonschema()["properties"]
 
 
 def test_bound_model_is_cached_too(fake_factories):
@@ -204,7 +241,17 @@ def test_bound_model_is_cached_too(fake_factories):
 # Источники переопределений
 # --------------------------------------------------------------------------
 def test_options_reads_configurable():
-    assert options({"configurable": {"model": "m-1"}})["model"] == "m-1"
+    assert options({"configurable": {"model": "m-1", "input_dir": "task"}}) == {
+        "input_dir": "task"
+    }
+
+
+def test_options_preserves_other_context_and_configurable_fields(monkeypatch):
+    context = {"model": "old-context", "input_dir": "task", "temperature": 0.4}
+    monkeypatch.setattr("langgraph.runtime.get_runtime", lambda: SimpleNamespace(context=context))
+    assert options({"configurable": {"model": "old-config", "temperature": 0.2}}) == {
+        "input_dir": "task", "temperature": 0.2,
+    }
 
 
 def test_options_survives_absent_config():

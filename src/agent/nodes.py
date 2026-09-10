@@ -60,7 +60,8 @@ from agent.tools import FILE_TOOLS as TOOLS
 # Провайдер, модель, ключ (LLM_API_KEY), адрес API (LLM_API_BASE — прокси,
 # self-hosted шлюз, совместимый эндпоинт), temperature, число ретраев, лимит
 # выхода и таймаут приезжают из окружения. Провайдера, модель и temperature
-# можно переопределить на тред — см. Options.
+# можно настроить на сервере; на тред переопределяются только провайдер
+# и temperature — см. Options. Модель всегда берётся из LLM_MODEL.
 # Ключ кеша — провайдер, модель, temperature И набор инструментов: конвейеры
 # отличаются источником данных, а привязка инструментов меняет форму запроса.
 # Без набора в ключе граф подготовки получил бы клиента, собранного для графа
@@ -87,7 +88,7 @@ def model_for(config: RunnableConfig | None = None, tools: list | None = None) -
     tools = TOOLS if tools is None else tools
     key = (
         *providers.resolve_key(
-            chosen.get("provider"), chosen.get("model"), chosen.get("temperature")
+            provider=chosen.get("provider"), temperature=chosen.get("temperature")
         ),
         tuple(item.name for item in tools),
     )
