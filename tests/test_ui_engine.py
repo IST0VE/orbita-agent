@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from starlette.testclient import TestClient
 
-from agent import api, audit_graph, drawio_graph, jira_graph, prep_graph, update_graph
+from agent import api, audit_graph, drawio_graph, jira_graph, nt_graph, prep_graph, update_graph
 from agent import graph as agent_graph
 from agent.pipeline import Stage
 from agent.ui_engine.capabilities import capabilities
@@ -31,7 +31,7 @@ from agent.ui_engine.registry import ManifestNotFound, UiRegistry, registry
 
 
 def test_all_builtin_graphs_have_valid_versioned_manifests():
-    assert registry.graph_ids() == ("agent", "audit", "drawio", "jira", "prep", "update")
+    assert registry.graph_ids() == ("agent", "audit", "drawio", "jira", "nt", "prep", "update")
     for graph_id in registry.graph_ids():
         item = registry.resolve(graph_id)
         assert item.value["schema_version"] == "1.0"
@@ -75,6 +75,7 @@ def test_manifest_nodes_match_the_compiled_graph():
         "audit": audit_graph.graph,
         "drawio": drawio_graph.graph,
         "jira": jira_graph.graph,
+        "nt": nt_graph.graph,
         "prep": prep_graph.graph,
         "update": update_graph.graph,
     }

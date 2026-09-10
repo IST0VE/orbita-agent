@@ -8,7 +8,8 @@
     "drawio": "./src/agent/drawio_graph.py:graph",
     "prep": "./src/agent/prep_graph.py:graph",
     "audit": "./src/agent/audit_graph.py:graph",
-    "update": "./src/agent/update_graph.py:graph"
+    "update": "./src/agent/update_graph.py:graph",
+    "nt": "./src/agent/nt_graph.py:graph"
   },
   "env": ".env",
   "http": {

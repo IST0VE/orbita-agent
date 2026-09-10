@@ -1,0 +1,62 @@
+"""The factual report is rendered by code. LLM contributes labelled hypotheses only."""
+
+import json
+from datetime import UTC, datetime
+
+from agent import confluence
+
+
+def _json(value) -> str:
+    return "```json\n" + json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n```"
+
+
+def render_report(state: dict) -> str:
+    lines = ["# NT Report", "## Task"]
+    for key in ("jira_key", "test_id", "test_status", "environment", "namespace", "target_service", "started_at", "finished_at"):
+        value = state.get(key, "не указано")
+        if key.endswith("_at") and isinstance(value, (int, float)):
+            value = datetime.fromtimestamp(value, UTC).isoformat()
+        lines.append(f"- {key}: {value}")
+    lines.extend(["## Test profile", _json({k: state.get(k) for k in (
+        "target_rps", "duration_seconds", "ramp_up_seconds", "virtual_users", "scenario", "test_type")}),
+        "## Result", state.get("analysis_result", "INCONCLUSIVE"),
+        "Вердикт вычислен кодом по доступным SLA. Проверяются максимумы временных рядов "
+        "за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста.",
+        "## Precheck", _json(state.get("precheck_result", {})), "## SLA"])
+    metrics = state.get("current_metrics", {}).get(state.get("target_service"), {})
+    from agent.nt.thresholds import SLA_FIELDS
+    for field, metric in SLA_FIELDS.items():
+        if state.get(field) is not None:
+            lines.append(f"- {metric}: peak={metrics.get(metric, {}).get('max', 'нет данных')}; "
+                         f"limit={state[field]}; unit={metrics.get(metric, {}).get('unit', 'нет данных')}")
+    lines.append(_json(state.get("threshold_violations", [])))
+    stable = state.get("maximum_stable_rps")
+    lines.extend(["## Maximum stable load", f"{stable} RPS" if stable is not None else "Не установлена.",
+        "Наблюдаемая устойчивая нагрузка: минимум RPS в непрерывном окне соблюдения всех "
+        "заданных SLA. Это нижняя оценка по наблюдениям, а не доказанный предел мощности.",
+        "## Main anomalies", f"Сервисов с данными: {len(state.get('current_metrics', {}))}.",
+        _json([r for r in state.get("ranked_services", []) if r["score"] > 0]),
+        "## Timeline", _json(state.get("timeline", [])), "## Root cause analysis"])
+    hypotheses = state.get("root_cause_hypotheses", [])
+    if not hypotheses:
+        lines.append("unknown: причина не установлена.")
+    for hypothesis in hypotheses:
+        lines.append(f"- Гипотеза ({hypothesis['confidence']}), {hypothesis['service']}: "
+                     f"{hypothesis['description']}\n  Evidence: " + ", ".join(hypothesis["evidence_ids"]))
+    lines.extend(["## Evidence", _json(state.get("evidence", {})),
+        "## Baseline comparison", _json(state.get("baseline_comparison", {})),
+        "## Previous test comparison", _json(state.get("previous_comparison", {})),
+        "## Recommendations"])
+    lines.extend(f"- Предложение LLM, требует проверки: {r}" for r in state.get("recommendations", []))
+    if not state.get("recommendations"):
+        lines.append("Дополнительные рекомендации не сформированы.")
+    lines.extend(["## Unverified assumptions", _json(state.get("missing_parameters", [])),
+        _json(state.get("source_errors", [])),
+        "Precheck относится к данным завершённого теста. Текущие DNS/HTTP/pods не подтверждают "
+        "их состояние в прошлом. Запуск и остановка НТ этим графом не выполнялись.",
+        "## Sources", _json([{k: v for k, v in s.items() if k != "text"}
+                               for s in state.get("context_sources", [])]),
+        _json({"baseline_start": state.get("baseline_start"), "baseline_end": state.get("baseline_end"),
+               "metric_sources": sorted({m["source"] for metrics in state.get("current_metrics", {}).values()
+                                         for m in metrics.values()})})])
+    return confluence.mask_text("\n\n".join(lines))

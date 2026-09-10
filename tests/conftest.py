@@ -49,6 +49,7 @@ _PREFIXES = (
     "POSTGRES_",
     "JIRA_",
     "ATLASSIAN_",
+    "NT_",
 )
 _NAMES = (
     "DEEPSEEK_API_KEY",

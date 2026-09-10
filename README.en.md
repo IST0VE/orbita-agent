@@ -12,7 +12,7 @@ Python · LangGraph · React · Local MVP
 
 Orbita helps analysts turn tasks, files and connected Jira/Confluence sources into requirements, API contracts, architecture documents and implementation tasks. Its web interface shows the graph, stage documents, approvals and estimated model costs.
 
-## Six workflows
+## Seven workflows
 
 | Graph | Purpose |
 | :--- | :--- |
@@ -22,8 +22,9 @@ Orbita helps analysts turn tasks, files and connected Jira/Confluence sources in
 | `audit` | Check a document package for traceability, formal defects and contradictions |
 | `jira` | Turn analysis into backlog and cards; optionally create issues or prepare manual forms |
 | `update` | Propose source-backed replacements, validate them and save a separate revision after approval |
+| `nt` | Analyze completed load tests: baseline, deterministic SLA verdict, anomaly ranking and bounded LLM investigation |
 
-Five workflows share a pipeline builder; `update` has a dedicated graph. Workflows are individually selected, not automatically chained. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian.
+Five workflows share a pipeline builder; `update` and `nt` have dedicated graphs using shared Orbita components. Workflows are individually selected, not automatically chained. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the historical-analysis MVP; live monitoring and test control are later phases.
 
 ## Run the complete local application
 
