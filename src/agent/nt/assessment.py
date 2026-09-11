@@ -17,7 +17,7 @@ def assess(state: dict, settings) -> dict:
     if unseen:
         diagnostics.append("нет исторических метрик компонентов scope: " + ", ".join(unseen[:20]))
     if state.get("source_errors"):
-        diagnostics.append("есть ошибки источников; подробности в разделе Sources")
+        diagnostics.append("есть ошибки источников; подробности в разделе Unverified assumptions")
     incomplete = []
     for service, metrics in state["current_metrics"].items():
         for metric, stats in metrics.items():

@@ -121,7 +121,9 @@ def render_report(state: dict) -> str:
     lines.append("## Previous test comparison")
     if previous:
         lines.extend([_json({k: v for k, v in previous.items() if k not in {"metrics", "descriptive_metrics"}}),
-                      "Различия по всему периоду ниже описательные: они не доказывают регрессию.",
+                      "regressions измерены на сопоставимых ступенях: это наблюдения одинаковой "
+                      "нагрузки в двух прогонах, а не установленная причина. Различия по всему "
+                      "периоду ниже описательные: прогоны держали там разную нагрузку.",
                       *limited(previous.get("descriptive_metrics"), "сервисов прошлого прогона")])
     else:
         lines.append(_json({}))

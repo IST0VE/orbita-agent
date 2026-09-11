@@ -2,6 +2,8 @@
 
 import math
 
+# baseline весит только для прямых вызовов detector API: основной граф сравнивает
+# плато с плато, а разницу с idle baseline держит описательной.
 DEFAULT_WEIGHTS = {"threshold": .6, "baseline": .25, "spike": .2, "trend": .2,
                    "counter_increase": .3, "saturation": .4}
 

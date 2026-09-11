@@ -432,3 +432,62 @@ def test_extreme_numeric_input_produces_precheck_report():
     assert not state["precheck_result"]["success"]
     assert not prom.calls
     assert "target_rps" in state["artifacts"]["report"]
+
+
+def test_matched_plateau_regression_is_citable_evidence():
+    state, old, series = comparison_fixture()
+    result = comparison.compare_run(state, old, series, Settings())
+    assert [(r["metric"], r["percent"]) for r in result["regressions"]] == [("p95", 100.0)]
+    evidence, _ = make_evidence({**state, "previous_comparison": result,
+                                "current_metrics": {"svc-0": {}}}, 5)
+    assert "regression:svc-0:p95" in evidence
+    accepted, _, verdict = hypotheses.validate(
+        {"hypotheses": [{"service": "svc-0", "mechanism": "latency_regression",
+                         "description": "p95 вырос на сопоставимой ступени",
+                         "next_check": "Сверить версии сборки", "evidence_ids": ["regression:svc-0:p95"]}]},
+        {"services": ["svc-0"], "evidence": evidence})
+    assert verdict["status"] == "HYPOTHESES"
+    assert accepted[0]["observations"][0]["percent"] == 100.0
+
+
+def test_noise_and_traffic_at_matched_load_are_not_regressions():
+    state, old, series = comparison_fixture()
+    # Медиана p95 сдвинулась на 10%: сопоставление плато допускает такой разброс RPS.
+    series[1]["values"] = [91] * 10
+    result = comparison.compare_run(state, old, series, Settings())
+    assert result["matched_phases"] and not result["regressions"]
+
+
+def test_whole_period_difference_does_not_validate_a_regression():
+    accepted, _, verdict = hypotheses.validate(
+        {"hypotheses": [{"service": "svc-0", "mechanism": "latency_regression",
+                         "description": "медиана за период выше прошлого прогона",
+                         "next_check": "Сверить версии сборки", "evidence_ids": ["p95"]}]},
+        {"services": ["svc-0"], "evidence": {"p95": {"service": "svc-0", "metric": "p95",
+                                                     "median": 100, "max": 130}}})
+    assert not accepted
+    assert verdict["rejected"]
+
+
+def test_regression_alone_does_not_establish_resource_saturation():
+    evidence = {"regression:svc-0:cpu": {"service": "svc-0", "metric": "cpu", "kind": "regression",
+                                         "baseline": .2, "current": .4, "percent": 100.0}}
+    accepted, _, _ = hypotheses.validate(
+        {"hypotheses": [{"service": "svc-0", "mechanism": "cpu_saturation",
+                         "description": "CPU вырос вдвое на той же ступени",
+                         "next_check": "Снять профиль", "evidence_ids": ["regression:svc-0:cpu"]}]},
+        {"services": ["svc-0"], "evidence": evidence})
+    assert not accepted
+
+
+def test_repeated_regression_collapses_to_worst_plateau_without_losing_steps():
+    matched = [{"service": "svc-0", "current_start": 10, "current_rps": 500, "previous_rps": 500,
+                "metrics": {"p95": {"baseline": 100., "current": 130., "absolute": 30., "percent": 30.}}},
+               {"service": "svc-0", "current_start": 200, "current_rps": 1000, "previous_rps": 1000,
+                "metrics": {"p95": {"baseline": 100., "current": 190., "absolute": 90., "percent": 90.},
+                            "rps": {"baseline": 500., "current": 1000., "absolute": 500., "percent": 100.},
+                            "hit_rate": {"baseline": .9, "current": .5, "absolute": -.4, "percent": -44.}}}]
+    found = comparison.regressions(matched)
+    assert [(r["metric"], r["percent"], r["plateaus"]) for r in found] == [("hit_rate", -44., 1),
+                                                                          ("p95", 90., 2)]
+    assert found[1]["current_rps"] == 1000

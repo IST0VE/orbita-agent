@@ -1,12 +1,46 @@
 """Require comparable workload/configuration and match measured load plateaus."""
 
 from agent.nt import baseline, phases, thresholds
+from agent.nt.anomaly_detector import LOWER_IS_WORSE, TRAFFIC_METRICS
 from agent.nt.models import window
+
+# Совпадение плато допускает разброс RPS, поэтому мелкий сдвиг медианы на нём
+# неотличим от шума соседней нагрузки. Порог относительный и общий для метрик:
+# семантику конкретного exporter он не знает и знать не должен.
+REGRESSION_RELATIVE = .25
+
+
+def regressions(matched: list[dict]) -> list[dict]:
+    """Ухудшившиеся медианы на сопоставимой ступени — наблюдения, а не причины.
+
+    Это единственное измеренное сравнение «та же нагрузка, другой прогон», и
+    гипотеза вправе на него ссылаться. Трафик исключён: по нему ступени и
+    сопоставлялись.
+    """
+    found = {}
+    for phase in matched:
+        for metric, delta in sorted(phase["metrics"].items()):
+            direction = -1 if metric in LOWER_IS_WORSE else 1
+            if metric in TRAFFIC_METRICS or delta["percent"] is None:
+                continue
+            if direction * delta["percent"] < REGRESSION_RELATIVE * 100:
+                continue
+            key = (phase["service"], metric)
+            worst = found.get(key)
+            plateaus = (worst["plateaus"] if worst else 0) + 1
+            if worst is None or direction * delta["percent"] > direction * worst["percent"]:
+                worst = {"service": phase["service"], "metric": metric, "kind": "regression",
+                         "phase_start": phase["current_start"], "current_rps": phase["current_rps"],
+                         "previous_rps": phase["previous_rps"], **delta}
+            # Улика на метрику одна, иначе ступени затрут друг друга по ключу:
+            # берём худшую и считаем, на скольких ступенях ухудшение повторилось.
+            found[key] = {**worst, "plateaus": plateaus}
+    return [found[key] for key in sorted(found)]
 
 
 def compare_run(state: dict, metadata: dict, series: list[dict], settings) -> dict:
     result = {"test_id": state["previous_test_id"], "status": "NOT_COMPARABLE", "metrics": {},
-              "matched_phases": [], "limitations": [],
+              "matched_phases": [], "regressions": [], "limitations": [],
               "descriptive_metrics": baseline.compare(state["current_metrics"], baseline.summarize(series))}
     for field in ("environment", "namespace", "target_service", "environment_fingerprint"):
         if not state.get(field) or not metadata.get(field) or state[field] != metadata[field]:
@@ -31,6 +65,7 @@ def compare_run(state: dict, metadata: dict, series: list[dict], settings) -> di
         return result
     matched = phases.compare(current, previous, service=state["target_service"], tolerance=settings.plateau_tolerance)
     result.update(matched)
+    result["regressions"] = regressions(result["matched_phases"])
     if not matched["matched_phases"]:
         result["limitations"].append(matched["reason"])
     now_phases = [p for p in current.get("phases", []) if p["kind"] == "plateau"]

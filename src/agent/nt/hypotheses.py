@@ -3,6 +3,8 @@
 These rules support investigation directions; they never certify causality.
 Context text, live Kubernetes and unverified composed-query units cannot prove
 historical resource saturation. Model explanations remain explicitly unverified.
+A regression measured at a matched plateau counts as an observation; a whole-run
+median difference does not, because the runs held different load there.
 """
 
 from agent import confluence
@@ -40,7 +42,8 @@ def _supports(observation: dict, mechanism: str) -> bool:
     if limit is not None:
         # A rise from 10% to 20% CPU is a spike, but is not saturation.
         return max(observation.get("max", -1), observation.get("peak", -1)) >= limit
-    if observation.get("kind") in {"saturation", "counter_increase", "trend", "spike", "baseline"}:
+    if observation.get("kind") in {"saturation", "counter_increase", "trend", "spike", "baseline",
+                                   "regression"}:
         return True
     # Threshold violations are computed from samples, not model assertions.
     if "first_at" in observation and "limit" in observation and "peak" in observation:
@@ -85,7 +88,8 @@ def validate(data: object, state: dict) -> tuple[list[dict], list[str], dict]:
             "next_check": confluence.mask_text(item["next_check"][:1000]),
             "evidence_ids": refs, "counter_evidence_ids": counters,
             "observations": [{"evidence_id": ref, "metric": o["metric"],
-                              **{k: o[k] for k in ("max", "peak", "limit", "first_at", "kind") if k in o}}
+                              **{k: o[k] for k in ("max", "peak", "limit", "first_at", "kind",
+                                                   "percent") if k in o}}
                              for ref, o in supported][:10],
             "validation": "observations_supported" if supported else "unverified",
             "causality": "not_established"})

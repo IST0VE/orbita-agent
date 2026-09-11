@@ -34,17 +34,6 @@ def baseline_gaps(metrics: dict, service: str, names: list[str], start: float,
     return gaps
 
 
-def stable_load(series: list[dict], service: str, limits: dict, step: int,
-                stable_seconds: int = 60) -> float | None:
-    """Highest minimum RPS over a contiguous sustained SLA-compliant window.
-
-This is an observed lower bound, not a capacity claim or a single good sample.
-"""
-    from agent.nt.phases import analyze
-    return analyze(series, service, limits, step, stable_seconds=stable_seconds,
-                   settling_seconds=0)["maximum_stable_rps"]
-
-
 def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
     ranked = [r for r in state.get("ranked_services", []) if r["score"] > 0][:top_n]
     selected = {r["service"] for r in ranked}
@@ -58,6 +47,11 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
     for index, finding in enumerate(state.get("threshold_violations", []) + state.get("anomalies", [])):
         if finding["service"] == target:
             evidence[f"finding:{index}"] = finding
+    # Измеренное сравнение на сопоставимой ступени; без идентификатора гипотеза
+    # о регрессии не смогла бы сослаться ни на что.
+    for item in (state.get("previous_comparison") or {}).get("regressions", []):
+        if item["service"] in selected:
+            evidence[f"regression:{item['service']}:{item['metric']}"] = item
     for service in sorted(selected, key=lambda s: (s != target, s)):
         metrics = state.get("current_metrics", {}).get(service, {})
         for metric, stats in sorted(metrics.items()):

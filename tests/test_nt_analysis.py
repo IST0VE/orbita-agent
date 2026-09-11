@@ -7,7 +7,7 @@ import pytest
 from agent.nt.anomaly_detector import correlations, detect
 from agent.nt.baseline import compare, deviation, statistics, summarize
 from agent.nt.context import explicit_fields, validated_extraction
-from agent.nt.metrics_analyzer import coverage_gaps, stable_load
+from agent.nt.metrics_analyzer import coverage_gaps
 from agent.nt.models import MetricSeries, timestamp, window
 from agent.nt.policy import Risk, allowed, risk_of
 from agent.nt.ranking import rank_services
@@ -105,14 +105,6 @@ def test_coverage_rejects_sparse_and_missing_points():
     assert coverage_gaps([series(values=[1] * 10)], "orders", ["cpu"], 0, 10, 1) == []
     assert coverage_gaps([series(values=[1] * 3)], "orders", ["cpu"], 0, 10, 1)
     assert coverage_gaps([], "orders", ["cpu"], 0, 10, 1)
-
-
-def test_stable_load_requires_sustained_aligned_compliance():
-    data = [series("rps", [100, 100, 100, 200, 200, 200], times=[0, 30, 60, 90, 120, 150]),
-            series("p95", [10, 10, 10, 10, 100, 10], times=[0, 30, 60, 90, 120, 150])]
-    assert stable_load(data, "orders", {"p95": 50}, 30) == 100
-    assert stable_load(data, "orders", {"p95": 50, "error_rate": .01}, 30) is None
-    assert stable_load(data, "orders", {}, 30) is None
 
 
 @pytest.mark.parametrize(("state", "expected"), [

@@ -130,7 +130,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             update.update(max_iterations=limits.max_iterations, global_timeout_seconds=limits.timeout_seconds,
                           deadline_at=time.time() + limits.timeout_seconds)
             update["analysis_policy"] = {
-                "version": "nt-analysis-v2", "step_seconds": limits.step,
+                "version": "nt-analysis-v3", "step_seconds": limits.step,
                 "settling_seconds": limits.settling_seconds, "stable_seconds": limits.stable_seconds,
                 "plateau_tolerance": limits.plateau_tolerance, "tool_approval": limits.tool_approval,
                 "query_map_sha256": hashlib.sha256(json.dumps(limits.queries, sort_keys=True).encode()).hexdigest(),
@@ -522,9 +522,9 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 data = json.loads(text)
             except (ValueError, TypeError):
                 data = None
-        accepted, recommendations, assessment = hypotheses.validate(data, state)
+        accepted, recommendations, verdict = hypotheses.validate(data, state)
         return {"root_cause_hypotheses": accepted, "recommendations": recommendations,
-                "hypothesis_assessment": assessment, "stage": "final_analysis"}
+                "hypothesis_assessment": verdict, "stage": "final_analysis"}
 
     def compare_baseline(state: State) -> dict:
         previous_id = state.get("previous_test_id")
