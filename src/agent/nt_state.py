@@ -6,6 +6,17 @@ from agent.state import State as CommonState
 
 
 class State(CommonState, total=False):
+    requested_inputs: dict
+    resolved_inputs: dict
+    diagnostic_status: str
+    diagnostic_gaps: list[str]
+    load_phases: list[dict]
+    capacity_assessment: dict
+    hypothesis_assessment: dict
+    current_inventory: list[str]
+    gateway_test_id: str
+    analysis_policy: dict
+    analysis_question: str
     jira_key: str
     task_description: str
     environment: str
@@ -18,11 +29,14 @@ class State(CommonState, total=False):
     ramp_up_seconds: int | None
     virtual_users: int | None
     scenario: str
+    environment_fingerprint: str
+    workload_fingerprint: str
     sla_p95_ms: float | None
     sla_p99_ms: float | None
     sla_error_rate: float | None
     sla_max_cpu: float | None
     sla_max_memory: float | None
+    sla_comparators: dict
     services: list[str]
     dependencies: list[dict]
     databases: list[str]

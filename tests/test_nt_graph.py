@@ -83,7 +83,8 @@ def test_25_services_ranked_without_raw_datapoints_to_llm():
     assert len(summary["top_services"]) <= 5
     assert "timestamps" not in str(summary)
     assert "svc-24" not in str(summary)
-    assert state["maximum_stable_rps"] == 1000
+    # A plateau that degrades later cannot establish sustained capacity.
+    assert state["maximum_stable_rps"] is None
     assert "FAILED" in state["artifacts"]["report"]
     assert state["usage"]["calls"] == 1
 
@@ -96,9 +97,10 @@ def test_sequential_tools_then_evidence_backed_hypothesis():
         AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
                   "args": {"metric": "p95", "service": "svc-0"}, "id": "p95-read"}]),
         AIMessage(content=json.dumps({"hypotheses": [{"service": "svc-0", "confidence": "likely",
-            "description": "Возможное насыщение CPU", "evidence_ids": ["tool:cpu-read", "tool:p95-read"]}],
+            "description": "Возможное насыщение CPU", "mechanism": "cpu_saturation",
+            "next_check": "Проверить профиль CPU и троттлинг", "evidence_ids": ["tool:cpu-read", "tool:p95-read"]}],
             "recommendations": ["Проверить профиль CPU"]})))
-    assert state["root_cause_hypotheses"][0]["confidence"] == "likely"
+    assert state["root_cause_hypotheses"][0]["confidence"] == "possible"
     assert "tool:cpu-read" in state["evidence"]
     assert state["iteration"] == 3
     assert state["usage"]["calls"] == 3
@@ -423,7 +425,7 @@ def test_malformed_input_produces_a_report_instead_of_crashing(field, value):
     assert not prom.calls
 
 
-def test_sparse_baseline_cannot_pass(monkeypatch):
+def test_sparse_baseline_limits_diagnosis_but_not_complete_sla(monkeypatch):
     sources, prom = setup_source(anomaly=False)
     original = prom.range_query
     def sparse(query, start, end, step, **kwargs):
@@ -435,8 +437,9 @@ def test_sparse_baseline_cannot_pass(monkeypatch):
         return result
     monkeypatch.setattr(prom, "range_query", sparse)
     state = run(sources, AIMessage(content="{}"))
-    assert state["analysis_result"] == "INCONCLUSIVE"
-    assert any("неполный baseline" in m for m in state["missing_parameters"])
+    assert state["analysis_result"] == "PASSED"
+    assert state["diagnostic_status"] == "PARTIAL"
+    assert any("неполный baseline" in m for m in state["diagnostic_gaps"])
 
 
 def test_partial_prometheus_cannot_pass(monkeypatch):
@@ -456,13 +459,13 @@ def test_previous_test_comparison_uses_actual_metrics():
             return {"success": True, "data": {**INPUT, "test_id": test_id,
                 "started_at": START - 3600 if test_id == "previous" else START,
                 "finished_at": END - 3600 if test_id == "previous" else END,
-                "scenario": "checkout", "test_status": "completed"}}
+                "scenario": "checkout", "environment_fingerprint": "resources-v1", "test_status": "completed"}}
     sources.load_testing = Gateway()
-    state = run(sources, AIMessage(content="{}"), extra={"previous_test_id": "previous", "scenario": "checkout"})
+    state = run(sources, AIMessage(content="{}"), extra={"previous_test_id": "previous", "scenario": "checkout", "environment_fingerprint": "resources-v1"})
     comparison = state["previous_comparison"]
     assert comparison["test_id"] == "previous"
     assert comparison["stable_rps"]["percent"] == 0
-    assert comparison["metrics"]["svc-0"]["p95"]["percent"] == 0
+    assert comparison["matched_phases"][0]["metrics"]["p95"]["percent"] == 0
 
 
 def test_previous_run_regression_reaches_the_investigation_brief():
@@ -473,10 +476,10 @@ def test_previous_run_regression_reaches_the_investigation_brief():
             return {"success": True, "data": {**INPUT, "test_id": test_id,
                 "started_at": START - 3600 if test_id == "previous" else START,
                 "finished_at": END - 3600 if test_id == "previous" else END,
-                "scenario": "checkout", "test_status": "completed"}}
+                "scenario": "checkout", "environment_fingerprint": "resources-v1", "test_status": "completed"}}
     sources.load_testing = Gateway()
     state = run(sources, AIMessage(content="{}"),
-                extra={"previous_test_id": "previous", "scenario": "checkout"})
+                extra={"previous_test_id": "previous", "scenario": "checkout", "environment_fingerprint": "resources-v1"})
     brief = json.loads(state["investigation_history"][0].content)
     assert brief["previous_comparison"]["test_id"] == "previous"
     assert brief["previous_comparison"]["stable_rps"]["percent"] == 0
@@ -525,7 +528,8 @@ def paused(sources, *answers, thread="nt-composed"):
 def test_composed_query_waits_for_the_operator_and_then_runs():
     sources, prom = composed_source()
     hypothesis = AIMessage(content=json.dumps({"hypotheses": [{"service": "svc-0",
-        "confidence": "possible", "description": "Паузы GC", "evidence_ids": ["tool:composed-1"]}],
+        "confidence": "possible", "description": "Паузы GC", "mechanism": "unknown",
+        "next_check": "Сверить GC logs за период теста", "evidence_ids": ["tool:composed-1"]}],
         "recommendations": []}))
     app, config, state = paused(sources, composed_call(), hypothesis)
     payload = state["__interrupt__"][0].value
@@ -538,7 +542,7 @@ def test_composed_query_waits_for_the_operator_and_then_runs():
     evidence = final["evidence"]["tool:composed-1"]
     assert evidence["origin"] == "model_query" and evidence["query"] == COMPOSED
     assert "## Composed queries" in final["artifacts"]["report"]
-    assert final["root_cause_hypotheses"][0]["confidence"] == "possible"
+    assert final["root_cause_hypotheses"][0]["confidence"] == "unknown"
 
 
 def test_rejected_composed_query_never_reaches_prometheus():

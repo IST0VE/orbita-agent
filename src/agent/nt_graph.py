@@ -5,11 +5,12 @@ START -> context -> load_context -> understand_task -> discover_scope -> prechec
   -> evaluate_test -> investigate <-> additional_tools -> final_analysis
   -> report -> remember -> approve -> publish -> END
 
-Missing inputs go directly to report. This MVP never starts or stops a test.
+Missing inputs go directly to report. This graph never starts or stops a test.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -27,8 +28,14 @@ from langgraph.types import interrupt
 from agent import confluence, jira, nodes, nt_roles
 from agent.nt import (
     anomaly_detector,
+    assessment,
     baseline,
+    comparison,
+    hypotheses,
+    input_state,
+    metadata,
     metrics_analyzer,
+    phases,
     query_guard,
     ranking,
     thresholds,
@@ -42,7 +49,7 @@ from agent.nt.context import (
     validated_extraction,
 )
 from agent.nt.metric_profiles import PROFILES
-from agent.nt.models import failure, timestamp, window
+from agent.nt.models import failure, window
 from agent.nt.report import render_report
 from agent.nt.settings import Settings, load_settings
 from agent.nt_state import State
@@ -91,30 +98,44 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     understand_pipeline = replace(PIPELINE, roles=(nt_roles.UNDERSTAND,))
     understand_role = nodes.make_role_node(nt_roles.UNDERSTAND, llm=llm, pipeline=understand_pipeline)
     investigate_role = nodes.make_role_node(nt_roles.INVESTIGATE, llm=llm, pipeline=research_pipeline)
+    finish_role = replace(nt_roles.INVESTIGATE, reads_files=False)
+    finish_pipeline = replace(PIPELINE, roles=(finish_role,), tools=(),
+        prompt_for=lambda key: PIPELINE.prompt_for(key) + "\nЭто последний ход. Инструменты недоступны. Верни итоговый JSON по собранным уликам.")
+    finish_investigation = nodes.make_role_node(finish_role, llm=llm, pipeline=finish_pipeline)
     tool_node = ToolNode(toolset, messages_key="investigation_history",
                          handle_tool_errors=lambda exc: _json(failure("TOOL_ERROR", "invalid tool request")))
 
     def load_context(state: State, config: RunnableConfig) -> dict:
         task = state.get("task", "")
-        update = {"run_id": str(uuid.uuid4()), "iteration": 0, "investigation_history": [],
+        update = {**{key: None for key in INPUT_FIELDS},
+            "run_id": str(uuid.uuid4()), "iteration": 0, "investigation_history": [],
             "root_cause_hypotheses": [], "recommendations": [], "missing_parameters": [],
             "source_errors": [], "context_sources": [], "metric_snapshots": [], "baseline_metrics": {},
             "current_metrics": {}, "anomalies": [], "threshold_violations": [], "ranked_services": [],
             "timeline": [], "evidence": {}, "baseline_comparison": {}, "previous_comparison": {},
-            "llm_summary": {}, "correlations": [], "tool_approval": {},
+            "llm_summary": {}, "correlations": [], "tool_approval": {}, "stop_reason": "",
+            "diagnostic_status": "NOT_RUN", "diagnostic_gaps": [], "load_phases": [],
+            "gateway_test_id": "", "deadline_at": 0,
+            "capacity_assessment": {}, "hypothesis_assessment": {}, "current_inventory": [],
+            "analysis_policy": {},
             "maximum_stable_rps": None, "analysis_result": "INCONCLUSIVE", "precheck_result": {},
             "artifacts": {"report": "", "investigate": "", "understand_task": ""},
             "stage": "load_context"}
-        explicit = {**explicit_fields(task), **{k: state[k] for k in INPUT_FIELDS if k in state},
-                    **{k: v for k, v in options(config).items() if k in INPUT_FIELDS}}
-        explicit, input_errors = validate_fields(explicit)
-        # Explicitly clear malformed values inherited from the unvalidated input state.
-        update.update({k: None for k in INPUT_FIELDS if k in state and k not in explicit})
+        explicit, input_errors = input_state.request_inputs(state, options(config))
+        update["requested_inputs"] = dict(explicit)
+        update["analysis_question"] = input_state.question_for(state, explicit)
         update["missing_parameters"].extend(input_errors)
         try:
             limits = settings_for()
             update.update(max_iterations=limits.max_iterations, global_timeout_seconds=limits.timeout_seconds,
                           deadline_at=time.time() + limits.timeout_seconds)
+            update["analysis_policy"] = {
+                "version": "nt-analysis-v2", "step_seconds": limits.step,
+                "settling_seconds": limits.settling_seconds, "stable_seconds": limits.stable_seconds,
+                "plateau_tolerance": limits.plateau_tolerance, "tool_approval": limits.tool_approval,
+                "query_map_sha256": hashlib.sha256(json.dumps(limits.queries, sort_keys=True).encode()).hexdigest(),
+                "sla_semantics": "maximum of service time series; explicit comparator, inclusive by default",
+            }
             backend = sources_for()
         except (ValueError, TypeError, KeyError):
             update.update(explicit)
@@ -127,6 +148,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         contexts = [{"kind": "input", "id": "operator", "text": confluence.mask_text(task[:12000])}]
         if key:
             explicit["jira_key"] = key
+            update["requested_inputs"]["jira_key"] = key
             try:
                 issue = jira.fetch_issue(key)
                 text = confluence.mask_text(jira.format_issue(issue)[:12000])
@@ -167,35 +189,12 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         extracted.update(explicit)
         extracted, input_errors = validate_fields(extracted)
         update["missing_parameters"].extend(input_errors)
-        if backend.load_testing and extracted.get("test_id"):
-            try:
-                result = backend.load_testing.get_test_results(extracted["test_id"])
-            except Exception:
-                result = failure("LOAD_TESTING_UNAVAILABLE", "test metadata unavailable")
-            if result.get("success"):
-                update["missing_parameters"].extend(result.get("missing_parameters", []))
-                update["source_errors"].extend(result.get("errors", []))
-                data = result["data"]
-                if data.get("test_id", extracted["test_id"]) != extracted["test_id"]:
-                    update["missing_parameters"].append("gateway вернул другой test_id")
-                else:
-                    for field, value in data.items():
-                        if field in INPUT_FIELDS:
-                            if field in extracted and field in {"started_at", "finished_at"}:
-                                try:
-                                    same = timestamp(extracted[field]) == timestamp(value)
-                                except ValueError:
-                                    same = False
-                                if not same:
-                                    update["missing_parameters"].append(f"период теста противоречит gateway: {field}")
-                            extracted.setdefault(field, value)
-                    # The gateway status is authoritative, including when state
-                    # still contains a default from an earlier failed precheck.
-                    if data.get("test_status") is not None:
-                        extracted["test_status"] = data["test_status"]
-                    contexts.append({"kind": "load_testing", "id": extracted["test_id"], "text": _json(data)})
-            else:
-                update["source_errors"].append(result)
+        extracted, missing, errors, card = metadata.hydrate(backend.load_testing, extracted)
+        update["missing_parameters"].extend(missing)
+        update["source_errors"].extend(errors)
+        update["gateway_test_id"] = extracted.get("test_id") or ""
+        if card is not None:
+            contexts.append({"kind": "load_testing", "id": extracted["test_id"], "text": _json(card)})
         extracted, input_errors = validate_fields(extracted)
         update["missing_parameters"].extend(input_errors)
         update.update(extracted)
@@ -213,8 +212,22 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             result = understand_role({**state, "task": state.get("task_description", "")}, config)
             response = result["messages"][-1]
             values = validated_extraction(nodes.text_of(response), state.get("task_description", ""))
-            return {**{k: v for k, v in values.items() if not state.get(k)},
-                    "usage": result["usage"], "cost": result["cost"], "stage": "understand_task"}
+            update = {**{k: v for k, v in values.items() if not state.get(k)},
+                      "usage": result["usage"], "cost": result["cost"], "stage": "understand_task"}
+            update["requested_inputs"] = {**state.get("requested_inputs", {}),
+                                          **{k: v for k, v in values.items() if not state.get(k)}}
+            resolved, invalid = validate_fields({k: v for k, v in {**state, **update}.items() if k in INPUT_FIELDS})
+            update["missing_parameters"] = [*state.get("missing_parameters", []), *invalid]
+            if resolved.get("test_id") and resolved["test_id"] != state.get("gateway_test_id"):
+                resolved, missing, errors, card = metadata.hydrate(sources_for().load_testing, resolved)
+                update.update(resolved)
+                update["gateway_test_id"] = resolved["test_id"]
+                update["missing_parameters"].extend(missing)
+                update["source_errors"] = [*state.get("source_errors", []), *errors]
+                if card is not None:
+                    update["context_sources"] = [*state.get("context_sources", []),
+                        {"kind": "load_testing", "id": resolved["test_id"], "text": _json(card)}]
+            return update
         except Exception:
             return {"stage": "understand_task", "source_errors": _error(state, "LLM_UNAVAILABLE",
                                                                            "context extraction unavailable")}
@@ -240,18 +253,20 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     names.add(name)
         if isinstance(state.get("target_service"), str):
             names.add(state["target_service"])
+        inventory = []
         if not explicit_scope and state.get("namespace"):
             try:
                 backend = sources_for().kubernetes
                 if backend:
                     result = backend.get_deployments(state["namespace"])
                     if result["success"]:
-                        names.update(r["service"] for r in result["data"])
+                        inventory = sorted({r["service"] for r in result["data"]})
             except Exception:
                 pass  # Historical telemetry remains the namespace discovery fallback.
         if len(names) > 500 or len(dependencies) > 500:
             missing.append("scope превышает лимит 500 компонентов/связей")
         return {"services": sorted(names)[:500], "scope_explicit": explicit_scope,
+                "current_inventory": inventory,
                 "dependencies": dependencies[:500], "component_profiles": profiles,
                 "missing_parameters": missing, "stage": "discover_scope"}
 
@@ -278,7 +293,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         except (ValueError, TypeError, OverflowError):
             missing.append("неверные SLA или числовые параметры НТ")
         if state.get("test_status") == "running":
-            missing.append("MVP 1 анализирует только завершённые тесты")
+            missing.append("Анализируются только завершённые тесты")
         try:
             # These checks are independent: missing dates must not hide an empty
             # metric query map or missing SLA from the operator.
@@ -302,9 +317,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 missing.append("неверный период теста или baseline")
             checks.append({"name": "historical_window", "success": False})
         checks.append({"name": "required_parameters", "success": not missing, "missing": missing})
-        return {**update, "precheck_result": {"success": not missing, "checks": checks},
+        update = {**update, "precheck_result": {"success": not missing, "checks": checks},
                 "missing_parameters": list(dict.fromkeys(missing)), "stage": "precheck",
                 "test_status": state.get("test_status") or ("completed" if not missing else "not_started")}
+        return {**update, "resolved_inputs": input_state.snapshot(state, update)}
 
     def collect_baseline(state: State) -> dict:
         result = sources_for().collect(state, state["baseline_start"], state["baseline_end"])
@@ -323,8 +339,15 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
 
     def detect_anomalies(state: State) -> dict:
         series = state["metric_snapshots"]
-        violations = thresholds.violations(series, {state["target_service"]: thresholds.limits_from(state)})
-        anomalies = anomaly_detector.detect(series, state["baseline_metrics"])
+        settings = settings_for()
+        capacity = phases.analyze(series, state["target_service"], thresholds.limits_from(state), settings.step,
+            stable_seconds=settings.stable_seconds, settling_seconds=settings.settling_seconds,
+            tolerance=settings.plateau_tolerance,
+            comparators=state.get("sla_comparators"),
+            warmup_until=state["started_at"] + (state.get("ramp_up_seconds") or 0))
+        violations = thresholds.violations(series, {state["target_service"]: thresholds.limits_from(state)},
+                                            comparators=state.get("sla_comparators"))
+        anomalies = anomaly_detector.detect(series, state["baseline_metrics"], load_phases=capacity["phases"])
         ranked = ranking.rank_services(state["services"], anomalies, violations,
                                        weights=settings_for().anomaly_weights or None)
         timeline = [{"at": state["started_at"], "event": "test period started"},
@@ -332,50 +355,16 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         timeline.extend({"at": v["first_at"], "event": v.get("kind", "sla_violation"),
                          "service": v["service"], "metric": v["metric"]} for v in violations + anomalies)
         return {"threshold_violations": violations, "anomalies": anomalies, "ranked_services": ranked,
-                "correlations": anomaly_detector.correlations(series),
+                "capacity_assessment": capacity, "load_phases": capacity["phases"],
+                "correlations": anomaly_detector.correlations(series, load_phases=capacity["phases"]),
                 "baseline_comparison": baseline.compare(state["current_metrics"], state["baseline_metrics"]),
                 "timeline": sorted(timeline, key=lambda e: (e["at"], e["event"])), "stage": "detect_anomalies"}
 
     def evaluate_test(state: State) -> dict:
-        limits = thresholds.limits_from(state)
-        missing = list(state.get("missing_parameters", []))
         settings = settings_for()
-        missing.extend(metrics_analyzer.coverage_gaps(state["metric_snapshots"], state["target_service"],
-            list(limits), state["started_at"], state["finished_at"], settings.step))
-        if not state.get("baseline_metrics"):
-            missing.append("baseline не получен")
-        missing.extend(metrics_analyzer.baseline_gaps(state.get("baseline_metrics", {}), state["target_service"],
-            list(limits), state["baseline_start"], state["baseline_end"], settings.step))
-        unseen = sorted(set(state["services"]) - state["current_metrics"].keys())
-        if unseen:
-            missing.append("нет метрик компонентов scope: " + ", ".join(unseen[:20]))
-        verdict = thresholds.verdict(state["threshold_violations"], missing,
-            completed=state.get("test_status") == "completed", has_sla=bool(limits))
-        update = {"analysis_result": verdict, "missing_parameters": list(dict.fromkeys(missing)),
-            "maximum_stable_rps": metrics_analyzer.stable_load(state["metric_snapshots"],
-                state["target_service"], limits, settings.step, settings.stable_seconds), "stage": "evaluate_test"}
-        # Устойчивую нагрузку считает этот узел, он же сравнивает её с прошлым
-        # прогоном — до того, как бриф уйдёт модели.
-        previous = dict(state.get("previous_comparison") or {})
-        if previous.get("previous_stable_rps") is not None and update["maximum_stable_rps"] is not None:
-            previous["stable_rps"] = baseline.deviation(update["maximum_stable_rps"],
-                                                        previous.pop("previous_stable_rps"))
-            update["previous_comparison"] = previous
+        update = {**assessment.assess(state, settings), "stage": "evaluate_test"}
         evidence, summary = metrics_analyzer.make_evidence({**state, **update}, settings.top_n)
-        # Bound the serialized input independently of datapoint and service limits.
-        # Улики — то, на что обязана ссылаться гипотеза, и пустой их список
-        # выключает исследование целиком. Поэтому первым уходит контекст.
-        for field in ("timeline", "correlations", "previous_comparison", "baseline_comparison",
-                      "dependencies"):
-            if len(_json(summary)) <= 48000:
-                break
-            summary[field] = "omitted: LLM context capped"
-        while len(_json(summary)) > 48000 and len(evidence) > 1:
-            evidence.pop(next(reversed(evidence)))
-            summary["evidence"] = evidence
-        if len(_json(summary)) > 48000:
-            summary = {"task": summary["task"], "result": verdict, "evidence": evidence,
-                       "limitations": ["LLM context capped; see deterministic report"]}
+        summary = metrics_analyzer.compact_summary(summary)
         # Этот узел — последний потребитель сырых точек: дальше идут агрегаты,
         # улики и отчёт. Мегабайты рядов после вердикта только переливаются
         # в каждый кадр потока состояния и в каждый чекпоинт.
@@ -401,14 +390,26 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     "source_errors": _error(state, "INVESTIGATION_SKIPPED", "no evidence, budget or iteration/time limit")}
         history = history or [HumanMessage(content=_json(state["llm_summary"]))]
         try:
-            result = investigate_role({**state, "messages": history}, config)
+            final_turn = state.get("iteration", 0) + 1 >= state.get("max_iterations", 4)
+            if final_turn:
+                # The final call has no tools and uses the complete bounded evidence
+                # ledger, including results collected after the initial brief.
+                final_input = metrics_analyzer.compact_summary({**state["llm_summary"], "evidence": state.get("evidence", {})})
+                result = finish_investigation({**state, "task": _json(final_input), "messages": history}, config)
+            else:
+                result = investigate_role({**state, "messages": history}, config)
             response = result["messages"][-1]
+            final_empty = final_turn and not nodes.text_of(response).strip()
+            if final_empty:
+                response = response.model_copy(update={"content": "{}"})
             calls = getattr(response, "tool_calls", [])
             # Do not silently drop extra calls: remove the whole invalid request and stop research.
             if len(calls) > 3:
                 response = nodes.without_tool_calls(response)
                 response = response.model_copy(update={"content": "{}"})
             return {"usage": result["usage"], "cost": result["cost"], "stage": "investigate",
+                    "stop_reason": "investigation_limit" if final_empty else "",
+                    "source_errors": _error(state, "INVESTIGATION_SKIPPED", "last turn must return a final response") if final_empty else state.get("source_errors", []),
                     "investigation_history": [*history, response], "iteration": state.get("iteration", 0) + 1}
         except Exception:
             return {"investigation_history": settled(history), "stop_reason": "investigation_error",
@@ -514,24 +515,16 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
 
     def final_analysis(state: State) -> dict:
         history = state.get("investigation_history", [])
-        hypotheses, recommendations = [], []
+        data = {}
         if history and isinstance(history[-1], AIMessage):
             try:
                 text = nodes.text_of(history[-1]).strip().removeprefix("```json").removesuffix("```").strip()
                 data = json.loads(text)
-                for item in data.get("hypotheses", [])[:5]:
-                    refs = item.get("evidence_ids", [])
-                    if (item.get("service") in state.get("services", [])
-                            and item.get("confidence") in {"likely", "possible", "unknown"}
-                            and isinstance(item.get("description"), str) and isinstance(refs, list)
-                            and refs and all(isinstance(r, str) and r in state.get("evidence", {}) for r in refs)):
-                        hypotheses.append({"service": item["service"], "confidence": item["confidence"],
-                            "description": confluence.mask_text(item["description"][:1500]), "evidence_ids": refs[:10]})
-                recommendations = [confluence.mask_text(r[:1000]) for r in data.get("recommendations", [])[:10]
-                                   if isinstance(r, str)]
-            except (ValueError, TypeError, AttributeError):
-                pass
-        return {"root_cause_hypotheses": hypotheses, "recommendations": recommendations, "stage": "final_analysis"}
+            except (ValueError, TypeError):
+                data = None
+        accepted, recommendations, assessment = hypotheses.validate(data, state)
+        return {"root_cause_hypotheses": accepted, "recommendations": recommendations,
+                "hypothesis_assessment": assessment, "stage": "final_analysis"}
 
     def compare_baseline(state: State) -> dict:
         previous_id = state.get("previous_test_id")
@@ -543,26 +536,16 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             data = result.get("data", {})
             if not result.get("success") or data.get("test_status") != "completed":
                 raise ValueError("previous test unavailable")
-            # Контур обязан совпадать. Сценарий — нет: прогоны регрессии
-            # именуются по своей ступени, и именно разный профиль нагрузки
-            # делает сравнение устойчивой нагрузки осмысленным.
+            start, end = window(data["started_at"], data["finished_at"], max_seconds=settings_for().max_window)
             for key in ("environment", "namespace", "target_service"):
                 if not data.get(key) or data[key] != state.get(key):
-                    raise ValueError("previous test is not comparable")
-            start, end = window(data["started_at"], data["finished_at"], max_seconds=settings_for().max_window)
+                    return {"previous_comparison": {"test_id": previous_id, "status": "NOT_COMPARABLE",
+                        "limitations": [f"контуры не совпадают: {key}"]}, "stage": "compare_baseline"}
             previous = backend.collect(state, start, end)
+            payload = comparison.compare_run(state, data, previous["series"], settings_for())
             if previous["errors"]:
-                raise ValueError("incomplete previous test")
-            comparison = baseline.compare(state["current_metrics"], baseline.summarize(previous["series"]))
-            stable = metrics_analyzer.stable_load(previous["series"], state["target_service"],
-                thresholds.limits_from(state), settings_for().step, settings_for().stable_seconds)
-            payload = {"test_id": previous_id, "metrics": comparison,
-                       "note": "stable load compared using current SLA limits"}
-            if stable is not None:
-                payload["previous_stable_rps"] = stable
-            if data.get("scenario") != state.get("scenario"):
-                payload["scenario_differs"] = {"current": state.get("scenario"),
-                                               "previous": data.get("scenario")}
+                payload["source_errors"] = previous["errors"]
+                payload["limitations"].append("ошибки источников прошлого теста")
             return {"previous_comparison": payload, "stage": "compare_baseline"}
         except Exception:
             return {"stage": "compare_baseline", "source_errors": _error(state, "PREVIOUS_TEST_UNAVAILABLE",
@@ -570,7 +553,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
 
     def report(state: State) -> dict:
         text = render_report(state)
-        return {"artifacts": {"report": text}, "messages": [AIMessage(content=text)], "stage": "report"}
+        return {"artifacts": {"report": text}, "messages": [AIMessage(content=text)], "stage": "report",
+                "resolved_inputs": input_state.snapshot(state, {})}
 
     def audited(name, function):
         def node(state: State, config: RunnableConfig):

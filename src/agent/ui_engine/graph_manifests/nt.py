@@ -4,7 +4,7 @@ from agent.nt_roles import PIPELINE
 from agent.ui_engine.graph_manifests.common import base_manifest
 
 MANIFEST = base_manifest(PIPELINE)
-MANIFEST["manifest_version"] = "2026.09.11.1"
+MANIFEST["manifest_version"] = "2026.09.11.2"
 MANIFEST["input"] = [MANIFEST["input"][0]]
 MANIFEST["input"][0]["title"] = "Задача НТ: Jira, test_id, started_at / finished_at с часовым поясом"
 MANIFEST["nodes"] = {
@@ -34,6 +34,10 @@ MANIFEST["nodes"]["report"]["output"] = {"path": "artifacts.report", "widget": "
 for key, title, widget in (
     ("precheck_result", "Precheck", "json"),
     ("analysis_result", "Итог НТ", "text"),
+    ("diagnostic_status", "Полнота диагностики", "text"),
+    ("diagnostic_gaps", "Пробелы диагностики", "json"),
+    ("maximum_stable_rps", "Наблюдаемая устойчивая RPS", "number"),
+    ("hypothesis_assessment", "Проверка гипотез", "json"),
     ("ranked_services", "Подозрительные сервисы", "table"),
     ("baseline_metrics", "Baseline", "json"),
     ("timeline", "Хронология НТ", "table"),
@@ -44,7 +48,9 @@ for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":
         surface["widgets"] = ["artifacts", "published"]
     elif surface["id"] == "right":
-        surface["widgets"] += ["analysis_result", "precheck_result", "ranked_services", "baseline_metrics", "timeline"]
+        surface["widgets"] += ["analysis_result", "diagnostic_status", "diagnostic_gaps",
+                               "maximum_stable_rps", "hypothesis_assessment", "precheck_result",
+                               "ranked_services", "baseline_metrics", "timeline"]
 MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"] if r["id"] == "publish-approval"]
 # Остановка перед выполнением запроса, который составила модель: решение
 # принимает тот же оператор, что и публикацию, и теми же кнопками.

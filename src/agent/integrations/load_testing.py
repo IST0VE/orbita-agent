@@ -42,7 +42,7 @@ def normalize_k6(metric: str, expression: str) -> tuple[str, str] | None:
     return (aggregates[name], expression[match.end():]) if name in aggregates else None
 
 
-def threshold_fields(items: object) -> tuple[dict, list[str]]:
+def threshold_fields(items: object, *, comparators: dict | None = None) -> tuple[dict, list[str]]:
     """Read limits, never the observed measurements or gateway pass/fail flags."""
     if not isinstance(items, list) or len(items) > 64:
         return {}, ["неверный список thresholds в gateway"]
@@ -61,13 +61,13 @@ def threshold_fields(items: object) -> tuple[dict, list[str]]:
         # Accept a comparison with an optional matching metric name, never an
         # arbitrary expression or a measurement masquerading as a limit.
         match = re.fullmatch(
-            rf"\s*(?:{re.escape(metric)}\s*)?(?:<=|<|≤)\s*(\d+(?:\.\d+)?)\s*(ms|мс|s|%|ratio)?\s*",
+            rf"\s*(?:{re.escape(metric)}\s*)?(?P<operator><=|<|≤)\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|мс|s|%|ratio)?\s*",
             expression, re.I,
         )
         if not match:
             errors.append(f"неподдерживаемое выражение threshold: {metric}")
             continue
-        value, unit = float(match[1]), (match[2] or "").lower()
+        value, unit = float(match["value"]), (match["unit"] or "").lower()
         if field.endswith("_ms"):
             # p95/p99 use milliseconds in the NT metric contract, as do the
             # explicitly suffixed p95_ms/p99_ms gateway names.
@@ -89,6 +89,12 @@ def threshold_fields(items: object) -> tuple[dict, list[str]]:
             errors.append(f"конфликт thresholds в gateway: {metric}")
         else:
             fields[field] = value
+            if comparators is not None:
+                name = {"sla_p95_ms": "p95", "sla_p99_ms": "p99", "sla_error_rate": "error_rate",
+                        "sla_max_cpu": "cpu", "sla_max_memory": "memory"}[field]
+                operator = "<" if match["operator"] == "<" else "<="
+                # Equal limits with different comparators retain the stricter one.
+                comparators[name] = "<" if "<" in (operator, comparators.get(name)) else "<="
     return fields, errors
 
 
@@ -118,12 +124,20 @@ class HTTPLoadTesting:
                 if "test_status" in selected and selected["test_status"] != data["status"]:
                     return failure("INVALID_TEST_METADATA", "conflicting gateway status fields")
                 selected["test_status"] = data["status"]
-            limits, threshold_errors = threshold_fields(data.get("thresholds", []))
+            comparators = {}
+            limits, threshold_errors = threshold_fields(data.get("thresholds", []), comparators=comparators)
             for field, value in limits.items():
                 if field in selected and selected[field] != value:
                     threshold_errors.append(f"конфликт SLA и thresholds в gateway: {field}")
                 else:
                     selected[field] = value
+            if comparators:
+                existing = selected.get("sla_comparators") or {}
+                if not isinstance(existing, dict):
+                    return failure("INVALID_TEST_METADATA", "invalid SLA comparators")
+                if any(k in existing and existing[k] != v for k, v in comparators.items()):
+                    threshold_errors.append("конфликт операторов SLA и thresholds в gateway")
+                selected["sla_comparators"] = {**existing, **comparators}
             fields, errors = validate_fields(selected)
             if errors:
                 return failure("INVALID_TEST_METADATA", "invalid fields in test metadata")

@@ -38,6 +38,8 @@ class Settings:
     max_iterations: int = 4
     timeout_seconds: int = 300
     stable_seconds: int = 60
+    settling_seconds: int = 30
+    plateau_tolerance: float = .1
     queries: dict = field(default_factory=dict)
     anomaly_weights: dict = field(default_factory=dict)
     # Запросы, которые составляет модель: discovery + выполнение проверенного
@@ -73,7 +75,7 @@ def load_settings() -> Settings:
         if not query and not spec.get("influx"):
             raise ValueError("each metric requires prometheus or influx mapping")
     weights = json.loads(os.getenv("NT_ANOMALY_WEIGHTS", "{}"))
-    if not isinstance(weights, dict) or set(weights) - {"threshold", "baseline", "spike", "trend"}:
+    if not isinstance(weights, dict) or set(weights) - {"threshold", "baseline", "spike", "trend", "counter_increase", "saturation"}:
         raise ValueError("invalid NT_ANOMALY_WEIGHTS")
     if any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
            for v in weights.values()):
@@ -92,6 +94,8 @@ def load_settings() -> Settings:
         max_iterations=_integer("NT_MAX_INVESTIGATION_CALLS", 4, 1, 8),
         timeout_seconds=_integer("NT_TIMEOUT_SECONDS", 300, 30, 3600),
         stable_seconds=_integer("NT_STABLE_SECONDS", 60, 30, 3600),
+        settling_seconds=_integer("NT_SETTLING_SECONDS", 30, 0, 3600),
+        plateau_tolerance=_integer("NT_PLATEAU_TOLERANCE_PERCENT", 10, 1, 30) / 100,
         queries=queries,
         anomaly_weights=weights,
         generated_queries=_flag("NT_GENERATED_QUERIES", False),

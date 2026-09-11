@@ -1,4 +1,4 @@
-"""Scoped, bounded read-only tools. LLM never supplies URLs, PromQL, SQL or shell."""
+"""Scoped read-only tools; composed PromQL is guarded and approved separately."""
 
 from __future__ import annotations
 
@@ -119,6 +119,15 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
             # разобранного контура: разбор о них ничего не знает.
             scoped = [item for item in result.get("series", [])
                       if item["service"] in state.get("services", [])]
+            if len({item["service"] for item in scoped}) != len(scoped):
+                return failure("AMBIGUOUS_SERIES", "result must contain exactly one series per service; aggregate away pod/instance/other dimensions")
+            if result.get("partial"):
+                return failure("PARTIAL_SOURCE", "composed query returned partial data; narrow the request")
+            scoped = [{**item, "timestamps": [t for t in item["timestamps"]
+                       if state["started_at"] <= t < state["finished_at"]],
+                       "values": [v for t, v in zip(item["timestamps"], item["values"], strict=True)
+                       if state["started_at"] <= t < state["finished_at"]]} for item in scoped]
+            scoped = [item for item in scoped if item["values"]]
             return {"success": bool(scoped), "query": promql, "purpose": str(purpose)[:200],
                     "origin": "model_query", "metrics": summarize(scoped),
                     "note": "composed query; units unverified; not used for the SLA verdict"}

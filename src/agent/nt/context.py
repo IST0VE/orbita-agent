@@ -10,11 +10,12 @@ from agent.nt.models import timestamp
 from agent.nt.thresholds import SLA_FIELDS
 
 TEXT_FIELDS = {"jira_key", "target_service", "environment", "namespace", "target_url", "test_type",
-               "test_id", "scenario", "previous_test_id", "test_status"}
+               "test_id", "scenario", "previous_test_id", "test_status",
+               "environment_fingerprint", "workload_fingerprint"}
 NUMBER_FIELDS = {*SLA_FIELDS, "target_rps", "duration_seconds", "ramp_up_seconds", "virtual_users"}
 TIME_FIELDS = {"started_at", "finished_at", "baseline_start", "baseline_end"}
 LIST_FIELDS = {"services", "dependencies", "databases", "queues", "infrastructure_components"}
-INPUT_FIELDS = TEXT_FIELDS | NUMBER_FIELDS | TIME_FIELDS | LIST_FIELDS | {"component_profiles"}
+INPUT_FIELDS = TEXT_FIELDS | NUMBER_FIELDS | TIME_FIELDS | LIST_FIELDS | {"component_profiles", "sla_comparators"}
 ALIASES = {"service": "target_service", "сервис": "target_service", "окружение": "environment",
            "test_start": "started_at", "test_end": "finished_at", "start": "started_at",
            "end": "finished_at", "target RPS": "target_rps"}
@@ -32,8 +33,11 @@ def validate_fields(fields: dict) -> tuple[dict, list[str]]:
                 valid = isinstance(value, str) and value in {
                     "not_started", "precheck", "ready", "running", "failed", "stopped", "completed"}
         elif key in NUMBER_FIELDS:
-            valid = (isinstance(value, (int, float)) and not isinstance(value, bool)
-                     and math.isfinite(value) and value >= 0)
+            try:
+                valid = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                         and math.isfinite(value) and value >= 0)
+            except OverflowError:
+                valid = False
         elif key in TIME_FIELDS:
             try:
                 value = timestamp(value)
@@ -50,6 +54,9 @@ def validate_fields(fields: dict) -> tuple[dict, list[str]]:
         elif key == "component_profiles":
             valid = (isinstance(value, dict) and len(value) <= 500
                      and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()))
+        elif key == "sla_comparators":
+            valid = (isinstance(value, dict) and set(value) <= set(SLA_FIELDS.values())
+                     and all(isinstance(v, str) and v in {"<", "<="} for v in value.values()))
         if valid:
             clean[key] = value
         else:
@@ -86,12 +93,21 @@ def explicit_fields(text: str) -> dict:
             except ValueError:
                 pass
     for quantile in (95, 99):
-        match = re.search(rf"\bp{quantile}\s*(?:[<≤:=]|SLA)\s*(\d+(?:\.\d+)?)\s*(ms|мс)\b", text, re.I)
+        match = re.search(rf"\bp{quantile}\s*(<=|<|≤|:|=|SLA)\s*(\d+(?:\.\d+)?)\s*(ms|мс)\b", text, re.I)
         if match:
-            result.setdefault(f"sla_p{quantile}_ms", float(match[1]))
-    match = re.search(r"(?:errors?|error rate|ошибки)\s*[<≤:=]\s*(\d+(?:\.\d+)?)\s*%", text, re.I)
+            field = f"sla_p{quantile}_ms"
+            if field not in result:
+                result[field] = float(match[2])
+                operators = result.setdefault("sla_comparators", {})
+                if isinstance(operators, dict):
+                    operators.setdefault(f"p{quantile}", "<" if match[1] == "<" else "<=")
+    match = re.search(r"(?:errors?|error rate|ошибки)\s*(<=|<|≤|:|=)\s*(\d+(?:\.\d+)?)\s*%", text, re.I)
     if match:
-        result.setdefault("sla_error_rate", float(match[1]) / 100)
+        if "sla_error_rate" not in result:
+            result["sla_error_rate"] = float(match[2]) / 100
+            operators = result.setdefault("sla_comparators", {})
+            if isinstance(operators, dict):
+                operators.setdefault("error_rate", "<" if match[1] == "<" else "<=")
     return result
 
 

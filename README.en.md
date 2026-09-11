@@ -24,7 +24,7 @@ Orbita helps analysts turn tasks, files and connected Jira/Confluence sources in
 | `update` | Propose source-backed replacements, validate them and save a separate revision after approval |
 | `nt` | Analyze completed load tests: baseline, deterministic SLA verdict, anomaly ranking and bounded LLM investigation |
 
-Five workflows share a pipeline builder; `update` and `nt` have dedicated graphs using shared Orbita components. Workflows are individually selected, not automatically chained. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the historical-analysis MVP; live monitoring and test control are later phases. The SLA verdict is computed from the server-owned metric map; when explicitly enabled, the model may compose a query for a metric outside that map — the code validates it, the operator approves execution, and the resulting series is evidence only.
+Five workflows share a pipeline builder; `update` and `nt` have dedicated graphs using shared Orbita components. Workflows are individually selected, not automatically chained. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the completed-test analysis workflow, including load plateaus, diagnostic completeness and comparable-run checks. Live test control is outside this workflow. The SLA verdict is computed from the server-owned metric map; when explicitly enabled, the model may compose a query for a metric outside that map — the code validates it, the operator approves execution, and the resulting series is evidence only.
 
 ## Run the complete local application
 

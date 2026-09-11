@@ -24,16 +24,22 @@ def limits_from(state: dict) -> dict:
     return limits
 
 
-def violations(series: list[dict], thresholds: dict[str, dict]) -> list[dict]:
+def breaches(value: float, limit: float, comparator: str = "<=") -> bool:
+    return value >= limit if comparator == "<" else value > limit
+
+
+def violations(series: list[dict], thresholds: dict[str, dict], *, comparators: dict | None = None) -> list[dict]:
     found = []
     for item in series:
         limit = thresholds.get(item["service"], {}).get(item["metric"])
         if limit is None:
             continue
-        points = [(t, v) for t, v in zip(item["timestamps"], item["values"], strict=True) if v > limit]
+        comparator = (comparators or {}).get(item["metric"], "<=")
+        points = [(t, v) for t, v in zip(item["timestamps"], item["values"], strict=True)
+                  if breaches(v, limit, comparator)]
         if points:
             found.append({"service": item["service"], "metric": item["metric"], "limit": limit,
-                          "peak": max(v for _, v in points), "first_at": points[0][0],
+                          "comparator": comparator, "peak": max(v for _, v in points), "first_at": points[0][0],
                           "last_at": points[-1][0], "count": len(points),
                           "unit": item["unit"], "source": item["source"]})
     return found
@@ -48,7 +54,7 @@ def verdict(violations: list, missing: list, *, completed: bool, has_sla: bool) 
 
 
 def evaluate_test(state: dict, *, critical_limits: dict | None = None) -> str:
-    """Reusable monitoring policy; MVP 1 invokes it only for completed test input."""
+    """Reusable monitoring policy; The historical graph uses completed test input."""
     status = state.get("test_status")
     if status == "failed":
         return "failed"

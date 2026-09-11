@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 
@@ -39,35 +40,25 @@ def stable_load(series: list[dict], service: str, limits: dict, step: int,
 
 This is an observed lower bound, not a capacity claim or a single good sample.
 """
-    if not limits:
-        return None
-    data = {s["metric"]: dict(zip(s["timestamps"], s["values"], strict=True))
-            for s in series if s["service"] == service}
-    rps = data.get("rps", {})
-    run, best = [], None
-    for time, value in sorted(rps.items()):
-        valid = value > 0 and all(time in data.get(m, {}) and data[m][time] <= limit
-                                 for m, limit in limits.items())
-        if not valid or (run and time - run[-1][0] > step * 1.5):
-            run = []
-        if not valid:
-            continue
-        run.append((time, value))
-        while len(run) > 1 and time - run[1][0] >= stable_seconds:
-            run.pop(0)
-        if time - run[0][0] >= stable_seconds:
-            observed = min(v for _, v in run)
-            best = observed if best is None else max(best, observed)
-    return best
+    from agent.nt.phases import analyze
+    return analyze(series, service, limits, step, stable_seconds=stable_seconds,
+                   settling_seconds=0)["maximum_stable_rps"]
 
 
 def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
     ranked = [r for r in state.get("ranked_services", []) if r["score"] > 0][:top_n]
     selected = {r["service"] for r in ranked}
-    if not selected and state.get("target_service"):
-        selected.add(state["target_service"])
+    target = state.get("target_service")
+    if target:
+        selected.add(target)
+        neighbours = {e["to"] if e["from"] == target else e["from"]
+                      for e in state.get("dependencies", []) if target in (e["from"], e["to"])}
+        selected.update(sorted(neighbours)[:top_n])
     evidence = {}
-    for service in sorted(selected):
+    for index, finding in enumerate(state.get("threshold_violations", []) + state.get("anomalies", [])):
+        if finding["service"] == target:
+            evidence[f"finding:{index}"] = finding
+    for service in sorted(selected, key=lambda s: (s != target, s)):
         metrics = state.get("current_metrics", {}).get(service, {})
         for metric, stats in sorted(metrics.items()):
             evidence[f"metric:{service}:{metric}"] = {"service": service, "metric": metric, **stats}
@@ -79,7 +70,12 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
         # Сравнение прошлого прогона по всему контуру весит столько же, сколько
         # все метрики: в бриф идут только отобранные сервисы.
         previous["metrics"] = {s: previous.get("metrics", {}).get(s, {}) for s in sorted(selected)}
+        previous["descriptive_metrics"] = {s: previous.get("descriptive_metrics", {}).get(s, {})
+                                           for s in sorted(selected)}
     summary = {
+        "question": (state.get("analysis_question") or state.get("task", ""))[:6000],
+        "context": [{"kind": c["kind"], "id": c["id"], "text": c.get("text", "")[:2000]}
+                    for c in state.get("context_sources", [])[:6]],
         "task": {k: state.get(k) for k in ("jira_key", "test_id", "target_service", "environment",
                     "namespace", "target_rps", "started_at", "finished_at")},
         "result": state.get("analysis_result"), "services_checked": len(state.get("current_metrics", {})),
@@ -94,5 +90,48 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
         "limitations": state.get("missing_parameters", [])[:30],
         "source_errors": state.get("source_errors", [])[:20],
         "maximum_stable_rps": state.get("maximum_stable_rps"),
+        "diagnostic_status": state.get("diagnostic_status"),
+        "diagnostic_gaps": state.get("diagnostic_gaps", [])[:30],
+        "load_phases": state.get("load_phases", [])[:16],
     }
     return evidence, summary
+
+
+def compact_summary(summary: dict, limit: int = 48000) -> dict:
+    """Bound the model input without deleting the durable evidence ledger."""
+    result = {**summary, "evidence": dict(summary.get("evidence", {}))}
+    def size():
+        return len(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    for field in ("timeline", "correlations", "previous_comparison", "baseline_comparison",
+                  "load_phases", "context", "dependencies", "top_services", "source_errors",
+                  "diagnostic_gaps"):
+        if size() <= limit:
+            break
+        result.pop(field, None)
+    target = result.get("task", {}).get("target_service")
+    entries = list(result["evidence"])
+    positions = {key: index for index, key in enumerate(entries)}
+    # Retain target findings and recent tool results before peripheral summaries.
+    def priority(key):
+        item = result["evidence"][key]
+        if key.startswith("finding:") and item.get("service") == target:
+            return 0
+        if key.startswith("tool:"):
+            return 1
+        if item.get("service") == target:
+            return 2
+        return 3
+    remove = sorted(entries, key=lambda key: (priority(key), -positions[key]), reverse=True)
+    omitted = 0
+    serialized_size = size()
+    for key in remove:
+        if serialized_size <= limit - 300:
+            break
+        item = result["evidence"].pop(key)
+        serialized_size -= (len(json.dumps(key, ensure_ascii=False)) + 2
+                            + len(json.dumps(item, ensure_ascii=False, allow_nan=False)) + 2)
+        omitted += 1
+    if omitted:
+        result["omitted_evidence"] = omitted
+        result["evidence_note"] = "полные улики сохранены в отчёте; не делайте выводы об отсутствующих данных"
+    return result

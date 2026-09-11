@@ -2,7 +2,8 @@
 
 import math
 
-DEFAULT_WEIGHTS = {"threshold": .6, "baseline": .25, "spike": .2, "trend": .2}
+DEFAULT_WEIGHTS = {"threshold": .6, "baseline": .25, "spike": .2, "trend": .2,
+                   "counter_increase": .3, "saturation": .4}
 
 
 def rank_services(services: list[str], anomalies: list[dict], violations: list[dict],

@@ -42,6 +42,10 @@ def render_report(state: dict) -> str:
         "## Result", state.get("analysis_result", "INCONCLUSIVE"),
         "Вердикт вычислен кодом по доступным SLA. Проверяются максимумы временных рядов "
         "за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста.",
+        "## Diagnostic completeness", state.get("diagnostic_status", "NOT_RUN"),
+        _json(state.get("diagnostic_gaps", [])),
+        "Полнота диагностики оценивается отдельно: отсутствие baseline или данных зависимости "
+        "не отменяет проверку полных SLA-рядов целевого сервиса.",
         "## Precheck", _json(state.get("precheck_result", {})), "## SLA"])
     focus = {key.split(":")[1] for key in state.get("evidence", {}) if key.startswith("metric:")}
     if state.get("target_service"):
@@ -52,7 +56,7 @@ def render_report(state: dict) -> str:
         mapping = mapping or {}
         shown = {service: value for service, value in mapping.items() if service in focus}
         note = (f"Показаны {len(shown)} из {len(mapping)} {what}: остальные вне фокуса "
-                f"анализа. Полные ряды остались в состоянии прогона.")
+                f"анализа. Агрегаты доступны в состоянии прогона; исходные точки перечитываются из источников.")
         return [_json(shown), note] if len(shown) < len(mapping) else [_json(shown)]
 
     metrics = state.get("current_metrics", {}).get(state.get("target_service"), {})
@@ -60,12 +64,16 @@ def render_report(state: dict) -> str:
     for field, metric in SLA_FIELDS.items():
         if state.get(field) is not None:
             lines.append(f"- {metric}: peak={metrics.get(metric, {}).get('max', 'нет данных')}; "
-                         f"limit={state[field]}; unit={metrics.get(metric, {}).get('unit', 'нет данных')}")
+                         f"limit={(state.get('sla_comparators') or {}).get(metric, '<=')} {state[field]}; "
+                         f"unit={metrics.get(metric, {}).get('unit', 'нет данных')}")
     lines.append(_json(state.get("threshold_violations", [])))
     stable = state.get("maximum_stable_rps")
     lines.extend(["## Maximum stable load", f"{stable} RPS" if stable is not None else "Не установлена.",
-        "Наблюдаемая устойчивая нагрузка: минимум RPS в непрерывном окне соблюдения всех "
-        "заданных SLA. Это нижняя оценка по наблюдениям, а не доказанный предел мощности.",
+        "Наблюдаемая устойчивая нагрузка: минимум RPS на плато после периода установления, "
+        "вся измеренная часть которого соблюдала SLA. Это нижняя оценка по наблюдениям, "
+        "а не доказанный предел мощности.",
+        _json({k: v for k, v in state.get("capacity_assessment", {}).items() if k != "phases"}),
+        "## Load phases", _json(state.get("load_phases", [])),
         "## Main anomalies", f"Сервисов с данными: {len(state.get('current_metrics', {}))}."])
     ranked = [r for r in state.get("ranked_services", []) if r["score"] > 0]
     lines.append(_json(ranked[:20]))
@@ -86,6 +94,12 @@ def render_report(state: dict) -> str:
     for hypothesis in hypotheses:
         lines.append(f"- Гипотеза ({hypothesis['confidence']}), {hypothesis['service']}: "
                      f"{hypothesis['description']}\n  Evidence: " + ", ".join(hypothesis["evidence_ids"]))
+        lines.append(f"  Механизм: {hypothesis.get('mechanism', 'unknown')}. "
+                     "Причинная связь не установлена.")
+        lines.append("  Проверенные наблюдения: " + _json(hypothesis.get("observations", [])))
+        lines.append("  Противоречащие данные: " + ", ".join(hypothesis.get("counter_evidence_ids", [])))
+        lines.append("  Следующая проверка: " + hypothesis.get("next_check", "не указана"))
+    lines.append(_json(state.get("hypothesis_assessment", {})))
     # Запросы, которых нет в серверной карте: их составила модель, и оператор
     # разрешил выполнение. В отчёте они приводятся дословно — иначе цифру из
     # них не повторить и не оспорить.
@@ -93,7 +107,7 @@ def render_report(state: dict) -> str:
                 if isinstance(item, dict) and item.get("origin") == "model_query"]
     if composed:
         lines.extend(["## Composed queries",
-                      "Запросы составлены моделью и подтверждены оператором. Единицы не "
+                      "Запросы составлены моделью и выполнены по политике подтверждения сервера. Единицы не "
                       "проверены, в вердикт по SLA эти ряды не входят."])
         for item in composed:
             lines.append("\n".join([
@@ -106,8 +120,9 @@ def render_report(state: dict) -> str:
     previous = dict(state.get("previous_comparison") or {})
     lines.append("## Previous test comparison")
     if previous:
-        lines.extend([_json({k: v for k, v in previous.items() if k != "metrics"}),
-                      *limited(previous.get("metrics"), "сервисов прошлого прогона")])
+        lines.extend([_json({k: v for k, v in previous.items() if k not in {"metrics", "descriptive_metrics"}}),
+                      "Различия по всему периоду ниже описательные: они не доказывают регрессию.",
+                      *limited(previous.get("descriptive_metrics"), "сервисов прошлого прогона")])
     else:
         lines.append(_json({}))
     lines.append("## Recommendations")
@@ -115,9 +130,11 @@ def render_report(state: dict) -> str:
     if not state.get("recommendations"):
         lines.append("Дополнительные рекомендации не сформированы.")
     lines.extend(["## Unverified assumptions", _json(state.get("missing_parameters", [])),
+        _json({"stop_reason": state.get("stop_reason", "")}),
         _json(state.get("source_errors", [])),
         "Precheck относится к данным завершённого теста. Текущие DNS/HTTP/pods не подтверждают "
         "их состояние в прошлом. Запуск и остановка НТ этим графом не выполнялись.",
+        "## Analysis policy", _json(state.get("analysis_policy", {})),
         "## Sources", _json([{k: v for k, v in s.items() if k != "text"}
                                for s in state.get("context_sources", [])]),
         _json({"baseline_start": state.get("baseline_start"), "baseline_end": state.get("baseline_end"),

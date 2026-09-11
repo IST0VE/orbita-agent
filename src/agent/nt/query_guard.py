@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 # Запрос от модели — единственное место, где в источник уходит текст, которого
@@ -94,10 +95,32 @@ def _skip_string(query: str, index: int) -> int:
 
 def _selector_ok(selector: str, namespace: str) -> str:
     """Причина отказа для одного `{...}`; пусто — селектор ограничен namespace."""
-    if "__name__" in selector:
-        return "__name__ matcher is not allowed; name the metric explicitly"
-    compact = re.sub(r"\s*=\s*", "=", selector)
-    if f'namespace="{namespace}"' not in compact:
+    matcher = re.compile(r'\s*([A-Za-z_][A-Za-z0-9_]*)\s*(=~|!~|!=|=)\s*("(?:[^"\\]|\\.)*")\s*')
+    index, scoped, seen = 0, False, set()
+    while index < len(selector):
+        match = matcher.match(selector, index)
+        if not match:
+            return "invalid label matcher; use double-quoted label values"
+        name, operator, literal = match.groups()
+        if name == "__name__":
+            return "__name__ matcher is not allowed; name the metric explicitly"
+        if name in seen:
+            return "duplicate label matcher is not allowed"
+        seen.add(name)
+        try:
+            value = json.loads(literal)
+        except ValueError:
+            return "invalid label value"
+        if name == "namespace":
+            scoped = operator == "=" and value == namespace and bool(namespace)
+        index = match.end()
+        if index < len(selector):
+            if selector[index] != ",":
+                return "label matchers must be separated by commas"
+            index += 1
+            if not selector[index:].strip():
+                break  # PromQL allows a trailing comma.
+    if not scoped:
         return f'every selector must match namespace="{namespace}"'
     return ""
 
@@ -115,7 +138,9 @@ def validate(query: str, namespace: str, *, max_range_seconds: int = MAX_RANGE_S
         return "@ modifier is not allowed; the window is fixed by the test period"
     if _SUBQUERY.search(query):
         return "subqueries are not allowed"
-    if not re.search(r"\bby\s*\(\s*service\b", query):
+    # String contents are data, including labels or label_replace arguments.
+    syntax = re.sub(r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*' ''', '""', query, flags=re.X)
+    if not re.search(r"\bby\s*\(\s*service\b", syntax):
         return "result must be aggregated with by (service)"
 
     index, saw_metric = 0, False
@@ -134,6 +159,8 @@ def validate(query: str, namespace: str, *, max_range_seconds: int = MAX_RANGE_S
             reason = _selector_ok(query[index + 1:end - 1], namespace)
             if reason:
                 return reason
+            if not re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*$", query[:index]):
+                return "name the metric explicitly before its label selector"
             saw_metric, index = True, end
             continue
         if char == "[":
@@ -174,8 +201,10 @@ def validate(query: str, namespace: str, *, max_range_seconds: int = MAX_RANGE_S
             continue
         if name in AGGREGATIONS:
             # Дальше идёт `by (...)`/`without (...)`, их разберёт следующий шаг.
-            index = match.end()
-            continue
+            if re.match(r"(?:by|without)\b", query[after:]):
+                index = match.end()
+                continue
+            return f"metric {name} must carry a label selector with namespace"
         if name in KEYWORDS or _duration_seconds(name) is not None:
             index = match.end()
             continue
