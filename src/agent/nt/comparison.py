@@ -1,7 +1,7 @@
 """Require comparable workload/configuration and match measured load plateaus."""
 
 from agent.nt import baseline, phases, thresholds
-from agent.nt.anomaly_detector import LOWER_IS_WORSE, TRAFFIC_METRICS
+from agent.nt.anomaly_detector import COUNTERS, LOWER_IS_WORSE, TRAFFIC_METRICS
 from agent.nt.models import window
 
 # Совпадение плато допускает разброс RPS, поэтому мелкий сдвиг медианы на нём
@@ -15,13 +15,14 @@ def regressions(matched: list[dict]) -> list[dict]:
 
     Это единственное измеренное сравнение «та же нагрузка, другой прогон», и
     гипотеза вправе на него ссылаться. Трафик исключён: по нему ступени и
-    сопоставлялись.
+    сопоставлялись. Счётчики тоже: их медиана — накопленный итог за жизнь пода,
+    а не поведение под нагрузкой, и приращения считает anomaly_detector.
     """
     found = {}
     for phase in matched:
         for metric, delta in sorted(phase["metrics"].items()):
             direction = -1 if metric in LOWER_IS_WORSE else 1
-            if metric in TRAFFIC_METRICS or delta["percent"] is None:
+            if metric in TRAFFIC_METRICS or metric in COUNTERS or delta["percent"] is None:
                 continue
             if direction * delta["percent"] < REGRESSION_RELATIVE * 100:
                 continue

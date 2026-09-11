@@ -106,9 +106,11 @@ def compact_summary(summary: dict, limit: int = 48000) -> dict:
     entries = list(result["evidence"])
     positions = {key: index for index, key in enumerate(entries)}
     # Retain target findings and recent tool results before peripheral summaries.
+    # Within one tier the earliest entries go first, so a class that is inserted
+    # early must earn its tier: regressions are cited, not skimmed.
     def priority(key):
         item = result["evidence"][key]
-        if key.startswith("finding:") and item.get("service") == target:
+        if key.startswith(("finding:", "regression:")) and item.get("service") == target:
             return 0
         if key.startswith("tool:"):
             return 1

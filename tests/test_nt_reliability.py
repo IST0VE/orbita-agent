@@ -10,7 +10,7 @@ from test_nt_graph import INPUT, START, model, run, setup_source
 from agent import nt_graph
 from agent.nt import comparison, hypotheses, phases
 from agent.nt.anomaly_detector import detect
-from agent.nt.metrics_analyzer import make_evidence
+from agent.nt.metrics_analyzer import compact_summary, make_evidence
 from agent.nt.models import MetricSeries
 from agent.nt.query_guard import validate
 from agent.nt.settings import Settings
@@ -491,3 +491,23 @@ def test_repeated_regression_collapses_to_worst_plateau_without_losing_steps():
     assert [(r["metric"], r["percent"], r["plateaus"]) for r in found] == [("hit_rate", -44., 1),
                                                                           ("p95", 90., 2)]
     assert found[1]["current_rps"] == 1000
+
+
+def test_counter_totals_are_not_compared_as_levels_between_runs():
+    # Медиана pod_restarts — накопленный итог за жизнь пода, а не поведение
+    # под нагрузкой: приращения внутри прогона считает anomaly_detector.
+    matched = [{"service": "svc-0", "current_start": 10, "current_rps": 500, "previous_rps": 500,
+                "metrics": {"pod_restarts": {"baseline": 4., "current": 9., "absolute": 5., "percent": 125.},
+                            "deadlocks": {"baseline": 2., "current": 6., "absolute": 4., "percent": 200.},
+                            "p95": {"baseline": 100., "current": 200., "absolute": 100., "percent": 100.}}}]
+    assert [r["metric"] for r in comparison.regressions(matched)] == ["p95"]
+
+
+def test_measured_regression_survives_context_pressure_with_target_findings():
+    evidence = {"finding:0": {"service": "t", "metric": "cpu", "kind": "saturation"},
+                "regression:t:p95": {"service": "t", "metric": "p95", "kind": "regression", "percent": 90.},
+                **{f"metric:t:m{i}": {"service": "t", "metric": f"m{i}", "blob": "z" * 900}
+                   for i in range(60)}}
+    result = compact_summary({"task": {"target_service": "t"}, "evidence": evidence}, limit=12000)
+    assert result["omitted_evidence"]
+    assert {"finding:0", "regression:t:p95"} <= result["evidence"].keys()
