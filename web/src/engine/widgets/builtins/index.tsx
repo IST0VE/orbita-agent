@@ -331,6 +331,11 @@ function ApprovalWidget({ value, binding, readonly, onAction }: WidgetProps) {
   const asksProject = payload.action === "jira";
   const known = Array.isArray(payload.projects) ? payload.projects as Array<{ key?: string; name?: string }> : [];
   const nativeDrafts = payload.action === "publish" && payload.target === "confluence";
+  // Запросы, которые составила модель: показываются целиком, без раскрытия.
+  // Подтверждают то, что уйдёт в источник, а не пересказ.
+  const queries = Array.isArray(payload.queries)
+    ? payload.queries as Array<Record<string, unknown>>
+    : [];
   const decide = (decision: "approved" | "rejected" | "drafts") => onAction?.({
     kind: "interrupt.resume",
     interruptId,
@@ -348,6 +353,10 @@ function ApprovalWidget({ value, binding, readonly, onAction }: WidgetProps) {
     {Array.isArray(payload.drafts) && payload.drafts.length
       ? <DraftListWidget {...({ value: payload.drafts } as unknown as WidgetProps)} />
       : null}
+    {queries.length ? <ul className="approve-queries">{queries.map((item, index) => <li key={index}>
+      <span className="hint">{text(item.tool)}{item.purpose ? ` · ${text(item.purpose)}` : ""}</span>
+      <pre>{text(item.query) || JSON.stringify(item.arguments ?? {})}</pre>
+    </li>)}</ul> : null}
     {(payload.warnings as string[] | undefined)?.length
       ? <ul className="draft-warnings">{(payload.warnings as string[]).map((warning, index) => <li key={index}>{text(warning)}</li>)}</ul>
       : null}

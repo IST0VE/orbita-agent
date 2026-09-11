@@ -9,6 +9,15 @@ from dataclasses import dataclass, field
 
 from agent.nt.metric_profiles import PROFILES, unit_for
 
+TOOL_APPROVAL_MODES = ("off", "generated", "all")
+
+
+def _flag(name: str, default: bool) -> bool:
+    value = os.getenv(name, "1" if default else "0").strip().lower()
+    if value not in {"0", "1", "true", "false", "yes", "no", "on", "off"}:
+        raise ValueError(f"{name} must be a boolean flag")
+    return value in {"1", "true", "yes", "on"}
+
 
 def _integer(name: str, default: int, low: int, high: int) -> int:
     value = int(os.getenv(name, str(default)))
@@ -31,6 +40,14 @@ class Settings:
     stable_seconds: int = 60
     queries: dict = field(default_factory=dict)
     anomaly_weights: dict = field(default_factory=dict)
+    # Запросы, которые составляет модель: discovery + выполнение проверенного
+    # PromQL. Ряды из них живут только в уликах и не участвуют в вердикте.
+    generated_queries: bool = False
+    query_range_seconds: int = 900
+    discovery_limit: int = 40
+    # Что показывать оператору до выполнения: ничего, только составленные
+    # моделью запросы или каждый вызов инструмента.
+    tool_approval: str = "generated"
 
 
 def load_settings() -> Settings:
@@ -61,6 +78,9 @@ def load_settings() -> Settings:
     if any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
            for v in weights.values()):
         raise ValueError("anomaly weights must be finite in [0, 1]")
+    approval = os.getenv("NT_TOOL_APPROVAL", "generated").strip().lower()
+    if approval not in TOOL_APPROVAL_MODES:
+        raise ValueError("NT_TOOL_APPROVAL must be one of " + ", ".join(TOOL_APPROVAL_MODES))
     return Settings(
         step=_integer("NT_STEP_SECONDS", 30, 1, 3600),
         max_window=_integer("NT_MAX_WINDOW_SECONDS", 86400, 60, 604800),
@@ -69,9 +89,13 @@ def load_settings() -> Settings:
         max_series=_integer("NT_MAX_SERIES", 500, 20, 2000),
         max_points=_integer("NT_MAX_POINTS", 200000, 1000, 2000000),
         top_n=_integer("NT_TOP_N", 5, 1, 20),
-        max_iterations=_integer("NT_MAX_INVESTIGATION_CALLS", 4, 1, 4),
+        max_iterations=_integer("NT_MAX_INVESTIGATION_CALLS", 4, 1, 8),
         timeout_seconds=_integer("NT_TIMEOUT_SECONDS", 300, 30, 3600),
         stable_seconds=_integer("NT_STABLE_SECONDS", 60, 30, 3600),
         queries=queries,
         anomaly_weights=weights,
+        generated_queries=_flag("NT_GENERATED_QUERIES", False),
+        query_range_seconds=_integer("NT_QUERY_RANGE_SECONDS", 900, 60, 3600),
+        discovery_limit=_integer("NT_DISCOVERY_LIMIT", 40, 5, 200),
+        tool_approval=approval,
     )

@@ -33,12 +33,26 @@ class FakePrometheus:
         rows = []
         for index in range(25):
             times = list(range(int(start), int(end), int(step)))
-            normal = {"p95": 100, "error_rate": .001, "cpu": .2, "rps": 1000}[metric]
+            normal = {"p95": 100, "error_rate": .001, "cpu": .2, "rps": 1000}.get(metric, 7.0)
             values = [normal] * len(times)
             if start >= START and index == 0 and self.anomaly and metric in {"p95", "cpu"}:
                 values[-3:] = [800 if metric == "p95" else .9] * 3
             rows.append(MetricSeries(metric, f"svc-{index}", times, values, unit, "prometheus").to_dict())
         return {"success": True, "series": rows}
+
+
+    def series(self, match, start, end, *, limit=2000):
+        self.calls.append(("series", start, end))
+        return {"success": True, "truncated": False, "series": [
+            {"__name__": "jvm_gc_pause_seconds", "namespace": "nt01", "service": "svc-0"},
+            {"__name__": "http_requests_total", "namespace": "nt01", "service": "svc-0",
+             "code": "200"},
+            {"__name__": "app_queue_depth", "namespace": "nt01", "service": "svc-0"},
+        ]}
+
+    def metadata(self, *, limit=500):
+        return {"success": True, "metadata": {
+            "jvm_gc_pause_seconds": {"type": "histogram", "help": "GC pause duration"}}}
 
 
 def setup_source(**kwargs):
@@ -481,3 +495,114 @@ def test_live_gateway_status_cannot_be_overridden_by_input():
     assert state["test_status"] == "running"
     assert state["analysis_result"] == "INCONCLUSIVE"
     assert not prom.calls
+
+
+# --------------------------------------------------------------------------
+# Запросы, составленные моделью, и решение оператора перед выполнением
+# --------------------------------------------------------------------------
+COMPOSED = 'sum by (service) (rate(jvm_gc_pause_seconds{namespace="nt01"}[5m]))'
+
+
+def composed_source(approval="generated", enabled=True, **kwargs):
+    settings = Settings(queries={m: {"prometheus": m} for m in ("p95", "error_rate", "cpu", "rps")},
+                        generated_queries=enabled, tool_approval=approval)
+    prom = FakePrometheus(**kwargs)
+    return Sources(settings, prometheus=prom), prom
+
+
+def composed_call(call_id="composed-1", promql=COMPOSED, purpose="GC-паузы на верхней ступени"):
+    return AIMessage(content="", tool_calls=[{"name": "run_metric_query",
+        "args": {"promql": promql, "purpose": purpose}, "id": call_id}])
+
+
+def paused(sources, *answers, thread="nt-composed"):
+    """Прогон до первой остановки оператора; возвращает приложение и состояние."""
+    app = nt_graph.build_graph(model(*answers), sources=sources).compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": thread, "publish": False}}
+    return app, config, app.invoke({**INPUT, "messages": [HumanMessage("Анализ НТ")]}, config)
+
+
+def test_composed_query_waits_for_the_operator_and_then_runs():
+    sources, prom = composed_source()
+    hypothesis = AIMessage(content=json.dumps({"hypotheses": [{"service": "svc-0",
+        "confidence": "possible", "description": "Паузы GC", "evidence_ids": ["tool:composed-1"]}],
+        "recommendations": []}))
+    app, config, state = paused(sources, composed_call(), hypothesis)
+    payload = state["__interrupt__"][0].value
+    assert payload["action"] == "query"
+    assert payload["queries"][0]["query"] == COMPOSED
+    assert not [call for call in prom.calls if call[0] == "composed"]
+
+    final = app.invoke(Command(resume={"decision": "approved"}), config)
+    assert [call for call in prom.calls if call[0] == "composed"]
+    evidence = final["evidence"]["tool:composed-1"]
+    assert evidence["origin"] == "model_query" and evidence["query"] == COMPOSED
+    assert "## Composed queries" in final["artifacts"]["report"]
+    assert final["root_cause_hypotheses"][0]["confidence"] == "possible"
+
+
+def test_rejected_composed_query_never_reaches_prometheus():
+    sources, prom = composed_source()
+    app, config, _ = paused(sources, composed_call(), AIMessage(content="{}"),
+                            thread="nt-composed-rejected")
+    final = app.invoke(Command(resume={"decision": "rejected", "reason": "дорогой запрос"}), config)
+    denied = json.loads(final["investigation_history"][2].content)
+    assert denied["error_type"] == "POLICY_DENIED"
+    assert "дорогой запрос" in denied["message"]
+    assert not [call for call in prom.calls if call[0] == "composed"]
+    assert final["analysis_result"] == "FAILED"
+
+
+def test_composed_series_stay_out_of_the_verdict():
+    sources, _ = composed_source()
+    app, config, _ = paused(sources, composed_call(), AIMessage(content="{}"),
+                            thread="nt-composed-verdict")
+    final = app.invoke(Command(resume={"decision": "approved"}), config)
+    assert final["analysis_result"] == "FAILED"
+    assert "composed" not in json.dumps(final["current_metrics"])
+    assert all(item["metric"] != "composed" for item in final["metric_snapshots"])
+
+
+def test_invalid_composed_query_is_refused_without_asking_the_operator():
+    sources, prom = composed_source()
+    state = run(sources, composed_call(call_id="bad-1",
+                                       promql="sum by (service) (rate(x[5m]))"),
+                AIMessage(content="{}"))
+    result = json.loads(state["investigation_history"][2].content)
+    assert result["error_type"] == "QUERY_REJECTED"
+    assert "namespace" in result["message"]
+    assert not [call for call in prom.calls if call[0] == "composed"]
+
+
+def test_disabled_composed_queries_answer_not_enabled_without_stopping():
+    sources, _ = composed_source(enabled=False)
+    state = run(sources, composed_call(), AIMessage(content="{}"))
+    result = json.loads(state["investigation_history"][2].content)
+    assert result["error_type"] == "NOT_ENABLED"
+
+
+def test_approval_mode_all_asks_before_an_allowlisted_tool():
+    sources, _ = composed_source(approval="all")
+    app, config, state = paused(sources,
+        AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
+                  "args": {"metric": "cpu", "service": "svc-0"}, "id": "cpu-1"}]),
+        AIMessage(content="{}"), thread="nt-approve-all")
+    payload = state["__interrupt__"][0].value
+    assert payload["queries"][0]["tool"] == "prometheus_range_query"
+    assert payload["queries"][0]["arguments"] == {"metric": "cpu", "service": "svc-0"}
+    final = app.invoke(Command(resume={"decision": "approved"}), config)
+    assert "tool:cpu-1" in final["evidence"]
+
+
+def test_discovery_lists_scoped_metrics_with_task_hints_first():
+    sources, _ = composed_source()
+    state = run(sources, AIMessage(content="", tool_calls=[{"name": "discover_metrics",
+                "args": {"service": "svc-0", "contains": ""}, "id": "disc-1"}]),
+                AIMessage(content="{}"),
+                question="Анализ НТ, смотреть jvm_gc_pause_seconds после релиза")
+    result = json.loads(state["investigation_history"][2].content)
+    assert result["metrics"][0]["metric"] == "jvm_gc_pause_seconds"
+    assert result["metrics"][0]["help"] == "GC pause duration"
+    assert {item["metric"] for item in result["metrics"]} == {
+        "jvm_gc_pause_seconds", "http_requests_total", "app_queue_depth"}
+    assert "units are not verified" in result["note"]

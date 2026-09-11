@@ -22,9 +22,17 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.types import interrupt
 
 from agent import confluence, jira, nodes, nt_roles
-from agent.nt import anomaly_detector, baseline, metrics_analyzer, ranking, thresholds
+from agent.nt import (
+    anomaly_detector,
+    baseline,
+    metrics_analyzer,
+    query_guard,
+    ranking,
+    thresholds,
+)
 from agent.nt.collection import Sources
 from agent.nt.context import (
     INPUT_FIELDS,
@@ -54,9 +62,20 @@ def _error(state, kind, message):
     return [*state.get("source_errors", []), failure(kind, message)]
 
 
-def investigation_route(state: State) -> str:
+# Инструмент, текст которого составила модель, а не администратор сервера.
+# Такой вызов показывается оператору до выполнения.
+COMPOSED_TOOLS = frozenset({"run_metric_query"})
+
+
+def pending_calls(state: State) -> list[dict]:
+    """Вызовы инструментов в последнем ответе модели."""
     history = state.get("investigation_history", [])
-    return "additional_tools" if history and getattr(history[-1], "tool_calls", None) else "final_analysis"
+    last = history[-1] if history else None
+    return list(getattr(last, "tool_calls", None) or [])
+
+
+def investigation_route(state: State) -> str:
+    return "approve_tools" if pending_calls(state) else "final_analysis"
 
 
 def build_graph(llm: Any = None, *, sources: Sources | None = None,
@@ -82,7 +101,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             "source_errors": [], "context_sources": [], "metric_snapshots": [], "baseline_metrics": {},
             "current_metrics": {}, "anomalies": [], "threshold_violations": [], "ranked_services": [],
             "timeline": [], "evidence": {}, "baseline_comparison": {}, "previous_comparison": {},
-            "llm_summary": {}, "correlations": [],
+            "llm_summary": {}, "correlations": [], "tool_approval": {},
             "maximum_stable_rps": None, "analysis_result": "INCONCLUSIVE", "precheck_result": {},
             "artifacts": {"report": "", "investigate": "", "understand_task": ""},
             "stage": "load_context"}
@@ -357,7 +376,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         if len(_json(summary)) > 48000:
             summary = {"task": summary["task"], "result": verdict, "evidence": evidence,
                        "limitations": ["LLM context capped; see deterministic report"]}
-        return {**update, "evidence": evidence, "llm_summary": summary}
+        # Этот узел — последний потребитель сырых точек: дальше идут агрегаты,
+        # улики и отчёт. Мегабайты рядов после вердикта только переливаются
+        # в каждый кадр потока состояния и в каждый чекпоинт.
+        return {**update, "evidence": evidence, "llm_summary": summary, "metric_snapshots": []}
 
     def settled(history):
         """Закрыть цикл, не забывая ход исследования.
@@ -393,9 +415,86 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     "source_errors": _error(state, "LLM_UNAVAILABLE",
                     "investigation unavailable; deterministic report retained"), "stage": "investigate"}
 
+    def approve_tools(state: State, config: RunnableConfig) -> dict:
+        """
+        Остановка перед выполнением инструментов: решение принимает оператор.
+
+        Спрашивают не про всё подряд. По умолчанию решение нужно там, где текст
+        запроса составила модель: остальные инструменты ходят по серверной карте
+        метрик и границам контура, и разрешение на них оператор уже дал
+        настройками. `NT_TOOL_APPROVAL=all` расширяет вопрос на любой вызов,
+        `off` убирает остановку совсем.
+        """
+        limits = settings_for()
+        mode = limits.tool_approval
+        calls = pending_calls(state)
+
+        def asks(call) -> bool:
+            # Про выключенный инструмент оператора не спрашивают: он ответит
+            # NOT_ENABLED и без решения. Негодный запрос тоже не показывают —
+            # инструмент откажет сам и объяснит модели, что именно нарушено.
+            if mode == "all":
+                return True
+            if not (mode == "generated" and call["name"] in COMPOSED_TOOLS
+                    and limits.generated_queries):
+                return False
+            return not query_guard.validate(str((call.get("args") or {}).get("promql", "")),
+                                            str(state.get("namespace") or ""),
+                                            max_range_seconds=limits.query_range_seconds)
+
+        waiting = [call for call in calls if asks(call)]
+        if mode == "off" or not waiting:
+            return {"stage": "approve_tools", "tool_approval": {}}
+        payload = {
+            "action": "query",
+            "title": "Модель просит выполнить запросы к источникам",
+            "queries": [{"tool": call["name"],
+                         "query": str(call.get("args", {}).get("promql", "")),
+                         "purpose": str(call.get("args", {}).get("purpose", "")),
+                         "arguments": {k: v for k, v in (call.get("args") or {}).items()
+                                       if k not in {"promql", "purpose"}}}
+                        for call in waiting],
+            "warnings": ["Запрос составила модель. Единицы измерения не проверяются, "
+                         "и на вердикт по SLA такой ряд не влияет — он идёт в улики."],
+            "hint": 'ответьте true/false или {"decision": "rejected", "reason": ...}',
+        }
+        answer = interrupt(payload)
+        decision = nodes.approval_of(answer)
+        identifiers = [call["id"] for call in waiting]
+        approved = decision["decision"] == "approved"
+        return {"stage": "approve_tools", "tool_approval": {
+            "approved": identifiers if approved else [],
+            "rejected": [] if approved else identifiers,
+            "reason": decision.get("reason", "")}}
+
+    def denied_responses(calls, reason):
+        """Ответ инструмента на отклонённый вызов: висячих вызовов остаться не должно."""
+        text = _json(failure("POLICY_DENIED", "operator rejected this call"
+                             + (f": {reason}" if reason else "")))
+        return [ToolMessage(content=text, tool_call_id=call["id"], name=call["name"])
+                for call in calls]
+
     def additional_tools(state: State, config: RunnableConfig) -> dict:
+        history = state["investigation_history"]
+        approval = state.get("tool_approval") or {}
+        denied = set(approval.get("rejected") or [])
+        refusals = []
+        if denied:
+            calls = pending_calls(state)
+            refusals = denied_responses([c for c in calls if c["id"] in denied],
+                                        approval.get("reason", ""))
+            kept = [c for c in calls if c["id"] not in denied]
+            if not kept:
+                return {"investigation_history": [*history, *refusals],
+                        "stop_reason": "operator_rejected", "stage": "additional_tools"}
+            # Отклонённые вызовы снимаются с ответа модели, иначе ToolNode
+            # выполнит их вместе с разрешёнными.
+            extra = dict(getattr(history[-1], "additional_kwargs", None) or {})
+            extra.pop("tool_calls", None)
+            trimmed = history[-1].model_copy(update={"tool_calls": kept, "additional_kwargs": extra})
+            state = {**state, "investigation_history": [*history[:-1], trimmed]}
         result = tool_node.invoke(state, {**config, "max_concurrency": settings_for().concurrency})
-        responses = result["investigation_history"]
+        responses = [*result["investigation_history"], *refusals]
         evidence = dict(state.get("evidence", {}))
         enriched = []
         for response in responses:
@@ -410,7 +509,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 except (ValueError, TypeError, AttributeError):
                     pass
             enriched.append(response)
-        return {"investigation_history": [*state["investigation_history"], *enriched],
+        return {"investigation_history": [*history, *enriched],
                 "evidence": evidence, "stage": "additional_tools"}
 
     def final_analysis(state: State) -> dict:
@@ -477,7 +576,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         def node(state: State, config: RunnableConfig):
             began = time.monotonic()
             try:
-                if name in {"load_context", "understand_task", "investigate", "additional_tools"}:
+                if name in {"load_context", "understand_task", "investigate", "approve_tools",
+                            "additional_tools"}:
                     return function(state, config)
                 return function(state)
             finally:
@@ -491,7 +591,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     stages = {"load_context": load_context, "understand_task": understand_task,
         "discover_scope": discover_scope, "precheck": precheck, "collect_baseline": collect_baseline,
         "collect_metrics": collect_metrics, "detect_anomalies": detect_anomalies, "evaluate_test": evaluate_test,
-        "investigate": investigate, "additional_tools": additional_tools, "final_analysis": final_analysis,
+        "investigate": investigate, "approve_tools": approve_tools,
+        "additional_tools": additional_tools, "final_analysis": final_analysis,
         "compare_baseline": compare_baseline, "report": report}
     for name, function in stages.items():
         builder.add_node(name, audited(name, function))
@@ -508,7 +609,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     for left, right in zip(middle, middle[1:], strict=False):
         builder.add_edge(left, right)
     builder.add_conditional_edges("investigate", investigation_route,
-                                  {"additional_tools": "additional_tools", "final_analysis": "final_analysis"})
+                                  {"approve_tools": "approve_tools", "final_analysis": "final_analysis"})
+    builder.add_edge("approve_tools", "additional_tools")
     builder.add_edge("additional_tools", "investigate")
     tail = ["final_analysis", "report", "remember", "approve", "publish", END]
     for left, right in zip(tail, tail[1:], strict=False):

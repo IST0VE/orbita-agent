@@ -39,8 +39,10 @@ RUN_BUTTON = "[запустить]"
 DETAILS_BUTTON = "[подробности]"
 APPROVE_BUTTON = "[подтвердить]"
 
-# Прогон по стенду занимает меньше минуты, но модель отвечает неравномерно.
-STEP_MS = 240_000
+# Прогон по стенду занимает одну-три минуты: ходов исследования до шести, и на
+# каждом модель отвечает неравномерно. Ожидание с запасом дешевле, чем
+# оборванный на середине прогон — обрыв потока отменяет и сам run.
+STEP_MS = 420_000
 
 # Панели растут под содержимое, своей полосы прокрутки у документа нет: едет
 # ближайший прокручиваемый предок. Поэтому он и ищется, а не задаётся селектором.
@@ -139,10 +141,19 @@ def main() -> None:
             "Object.keys(localStorage).filter(k => k.startsWith('orbita.thread'))"
             ".forEach(k => localStorage.removeItem(k));")
         page = context.new_page()
-        page.goto(args.url)
-
+        # Портал не перезапрашивает манифест, если backend ещё поднимался в
+        # момент загрузки: он остаётся с «нет сервера». Поэтому страница
+        # перезагружается, пока поле ввода не появится.
         task = page.get_by_placeholder("Опишите задачу…")
-        task.wait_for(timeout=60_000)
+        for attempt in range(6):
+            page.goto(args.url)
+            try:
+                task.wait_for(timeout=15_000)
+                break
+            except Exception:
+                if attempt == 5:
+                    raise
+                page.wait_for_timeout(3000)
         task.fill(TASK)
         page.get_by_role("button", name=RUN_BUTTON).first.click()
 
@@ -154,19 +165,35 @@ def main() -> None:
         page.wait_for_timeout(1000)
         shoot(page, out, "portal-run.png")
 
-        # Ориентир — видимая кнопка подтверждения: заголовок окна встречается
-        # и в скрытом тексте журнала, туда локатор попадает первым.
-        approve = page.get_by_role("button", name=APPROVE_BUTTON).first
-        approve.wait_for(state="visible", timeout=STEP_MS)
-        page.wait_for_timeout(500)
-        shoot(page, out, "portal-approval.png")
-
-        approve.click()
-        page.get_by_text("CREATED").first.wait_for(timeout=STEP_MS)
+        # Остановок может быть две: сначала запрос, который составила модель
+        # (если она за ним пошла), потом публикация. Ориентир — видимая кнопка
+        # подтверждения: заголовок окна встречается и в скрытом тексте журнала,
+        # туда локатор попадает первым.
+        composed_shot = False
+        while True:
+            approve = page.get_by_role("button", name=APPROVE_BUTTON).first
+            approve.wait_for(state="visible", timeout=STEP_MS)
+            page.wait_for_timeout(500)
+            if not page.locator(".approve-queries").count():
+                shoot(page, out, "portal-approval.png")
+                approve.click()
+                break
+            if not composed_shot:
+                shoot(page, out, "portal-query-approval.png")
+                composed_shot = True
+            approve.click()
+            page.locator(".approve-queries").first.wait_for(state="detached", timeout=STEP_MS)
+        if not composed_shot:
+            print("модель не составляла запрос: portal-query-approval.png не обновлён")
+        # Ждать надо не статус публикации, а её результат: строку документа
+        # в списке. Статус лежит в общем тексте состояния, где «CREATED»
+        # встречается и внутри JSON.
+        document_button = page.locator("button", has_text="Проведи анализ НТ").first
+        document_button.wait_for(state="visible", timeout=STEP_MS)
 
         # Опубликованный документ открывается на месте схемы: это и есть то,
         # что читает человек после прогона.
-        page.locator("button", has_text="Проведи анализ НТ").first.click()
+        document_button.click()
         document = page.locator(".engine-document").first
         document.wait_for(timeout=60_000)
         page.evaluate("window.scrollTo(0, 0)")

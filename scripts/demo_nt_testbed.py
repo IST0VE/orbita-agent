@@ -33,6 +33,8 @@ from serve_nt_testbed import no_proxy  # noqa: E402
 os.environ.update(no_proxy({}))
 
 from langchain_core.messages import HumanMessage  # noqa: E402
+from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+from langgraph.types import Command  # noqa: E402
 
 from agent.nt_graph import build_graph  # noqa: E402
 
@@ -57,8 +59,21 @@ def main():
     print("== Запрос ==")
     print(task, end="\n\n")
 
-    state = build_graph().compile().invoke(
-        {"messages": [HumanMessage(task)]}, {"configurable": {"publish": False}})
+    # Составленный моделью запрос ждёт решения оператора. В портале решает
+    # человек; здесь прогон непрерывный, поэтому запрос печатается и
+    # подтверждается автоматически — иначе терминальный демо-прогон встанет.
+    app = build_graph().compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": f"demo-{args.test_id}", "publish": False}}
+    state = app.invoke({"messages": [HumanMessage(task)]}, config)
+    while state.get("__interrupt__"):
+        payload = state["__interrupt__"][0].value
+        if payload.get("action") != "query":
+            break
+        for item in payload.get("queries", []):
+            print(f"== Запрос модели ({item.get('tool')}) ==")
+            print(item.get("purpose") or "без пояснения")
+            print(item.get("query") or item.get("arguments"), end="\n\n")
+        state = app.invoke(Command(resume={"decision": "approved"}), config)
 
     print("== Что получилось ==")
     line("Вердикт", state.get("analysis_result"))

@@ -50,6 +50,49 @@ class Prometheus:
         except ValueError:
             return failure("INVALID_WINDOW", "invalid instant timestamp")
 
+    def series(self, match: str, start, end, *, limit: int = 2000) -> dict:
+        """Наборы меток под селектор: какие метрики вообще есть у этого сервиса.
+
+        Запрос метаданных, а не значений: Prometheus отвечает списком меток без
+        точек, поэтому он дёшев там, где `query_range` по тому же селектору
+        развернул бы тысячи рядов.
+        """
+        try:
+            start, end = window(start, end, max_seconds=self.max_window)
+        except (ValueError, TypeError):
+            return failure("INVALID_WINDOW", "invalid discovery range")
+        try:
+            response = self.http.json("GET", "/api/v1/series", params={
+                "match[]": match, "start": start, "end": end, "limit": limit})
+            if response.get("status") != "success":
+                raise AdapterError("QUERY_FAILED")
+            rows = [row for row in response.get("data", []) if isinstance(row, dict)]
+            return {"success": True, "series": rows[:limit],
+                    "truncated": len(rows) > limit or bool(response.get("warnings"))}
+        except (AdapterError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            return failure("PROMETHEUS_UNAVAILABLE", str(exc) if isinstance(exc, AdapterError)
+                           else "invalid series response")
+
+    def metadata(self, *, limit: int = 500) -> dict:
+        """Тип и HELP метрики так, как их объявил exporter."""
+        try:
+            response = self.http.json("GET", "/api/v1/metadata", params={"limit": limit})
+            if response.get("status") != "success":
+                raise AdapterError("QUERY_FAILED")
+            data = response.get("data", {})
+            if not isinstance(data, dict):
+                raise AdapterError("INVALID_METADATA")
+            described = {}
+            for name, entries in data.items():
+                entry = entries[0] if isinstance(entries, list) and entries else {}
+                if isinstance(entry, dict):
+                    described[name] = {"type": str(entry.get("type", "")),
+                                       "help": str(entry.get("help", ""))}
+            return {"success": True, "metadata": described}
+        except (AdapterError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            return failure("PROMETHEUS_UNAVAILABLE", str(exc) if isinstance(exc, AdapterError)
+                           else "invalid metadata response")
+
     def range_query(self, query: str, start, end, step: float, *, metric: str, unit: str) -> dict:
         try:
             start, end = window(start, end, max_seconds=self.max_window)

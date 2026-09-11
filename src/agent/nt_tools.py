@@ -12,6 +12,7 @@ from langgraph.prebuilt import InjectedState
 
 from agent import confluence
 from agent import tools as common_tools
+from agent.nt import discovery, query_guard
 from agent.nt.baseline import summarize
 from agent.nt.collection import Sources
 from agent.nt.models import failure
@@ -32,8 +33,11 @@ def bounded(result: dict, limit: int = 12000) -> dict:
 
 
 def build_tools(sources: Sources | None = None, *, settings=None) -> list:
+    def get_settings():
+        return settings or (sources.settings if sources else load_settings())
+
     def get_sources():
-        return sources or Sources.from_env(settings or load_settings())
+        return sources or Sources.from_env(get_settings())
 
     def run(name, state, function):
         began = time.monotonic()
@@ -74,6 +78,51 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
     def influx_query(metric: str, service: str, state: Annotated[dict, InjectedState]) -> dict:
         """Read an allowlisted Influx metric for a scoped service; return test-period statistics."""
         return run("influx_query", state, lambda: query(metric, service, state, "influx"))
+
+    @tool
+    def discover_metrics(service: str, contains: str,
+                         state: Annotated[dict, InjectedState]) -> dict:
+        """List metric names that existed for a scoped service, with exporter type and HELP."""
+        def fetch():
+            limits = get_settings()
+            if not limits.generated_queries:
+                return failure("NOT_ENABLED", "metric discovery is disabled on the server")
+            return discovery.discover(get_sources(), state, service, contains=contains,
+                                      limit=limits.discovery_limit)
+        return run("discover_metrics", state, fetch)
+
+    @tool
+    def run_metric_query(promql: str, purpose: str,
+                         state: Annotated[dict, InjectedState]) -> dict:
+        """Run a PromQL you composed, over the test period, after the operator approves it.
+
+        Units are NOT verified: the result is evidence for hypotheses only and never
+        changes the SLA verdict. Aggregate by (service) and scope every selector to the
+        namespace, otherwise the query is rejected before the operator sees it.
+        """
+        def fetch():
+            limits = get_settings()
+            if not limits.generated_queries:
+                return failure("NOT_ENABLED", "composed queries are disabled on the server")
+            reason = query_guard.validate(promql, state.get("namespace", ""),
+                                          max_range_seconds=limits.query_range_seconds)
+            if reason:
+                return failure("QUERY_REJECTED", reason)
+            prometheus = get_sources().prometheus
+            if not prometheus:
+                return failure("NOT_CONFIGURED", "Prometheus is not configured on the server")
+            result = prometheus.range_query(promql, state["started_at"], state["finished_at"],
+                                            limits.step, metric="composed", unit="unverified")
+            if not result.get("success"):
+                return result
+            # Запрос ограничен namespace, но в нём могут оказаться сервисы вне
+            # разобранного контура: разбор о них ничего не знает.
+            scoped = [item for item in result.get("series", [])
+                      if item["service"] in state.get("services", [])]
+            return {"success": bool(scoped), "query": promql, "purpose": str(purpose)[:200],
+                    "origin": "model_query", "metrics": summarize(scoped),
+                    "note": "composed query; units unverified; not used for the SLA verdict"}
+        return run("run_metric_query", state, fetch)
 
     @tool
     def get_pods(service: str, state: Annotated[dict, InjectedState]) -> dict:
@@ -157,7 +206,8 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
         return run("confluence_page", state, lambda: text_read("confluence_page", page_id, state))
 
     return [jira_issue, jira_search, confluence_search, confluence_page, prometheus_range_query,
-            influx_query, get_pods, get_pod_metrics, get_k8s_events, get_test_status, get_test_results]
+            influx_query, discover_metrics, run_metric_query, get_pods, get_pod_metrics,
+            get_k8s_events, get_test_status, get_test_results]
 
 
 NT_TOOLS = build_tools()

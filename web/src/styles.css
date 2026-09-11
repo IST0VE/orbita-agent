@@ -1382,6 +1382,9 @@ textarea:focus-visible {
 .engine-app .col-right > .panel { width: 100%; }
 .engine-app .engine-canvas { min-height: 0; }
 .engine-app .graph { max-height: 36vh; overflow: auto; cursor: auto; user-select: text; }
+.approve-queries { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.approve-queries pre { margin: 2px 0 0; padding: 6px 8px; border: 1px solid var(--line);
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 .engine-app .timeline-panel { flex: 0 0 auto; max-height: 260px; }
 .engine-app .engine-messages { max-height: 42vh; overflow: auto; }
 .engine-app button[aria-pressed="true"] { color: var(--green); }

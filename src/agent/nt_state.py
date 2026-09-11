@@ -44,6 +44,9 @@ class State(CommonState, total=False):
     anomalies: list[dict]
     ranked_services: list[dict]
     investigation_history: list
+    # Решение оператора по вызовам инструментов последнего ответа модели:
+    # какие id разрешены, какие отклонены и с какой причиной.
+    tool_approval: dict
     root_cause_hypotheses: list[dict]
     recommendations: list[str]
     requires_approval: bool

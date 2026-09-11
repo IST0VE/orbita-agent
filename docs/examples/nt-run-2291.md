@@ -1,6 +1,6 @@
-# Orbita: Проведи анализ НТ по NT-123. test_id=nt-run-2291 previous_test_id=nt-run-2187 [01a08f1e-44eb-7141-a49f-0051d38e73bd]
+# Orbita: Проведи анализ НТ по NT-123. test_id=nt-run-2291 previous_test_id=nt-run-2187 [01a08f85-ba74-72e3-91d5-6860c02cbc04]
 
-Страница собрана автоматически агентом анализа нагрузочного тестирования Orbita (модель deepseek-v4-flash). Обновлено: 2026-09-11T10:19:13. Правки руками затрёт следующий прогон треда.
+Страница собрана автоматически агентом анализа нагрузочного тестирования Orbita (модель deepseek-v4-flash). Обновлено: 2026-09-11T12:12:21. Правки руками затрёт следующий прогон треда.
 
 ## Задача
 
@@ -1064,17 +1064,25 @@ FAILED
 
 ## Root cause analysis
 
-- Гипотеза (likely), order-service: order-service исчерпал CPU-лимит: утилизация упиралась в потолок, появилось CPU-throttling, число реплик просело, был рестарт пода. На фоне этого p95/p99 выросли на порядок выше значений остальных участников потока и выше SLA, а error_rate превысил лимит — то есть деградация совпадает по времени с насыщением CPU самого тестируемого сервиса (наиболее вероятная точка насыщения в цепочке).
-  Evidence: metric:order-service:cpu, metric:order-service:cpu_throttling, metric:order-service:p95, metric:order-service:p99, metric:order-service:error_rate, metric:order-service:replicas, metric:order-service:pod_restarts, finding:1, finding:2, finding:0
+- Гипотеза (likely), order-service: На верхних ступенях прогона order-service упёрся в лимит CPU (утилизация выходила на плато вплоть до 1.0 при базовой ~0.33), появился CFS-троттлинг, и уже после его начала синхронно поехали p95/p99 и выросла доля 5xx/error rate. Это согласуется с картиной «CPU-сатурация → троттлинг → рост времени ответа и ошибок», а не с первичным сбоем сети/памяти (память и сеть росли пропорционально нагрузке, рестартов контейнера не было).
+  Evidence: metric:order-service:cpu, finding:15, finding:16, metric:order-service:cpu_throttling, finding:28, metric:order-service:p95, finding:1, finding:439, metric:order-service:p99, finding:2
 
-- Гипотеза (possible), order-service: Причиной возросшей стоимости обработки заказа на единицу нагрузки может быть переход на новую схему сериализации заказов в релизе 1.42: по контексту задачи этот профиль ещё не измерялся, а компоненты задачи включают order-service. Это объясняло бы именно CPU-bound насыщение, а не утечку памяти или сеть. Доказательство пока контекстное, а не метрическое.
-  Evidence: tool:call_00_Wc4FFGV5ULrugC0edzwh7114, metric:order-service:cpu, metric:order-service:cpu_throttling
+- Гипотеза (possible), order-service: Дополнительный вклад в дефицит мощности на пике: число реплик order-service в прогоне колебалось (минимум ниже медианы) и зафиксирован рестарт пода. Потеря/перезапуск пода в момент максимальной нагрузки снижает доступную ёмкость и могла усилить и троттлинг, и хвостовые задержки, но по имеющимся агрегатам нельзя отделить этот эффект от общего CPU-насыщения.
+  Evidence: metric:order-service:replicas, metric:order-service:pod_restarts, finding:15, finding:1, finding:2
 
-- Гипотеза (likely), order-service: Ёмкости конфигурации не хватает для целевых 2000 RPS: максимальная стабильная нагрузка прогона оказалась ниже целевого RPS, а реплики не масштабировались под нагрузку. Это согласуется с насыщением самого order-service при нормально работающих нижестоящих сервисах (payment-service и inventory-service без throttling, с низкими временами ответа и ошибками).
-  Evidence: tool:call_01_dLk4M3z0oDlEewO1cTkA3204, metric:order-service:replicas, metric:payment-service:cpu_throttling, metric:payment-service:p99, metric:inventory-service:p99, finding:15
+- Гипотеза (possible), checkout-api: Деградация checkout-api (рост p95/p99, 5xx и error rate) развивается на том же интервале верхних ступеней, что и у order-service, и выглядит как распространение проблемы снизу вверх по checkout-цепочке: собственный CPU checkout-api не упирался в лимит, троттлинга и рестартов нет. Это скорее следствие, чем независимая причина.
+  Evidence: metric:checkout-api:cpu, metric:checkout-api:cpu_throttling, metric:checkout-api:p95, metric:checkout-api:p99, metric:checkout-api:http_5xx, finding:166, finding:485, metric:order-service:p99, finding:2
 
-- Гипотеза (possible), checkout-api: Рост времен ответа и ошибок у checkout-api (а также gateway) синхронен по времени со всплесками у order-service и не сопровождается ростом CPU/throttling у самих этих сервисов, что согласуется с распространением деградации вверх по потоку от насыщенного order-service. Направление зависимостей в предоставленных данных не раскрыто, поэтому это лишь вероятная версия, а не подтверждённая причина.
-  Evidence: metric:checkout-api:p95, metric:checkout-api:p99, metric:checkout-api:error_rate, metric:checkout-api:cpu_throttling, finding:44, finding:408, finding:485, metric:gateway:p99, finding:59, finding:500
+- Гипотеза (possible), gateway: gateway показывает ту же форму кривой, что и checkout-api (рост p95/p99/5xx и error rate без троттлинга и рестартов при утилизации CPU существенно ниже лимита), то есть его задержки, вероятнее всего, отражают ожидание ответов нижележащих сервисов, а не собственную нехватку ресурсов.
+  Evidence: metric:gateway:cpu, metric:gateway:cpu_throttling, metric:gateway:p95, metric:gateway:p99, metric:gateway:http_5xx, finding:179, finding:500
+
+## Composed queries
+
+Запросы составлены моделью и подтверждены оператором. Единицы не проверены, в вердикт по SLA эти ряды не входят.
+
+- Проверить, совпадает ли во времени рост CFS-троттлинга CPU у order-service с началом деградации latency/5xx на верхних ступенях нагрузки (гипотеза о CPU-сатурации как первопричине).
+  `max by (service) (rate(container_cpu_cfs_throttled_periods_total{namespace="nt01", service="order-service"}[3m]) / clamp_min(rate(container_cpu_cfs_periods_total{namespace="nt01", service="order-service"}[3m]), 1))`
+  Evidence: tool:call_00_c3S3I48n0mAryzG5DMag2451
 
 ## Evidence
 
@@ -3498,161 +3506,119 @@ FAILED
       }
     ]
   },
-  "tool:call_00_Wc4FFGV5ULrugC0edzwh7114": {
+  "tool:call_00_IInggjfOCgeTfoONZmhG6356": {
     "success": true,
     "text": "NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)\nСсылка: http://localhost:8081/browse/NT-123\nТип: Task\nСтатус: In Progress\nПриоритет: High\nИсполнитель: Алексей Перфов\nАвтор: Мария Кью\nКомпоненты: order-service, checkout-api\nМетки: performance, checkout, release-1.42\nОбновлена: 2026-09-10\n\nОписание:\nh2. Задача\n\nПровести нагрузочное тестирование checkout flow перед релизом 1.42.\nОсновной интерес — поведение order-service после перехода на новую\nсхему сериализации заказов.\n\nh2. Параметры НТ\n\n* Окружение: nt01\n* Namespace: nt01\n* Тестируемый сервис: order-service\n* Точка входа (стенд): http://192.168.0.158:8087/api/checkout\n* Точка входа изнутри кластера: http://checkout-app:8080/api/checkout\n* Health-check: http://192.168.0.158:8087/healthz\n* Тип теста: load (ступенчатый)\n* Целевой RPS: 2000\n* Длительность: 21 минут\n* Сценарий k6: checkout_peak_2000rps\n* Ступени: 1000 -> 1600 -> 1800 -> 2000 RPS\n\nh2. SLA\n\n* p95 < 500 мс\n* p99 < 1200 мс\n* error rate < 1%\n* CPU utilization < 85% от лимита\n\nh2. Ссылки\n\n* Топология и зависимости: [NT/order-service — архитектура и зависимости|http://192.168.0.158:8082/pages/NT-ARCH]\n* SLA/SLO контура: [NT/SLA-SLO checkout flow|http://192.168.0.158:8082/pages/NT-SLA]\n* Предыдущий прогон: NT-118\n\nh2. Definition of Done\n\n* Отчёт с вердиктом PASS/FAIL по SLA\n* Определена максимальная стабильная нагрузка\n* Указана вероятная причина деградации (если есть)\n\nСвязи:\n- relates NT-118: НТ checkout flow, релиз 1.41 (1900 RPS)\n- blocks ORD-4471: order-service: перевести сериализацию заказов на новый формат\n- relates OPS-908: orders.events: рост consumer lag на nt01 во время нагрузочных прогонов\n\nКомментарии (от старых к новым):\n- 2026-09-10 Алексей Перфов: Прогон завершён в 16:06 UTC. Нужен разбор: на верхней ступени поехали времена ответа.\n- 2026-09-10 Дмитрий Опс: Напоминаю: в релизе 1.42 в order-service поменяли сериализацию заказов (ORD-4471). На нагрузочном профиле это ещё не мерили.\n- 2026-09-10 Алексей Перфов: Прогон запущен: test_id=nt-run-2291, старт 15:45 UTC, план 21 минут. Ступени 1000/1600/1800/2000 RPS.\n- 2026-09-10 Мария Кью: Стенд подготовлен, данные прогреты. Запускаем в 15:45 UTC.",
     "truncated": false,
     "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_00_Wc4FFGV5ULrugC0edzwh7114"
+    "evidence_id": "tool:call_00_IInggjfOCgeTfoONZmhG6356"
   },
-  "tool:call_01_dLk4M3z0oDlEewO1cTkA3204": {
+  "tool:call_01_4P98P4T6AYBU1sy5Gw5S2905": {
     "success": true,
-    "data": {
-      "test_id": "nt-run-2291",
-      "scenario": "checkout_peak_2000rps",
-      "jira_key": "NT-123",
-      "environment": "nt01",
-      "namespace": "nt01",
-      "target_service": "order-service",
-      "target_rps": 2000.0,
-      "duration_seconds": 1260,
-      "started_at": 1789055100.0,
-      "finished_at": 1789056360.0,
-      "baseline_start": 1789052700.0,
-      "baseline_end": 1789055100.0,
-      "test_status": "completed",
-      "sla_p95_ms": 500.0,
-      "sla_p99_ms": 1200.0,
-      "sla_error_rate": 0.01
-    },
-    "missing_parameters": [],
-    "evidence_id": "tool:call_01_dLk4M3z0oDlEewO1cTkA3204"
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [
+      {
+        "metric": "container_cpu_cfs_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_usage_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      }
+    ],
+    "total": 4,
+    "shown": 4,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:call_01_4P98P4T6AYBU1sy5Gw5S2905"
   },
-  "tool:call_02_EMf38ut07CG02aOxxGpD9820": {
+  "tool:call_02_9ELrV30QrsZVK35XqueU3117": {
     "success": true,
-    "text": "по запросу 'order-service CPU limits autoscaling nt01 load test' страниц не найдено",
+    "text": "по запросу 'order-service latency CPU saturation load test' страниц не найдено",
     "truncated": false,
     "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_02_EMf38ut07CG02aOxxGpD9820"
+    "evidence_id": "tool:call_02_9ELrV30QrsZVK35XqueU3117"
   },
-  "tool:call_01_zx5Lc4iygh4MHq1cxR5i7856": {
+  "tool:call_01_b3K6onM773METWFFp6t87848": {
     "success": true,
-    "data": [],
-    "historical": false,
-    "evidence_id": "tool:call_01_zx5Lc4iygh4MHq1cxR5i7856"
+    "text": "OPS-908: orders.events: рост consumer lag на nt01 во время нагрузочных прогонов\nСсылка: http://localhost:8081/browse/OPS-908\nТип: Bug\nСтатус: Open\nПриоритет: Medium\nИсполнитель: Дмитрий Опс\nАвтор: Дмитрий Опс\nКомпоненты: kafka-orders, notification-worker\nМетки: kafka, nt01\nОбновлена: 2026-09-05\n\nОписание:\nНа нагрузочных прогонах периодически растёт lag consumer-группы\nnotification-worker в топике orders.events.\n\nГипотеза платформенной команды: consumer упирается не в Kafka, а в\nсинхронный вызов order-service при обогащении сообщений.\nТребуется подтверждение на данных очередного НТ.\n\nСвязи:\n- relates NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)",
+    "truncated": false,
+    "note": "context text is not verified metric evidence",
+    "evidence_id": "tool:call_01_b3K6onM773METWFFp6t87848"
   },
-  "tool:call_02_qsGxkW29WYmnXxikqAP69183": {
+  "tool:call_02_AGspAsfGiRjJ4n148zKp4022": {
     "success": true,
-    "data": {
-      "kind": "PodMetricsList",
-      "apiVersion": "metrics.k8s.io/v1beta1",
-      "metadata": {},
-      "items": [
-        {
-          "kind": "PodMetrics",
-          "apiVersion": "metrics.k8s.io/v1beta1",
-          "metadata": {
-            "name": "order-service-699cfbb59-rzn2b",
-            "namespace": "nt01",
-            "creationTimestamp": "2026-09-11T06:18:54Z"
-          },
-          "timestamp": "2026-09-11T06:18:54Z",
-          "window": "30s",
-          "containers": [
-            {
-              "name": "app",
-              "usage": {
-                "cpu": "316m",
-                "memory": "815Mi"
-              }
-            }
-          ]
-        },
-        {
-          "kind": "PodMetrics",
-          "apiVersion": "metrics.k8s.io/v1beta1",
-          "metadata": {
-            "name": "order-service-699cfbb59-7s6sx",
-            "namespace": "nt01",
-            "creationTimestamp": "2026-09-11T06:18:54Z"
-          },
-          "timestamp": "2026-09-11T06:18:54Z",
-          "window": "30s",
-          "containers": [
-            {
-              "name": "app",
-              "usage": {
-                "cpu": "316m",
-                "memory": "815Mi"
-              }
-            }
-          ]
-        },
-        {
-          "kind": "PodMetrics",
-          "apiVersion": "metrics.k8s.io/v1beta1",
-          "metadata": {
-            "name": "order-service-699cfbb59-h49zb",
-            "namespace": "nt01",
-            "creationTimestamp": "2026-09-11T06:18:54Z"
-          },
-          "timestamp": "2026-09-11T06:18:54Z",
-          "window": "30s",
-          "containers": [
-            {
-              "name": "app",
-              "usage": {
-                "cpu": "316m",
-                "memory": "815Mi"
-              }
-            }
-          ]
-        },
-        {
-          "kind": "PodMetrics",
-          "apiVersion": "metrics.k8s.io/v1beta1",
-          "metadata": {
-            "name": "order-service-699cfbb59-ztcsg",
-            "namespace": "nt01",
-            "creationTimestamp": "2026-09-11T06:18:54Z"
-          },
-          "timestamp": "2026-09-11T06:18:54Z",
-          "window": "30s",
-          "containers": [
-            {
-              "name": "app",
-              "usage": {
-                "cpu": "316m",
-                "memory": "815Mi"
-              }
-            }
-          ]
+    "text": "ORD-4471: order-service: перевести сериализацию заказов на новый формат\nСсылка: http://localhost:8081/browse/ORD-4471\nТип: Story\nСтатус: Done\nПриоритет: Medium\nИсполнитель: Иван Разработчиков\nАвтор: Иван Разработчиков\nКомпоненты: order-service\nМетки: release-1.42\nОбновлена: 2026-09-07\n\nОписание:\nПереводим сериализацию заказа на новую схему (protobuf -> json+gzip\nдля совместимости с партнёрским API).\n\nРиски: рост CPU на сериализации, отдельно не профилировали.\nВыкатили в составе релиза 1.42 на nt01.\n\nСвязи:\n- blocked by NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)",
+    "truncated": false,
+    "note": "context text is not verified metric evidence",
+    "evidence_id": "tool:call_02_AGspAsfGiRjJ4n148zKp4022"
+  },
+  "tool:call_00_c3S3I48n0mAryzG5DMag2451": {
+    "success": true,
+    "query": "max by (service) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"nt01\", service=\"order-service\"}[3m]) / clamp_min(rate(container_cpu_cfs_periods_total{namespace=\"nt01\", service=\"order-service\"}[3m]), 1))",
+    "purpose": "Проверить, совпадает ли во времени рост CFS-троттлинга CPU у order-service с началом деградации latency/5xx на верхних ступенях нагрузки (гипотеза о CPU-сатурации как первопричине).",
+    "origin": "model_query",
+    "metrics": {
+      "order-service": {
+        "composed": {
+          "count": 43,
+          "median": 0.0,
+          "p95": 0.09758585858585858,
+          "p99": 0.10199393939393939,
+          "min": 0.0,
+          "max": 0.10424242424242425,
+          "mad": 0.0,
+          "unit": "unverified",
+          "source": "prometheus",
+          "start": 1789055100.0,
+          "end": 1789056360.0,
+          "invalid_points": 0,
+          "partial": false,
+          "max_gap": 30.0
         }
-      ]
+      }
     },
-    "historical": false,
-    "evidence_id": "tool:call_02_qsGxkW29WYmnXxikqAP69183"
-  },
-  "tool:call_00_TZbfApWvXfH0SLQN0LPl8477": {
-    "success": true,
-    "text": "по запросу 'order-service архитектура и зависимости checkout flow' страниц не найдено",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_00_TZbfApWvXfH0SLQN0LPl8477"
-  },
-  "tool:call_01_n4yxszYLCf6qBgfyVmKy0821": {
-    "success": true,
-    "text": "по запросу 'ORD-4471 order-service сериализация заказов' задач не найдено",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_01_n4yxszYLCf6qBgfyVmKy0821"
-  },
-  "tool:call_02_3VFkQI6dxKSNR52LUgj60540": {
-    "success": true,
-    "text": "по запросу 'OPS-908 orders.events consumer lag nt01' задач не найдено",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_02_3VFkQI6dxKSNR52LUgj60540"
+    "note": "composed query; units unverified; not used for the SLA verdict",
+    "evidence_id": "tool:call_00_c3S3I48n0mAryzG5DMag2451"
   }
 }
 ```
@@ -4434,21 +4400,19 @@ FAILED
 
 ## Recommendations
 
-- Предложение LLM, требует проверки: Проверить (по историческим метрикам периода теста) фактическое соотношение CPU limit/request и работу HPA у order-service на nt01: был ли потолок лимита достигнут и масштабировались ли реплики под ступени 1800/2000 RPS.
+- Предложение LLM, требует проверки: Профилировать сериализацию заказов (json+gzip) в order-service под нагрузкой и сравнить CPU-стоимость обработки запроса с прогоном NT-118 (до релиза 1.42).
 
-- Предложение LLM, требует проверки: Снять профиль CPU (flame graph / прогон с профилировщиком) на пути сериализации заказа после изменения ORD-4471 и сравнить с предыдущим поведением; при возможности выполнить изолированный прогон со старой схемой сериализации, чтобы отделить эффект изменения от общей ёмкости.
+- Предложение LLM, требует проверки: Проверить соответствие CPU limits/requests реальному потреблению order-service; при подтверждении троттлинга поднять лимиты и/или число реплик и повторить ступень 2000 RPS.
 
-- Предложение LLM, требует проверки: Проверить связь со смежной задачей OPS-908: посмотреть orders.events consumer lag во время этого прогона — не является ли рост лага следствием насыщения order-service (или его независимым фактором).
+- Предложение LLM, требует проверки: Разобрать единственный рестарт пода order-service и динамику replicas (4→3) в момент пика: посмотреть причины рестарта и не совпал ли он с ростом хвостовых задержек.
 
-- Предложение LLM, требует проверки: Сравнить с предыдущим прогоном NT-118 (1900 RPS): были ли тогда throttling/рестарты, чтобы понять, регресс это или исчерпание ёмкости стенда.
+- Предложение LLM, требует проверки: Повторить прогон на ступени около максимальной стабильной нагрузки (≈1830 RPS) для проверки, что после устранения CPU-ограничения SLA выполняется.
 
-- Предложение LLM, требует проверки: Уточнить топологию и порядок вызовов checkout flow (документ NT/order-service — архитектура и зависимости и NT/SLA-SLO): источник страницы сейчас недоступен, без него нельзя утверждать направление каскада.
+- Предложение LLM, требует проверки: Проверить гипотезу из OPS-908: сопоставить lag consumer-группы notification-worker в orders.events с интервалами деградации order-service на этом же прогоне.
 
-- Предложение LLM, требует проверки: Перепроверить корректность сравнения с baseline: сопоставление «baseline vs current» по ряду метрик (network, 4xx, 5xx) даёт одинаковый прирост около 300% у разных сервисов, что похоже на артефакт ступенчатого разгона нагрузки, а не на независимую деградацию; для выводов использовать сравнение по стабильным ступеням (1800/2000 RPS).
+- Предложение LLM, требует проверки: Восстановить доступность страницы топологии/зависимостей NT-ARCH (чтение не удалось) — без неё направление зависимостей order-service с checkout-api/gateway подтверждено только по метрикам.
 
-- Предложение LLM, требует проверки: Проверить, не был ли потерян под/рестарт order-service на критическом участке и не привёл ли он к недоступности реплики в момент пиковых задержек.
-
-- Предложение LLM, требует проверки: После устранения причин повторить целевые ступени 1800/1900/2000 RPS для поиска точки перегиба и подтверждения максимальной стабильной нагрузки.
+- Предложение LLM, требует проверки: Текущее состояние подов и событий Kubernetes проверять отдельно: оно относится к другому периоду и не доказывает состояние во время прогона.
 
 ## Unverified assumptions
 
@@ -4507,8 +4471,8 @@ Precheck относится к данным завершённого теста.
 | Метрика | Значение |
 | --- | --- |
 | Вызовов LLM | 4 |
-| Вход из кеша, токенов | 89344 |
-| Вход пересчитан, токенов | 2475 |
-| Выход, токенов | 3863 |
+| Вход из кеша, токенов | 93056 |
+| Вход пересчитан, токенов | 2578 |
+| Выход, токенов | 5163 |
 | Cache hit rate | 97.3% |
-| Стоимость | $0.007439 |
+| Стоимость | $0.009252 |

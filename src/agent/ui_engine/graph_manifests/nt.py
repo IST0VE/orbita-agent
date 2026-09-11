@@ -4,7 +4,7 @@ from agent.nt_roles import PIPELINE
 from agent.ui_engine.graph_manifests.common import base_manifest
 
 MANIFEST = base_manifest(PIPELINE)
-MANIFEST["manifest_version"] = "2026.09.10.1"
+MANIFEST["manifest_version"] = "2026.09.11.1"
 MANIFEST["input"] = [MANIFEST["input"][0]]
 MANIFEST["input"][0]["title"] = "Задача НТ: Jira, test_id, started_at / finished_at с часовым поясом"
 MANIFEST["nodes"] = {
@@ -20,6 +20,7 @@ MANIFEST["nodes"] = {
         ("detect_anomalies", "Аномалии и ranking", "system"),
         ("evaluate_test", "SLA и итоговый статус", "router"),
         ("investigate", "Исследование причин", "task"),
+        ("approve_tools", "Подтверждение запросов", "approval"),
         ("additional_tools", "Диагностические инструменты", "tool"),
         ("final_analysis", "Проверка гипотез", "system"),
         ("compare_baseline", "Сравнение с предыдущим НТ", "system"),
@@ -45,4 +46,21 @@ for surface in MANIFEST["surfaces"]:
     elif surface["id"] == "right":
         surface["widgets"] += ["analysis_result", "precheck_result", "ranked_services", "baseline_metrics", "timeline"]
 MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"] if r["id"] == "publish-approval"]
+# Остановка перед выполнением запроса, который составила модель: решение
+# принимает тот же оператор, что и публикацию, и теми же кнопками.
+MANIFEST["interrupts"].append({
+    "id": "query-approval",
+    "priority": 5,
+    "match": {"path": "action", "equals": "query"},
+    "widget": "approval",
+    "resume_schema": {
+        "type": "object",
+        "required": ["decision"],
+        "additionalProperties": False,
+        "properties": {
+            "decision": {"enum": ["approved", "rejected"]},
+            "reason": {"type": "string", "maxLength": 4000},
+        },
+    },
+})
 MANIFEST["redaction"].append({"path": "metric_snapshots", "mode": "metadata_only"})

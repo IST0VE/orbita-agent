@@ -86,6 +86,21 @@ def render_report(state: dict) -> str:
     for hypothesis in hypotheses:
         lines.append(f"- Гипотеза ({hypothesis['confidence']}), {hypothesis['service']}: "
                      f"{hypothesis['description']}\n  Evidence: " + ", ".join(hypothesis["evidence_ids"]))
+    # Запросы, которых нет в серверной карте: их составила модель, и оператор
+    # разрешил выполнение. В отчёте они приводятся дословно — иначе цифру из
+    # них не повторить и не оспорить.
+    composed = [item for item in state.get("evidence", {}).values()
+                if isinstance(item, dict) and item.get("origin") == "model_query"]
+    if composed:
+        lines.extend(["## Composed queries",
+                      "Запросы составлены моделью и подтверждены оператором. Единицы не "
+                      "проверены, в вердикт по SLA эти ряды не входят."])
+        for item in composed:
+            lines.append("\n".join([
+                f"- {item.get('purpose') or 'без пояснения'}",
+                f"  `{item.get('query', '')}`",
+                f"  Evidence: {item.get('evidence_id', '')}",
+            ]))
     lines.extend(["## Evidence", _json(state.get("evidence", {})), "## Baseline comparison",
                   *limited(state.get("baseline_comparison"), "сервисов")])
     previous = dict(state.get("previous_comparison") or {})

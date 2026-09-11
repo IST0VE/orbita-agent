@@ -12,7 +12,10 @@ class Risk(StrEnum):
 READ_OPERATIONS = frozenset({"jira_issue", "jira_search", "confluence_search", "confluence_page",
     "prometheus_query", "prometheus_range_query", "influx_query", "get_pods", "get_pod_metrics",
     "get_k8s_events", "describe_pod", "get_deployments", "get_replicas", "get_logs",
-    "get_test_status", "get_test_results"})
+    "get_test_status", "get_test_results",
+    # Чтение метаданных и выполнение проверенного запроса, составленного моделью:
+    # оба только читают, и оба ограничены серверными настройками и guard'ом.
+    "discover_metrics", "run_metric_query"})
 CONTROL_OPERATIONS = frozenset({"prepare_test", "start_test", "stop_test", "change_load"})
 
 
