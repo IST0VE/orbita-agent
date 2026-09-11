@@ -209,6 +209,14 @@ def current() -> Publisher:
     return _PUBLISHERS[resolve()]
 
 
+def named(name: str) -> Publisher:
+    """Цель по имени из доверенного описания конвейера."""
+    try:
+        return _PUBLISHERS[name]
+    except KeyError as exc:
+        raise PublishError(f"неизвестная цель публикации: {name}") from exc
+
+
 # --------------------------------------------------------------------------
 # Чтение опубликованного
 #

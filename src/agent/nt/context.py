@@ -60,7 +60,9 @@ def validate_fields(fields: dict) -> tuple[dict, list[str]]:
 def explicit_fields(text: str) -> dict:
     """Canonical JSON or key=value lines, plus unambiguous SLA units in prose."""
     result = {}
-    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    # Chat messages may omit the closing Markdown fence; the JSON itself must
+    # still be complete and valid before any fields can be accepted.
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*(?:```|\Z)", text, re.S)
     if text.strip().startswith("{"):
         blocks.append(text.strip())
     for block in blocks:

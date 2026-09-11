@@ -1,0 +1,18 @@
+{
+  "p95": {
+    "profile": "http",
+    "prometheus": "1000 * histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{namespace={{namespace}}}[1m])))"
+  },
+  "p99": {
+    "profile": "http",
+    "prometheus": "1000 * histogram_quantile(0.99, sum by (service, le) (rate(http_request_duration_seconds_bucket{namespace={{namespace}}}[1m])))"
+  },
+  "error_rate": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(http_requests_total{namespace={{namespace}},status=~\"5..\"}[1m])) / sum by (service) (rate(http_requests_total{namespace={{namespace}}}[1m]))"
+  },
+  "rps": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(http_requests_total{namespace={{namespace}}}[1m]))"
+  }
+}

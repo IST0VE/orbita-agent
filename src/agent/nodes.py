@@ -355,12 +355,14 @@ def publish_plan(
     state: State,
     config: RunnableConfig | None = None,
     pipeline: Pipeline = roles.PIPELINE,
+    *,
+    publisher: publishers.Publisher | None = None,
 ) -> dict:
     """
     Что нода публикации сделает на этом ходе: цель, готовые страницы, общий
     хеш и причина пропуска, если публиковать не нужно.
     """
-    publisher = publishers.current()
+    publisher = publisher or publishers.current()
     header = document_header(config, publisher.renderer, pipeline)
     pages = stage_pages(state, config, publisher.renderer, header, pipeline)
 
@@ -523,25 +525,34 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
     if plan["skip"]:
         return {}
 
-    answer = interrupt(
-        {
-            "action": "publish",
-            "target": plan["publisher"].name,
-            # Разметка документа: интерфейсу нужно знать, показывать его как
-            # Markdown или как XHTML. Выводить это из имени цели — значит
-            # завести знание о публикаторах на другом конце провода.
-            "format": plan["publisher"].renderer.name,
-            "title": page_title(state, config),
-            "pages": [page["title"] for page in plan["pages"]],
-            # Черновики страниц: тело каждой в том виде, в каком она уедет, и
-            # судьба заголовка — создастся страница или перезапишет чужую.
-            # Склеенный документ рядом остаётся: по нему конвейер читают
-            # целиком, а решение принимают по страницам (см. drafts.py).
-            "drafts": drafts.pages(plan),
-            "document": plan["document"],
-            "hint": 'ответьте true/false или {"decision": "rejected", "reason": ...}',
-        }
-    )
+    payload = {
+        "action": "publish",
+        "target": plan["publisher"].name,
+        # Разметка документа: интерфейсу нужно знать, показывать его как
+        # Markdown или как XHTML. Выводить это из имени цели — значит
+        # завести знание о публикаторах на другом конце провода.
+        "format": plan["publisher"].renderer.name,
+        "title": page_title(state, config),
+        "pages": [page["title"] for page in plan["pages"]],
+        # Черновики страниц: тело каждой в том виде, в каком она уедет, и
+        # судьба заголовка — создастся страница или перезапишет чужую.
+        # Склеенный документ рядом остаётся: по нему конвейер читают
+        # целиком, а решение принимают по страницам (см. drafts.py).
+        "drafts": drafts.pages(plan),
+        "document": plan["document"],
+        "hint": 'ответьте true/false или {"decision": "rejected", "reason": ...}',
+    }
+    if (pipeline.rejection_fallback
+            and plan["publisher"].name != pipeline.rejection_fallback):
+        payload["reject_label"] = (
+            "не публиковать; сохранить файл"
+            if pipeline.rejection_fallback == "file"
+            else "не публиковать; сохранить в резервную цель"
+        )
+        payload["reject_hint"] = (
+            "Отказ отменит внешнюю публикацию, но готовый отчёт будет сохранён локально."
+        )
+    answer = interrupt(payload)
     decision = approval_of(answer)
     if isinstance(answer, dict) and answer.get("decision") == "drafts":
         decision["decision"] = "drafts"
@@ -554,6 +565,49 @@ def _rollup(results: list[dict]) -> str:
     if failed:
         return "failed" if len(failed) == len(results) else "partial"
     return "created" if all(r.get("status") == "created" for r in results) else "updated"
+
+
+def _publish_fallback(
+    state: State,
+    config: RunnableConfig,
+    pipeline: Pipeline,
+    *,
+    source_target: str,
+    source_status: str,
+    source_reason: str,
+) -> dict:
+    """Сохранить документ в явно разрешённую конвейером резервную цель."""
+    fallback = publishers.named(pipeline.rejection_fallback or "")
+    plan = publish_plan(state, config, pipeline, publisher=fallback)
+    results = []
+    for page in plan["pages"]:
+        try:
+            result = dict(fallback.publish(page["title"], page["document"]))
+        except publishers.PublishError as exc:
+            result = {"status": "failed", "title": page["title"], "reason": str(exc)}
+        result["role"] = page["role"]
+        results.append(result)
+
+    status = _rollup(results) if results else "failed"
+    broken = [item for item in results if item.get("status") == "failed"]
+    if broken:
+        reason = source_reason + "; резервное сохранение не удалось: " + "; ".join(
+            f"{item['title']}: {item.get('reason', 'без причины')}" for item in broken
+        )
+    else:
+        reason = source_reason + "; готовый отчёт сохранён локально в PUBLISH_DIR"
+    return {
+        "document": plan["document"],
+        "publication": {
+            "status": status,
+            "title": page_title(state, config),
+            "target": fallback.name,
+            "fallback_from": source_target,
+            "external_status": source_status,
+            "pages": results,
+            "reason": reason,
+        },
+    }
 
 
 def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
@@ -578,7 +632,18 @@ def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
         }
 
     if plan["skip"]:
-        return skip(*plan["skip"])
+        status, reason = plan["skip"]
+        if (status == "skipped" and pipeline.rejection_fallback
+                and plan["publisher"].name != pipeline.rejection_fallback):
+            return _publish_fallback(
+                state,
+                config,
+                pipeline,
+                source_target=plan["publisher"].name,
+                source_status=status,
+                source_reason=reason,
+            )
+        return skip(status, reason)
 
     decision = state.get("approval") or {}
     if cfg.publish_require_approval() and decision.get("decision") == "drafts":
@@ -612,10 +677,18 @@ def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
 
     if cfg.publish_require_approval():
         if decision.get("decision") != "approved":
-            return skip(
-                "rejected",
-                decision.get("reason") or "оператор не подтвердил публикацию",
-            )
+            reason = decision.get("reason") or "оператор не подтвердил публикацию"
+            if (pipeline.rejection_fallback
+                    and plan["publisher"].name != pipeline.rejection_fallback):
+                return _publish_fallback(
+                    state,
+                    config,
+                    pipeline,
+                    source_target=plan["publisher"].name,
+                    source_status="rejected",
+                    source_reason=reason,
+                )
+            return skip("rejected", reason)
 
     results = []
     for page in plan["pages"]:

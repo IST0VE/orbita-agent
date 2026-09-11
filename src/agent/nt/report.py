@@ -11,6 +11,26 @@ def _json(value) -> str:
 
 
 def render_report(state: dict) -> str:
+    if state.get("precheck_result", {}).get("success") is False:
+        lines = ["# NT Report", "## Анализ не выполнен", "INCONCLUSIVE",
+            f"Тест: {state.get('test_id') or 'не указан'}.",
+            "Проверка входных данных не пройдена. Сбор baseline и метрик не выполнялся; "
+            "результат нагрузочного теста не оценён.", "## Что мешает анализу"]
+        lines.extend(f"- {item}" for item in state.get("missing_parameters", []))
+        if state.get("source_errors"):
+            lines.extend(["## Ошибки источников", _json(state["source_errors"])])
+        lines.extend(["## Как продолжить",
+            "Дополните или исправьте перечисленные параметры в запросе либо в источнике "
+            "данных теста. Для анализа нужны test_id, target_service, environment, namespace, "
+            "started_at, finished_at и хотя бы один SLA."])
+        if "не настроен NT_METRIC_QUERIES" in state.get("missing_parameters", []):
+            lines.append("Задайте непустой NT_METRIC_QUERIES с запросами для ваших метрик "
+                         "и перезапустите backend. Одних URL Prometheus/InfluxDB недостаточно.")
+        if state.get("source_errors"):
+            lines.append("Проверьте API источников из окружения, где запущен backend. "
+                         "Доступность страницы в браузере не подтверждает доступ из backend.")
+        lines.extend(["## Precheck", _json(state["precheck_result"])])
+        return confluence.mask_text("\n\n".join(lines))
     lines = ["# NT Report", "## Task"]
     for key in ("jira_key", "test_id", "test_status", "environment", "namespace", "target_service", "started_at", "finished_at"):
         value = state.get(key, "не указано")

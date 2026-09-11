@@ -137,6 +137,20 @@ def test_stop_threshold_and_command_policy():
         assert not allowed(command, approved=True, allow_control=True)
 
 
+@pytest.mark.parametrize("closing", ["", "\n", "```", "\n```"])
+def test_json_input_accepts_missing_markdown_closing_fence(closing):
+    text = 'Проведи анализ завершённого НТ. ```json {"test_id":"nt-run-2291"}' + closing
+    assert explicit_fields(text) == {"test_id": "nt-run-2291"}
+
+
+@pytest.mark.parametrize("payload", [
+    '{"test_id":"nt-run-2291"',
+    '{"test_id":"nt-run-2291",}',
+])
+def test_missing_markdown_fence_does_not_allow_invalid_json(payload):
+    assert explicit_fields("Проведи анализ завершённого НТ. ```json " + payload) == {}
+
+
 def test_explicit_input_and_llm_evidence_validation():
     fields = explicit_fields("service = orders\np95 < 500ms\nerrors < 1%\nstarted_at: 2026-09-01T12:00:00Z")
     assert fields["sla_p95_ms"] == 500

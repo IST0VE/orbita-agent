@@ -15,4 +15,4 @@ def brief(role, task, artifacts):
 PIPELINE = Pipeline(key="nt", title="Нагрузочное тестирование",
     summary="Анализ завершённого НТ: контекст, baseline, SLA, аномалии и отчёт",
     byline="агентом анализа нагрузочного тестирования", roles=(REPORT,),
-    prompt_for=prompt_for, brief=brief, one_page=True)
+    prompt_for=prompt_for, brief=brief, one_page=True, rejection_fallback="file")

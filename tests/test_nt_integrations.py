@@ -85,6 +85,7 @@ def test_influx3_sql_parameters_and_identifier_rejection():
 
 @responses.activate
 def test_load_testing_read_only_contract():
+    responses.get("https://load.test/tests/123", json={"test_id": "123", "status": "completed"})
     responses.get("https://load.test/tests/123/results", json={"test_id": "123", "test_status": "completed",
                    "started_at": 1, "finished_at": 10, "raw_results": "secret"})
     adapter = HTTPLoadTesting("https://load.test")
@@ -92,7 +93,94 @@ def test_load_testing_read_only_contract():
     assert not adapter.start_test("123")["success"]
     assert not adapter.stop_test("123")["success"]
     assert not adapter.get_test_results("../../admin")["success"]
-    assert len(responses.calls) == 1
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_gateway_card_and_results_are_merged_without_promoting_observed_values():
+    responses.get("https://load.test/tests/123", json={
+        "test_id": "123", "status": "completed", "target_service": "order-service",
+        "environment": "nt01", "namespace": "nt01", "jira_key": "NT-123",
+        "started_at": "2026-09-10T15:45:00Z", "finished_at": "2026-09-10T16:06:00Z",
+        "baseline_start": "2026-09-10T15:05:00Z", "baseline_end": "2026-09-10T15:45:00Z",
+    })
+    responses.get("https://load.test/tests/123/results", json={
+        "test_id": "123", "status": "completed", "started_at": 1789055100,
+        "thresholds": [
+            {"metric": "p95_ms", "expression": "p95_ms < 500", "observed": 900, "passed": True},
+            {"metric": "error_rate", "expression": "< 1%", "observed": .1, "passed": True},
+        ], "summary": {"raw": "discard me"}, "metrics_source": {"prometheus": "https://untrusted"},
+    })
+    result = HTTPLoadTesting("https://load.test").get_test_results("123")
+    assert result["success"]
+    assert not result["missing_parameters"]
+    assert result["data"]["target_service"] == "order-service"
+    assert result["data"]["test_status"] == "completed"
+    assert result["data"]["baseline_start"] == 1789052700
+    assert result["data"]["sla_p95_ms"] == 500
+    assert result["data"]["sla_error_rate"] == .01
+    assert "observed" not in str(result)
+    assert "untrusted" not in str(result)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("test_id", "different"), ("namespace", "different"), ("started_at", 20),
+])
+@responses.activate
+def test_gateway_rejects_conflicting_card_and_results(field, value):
+    card = {"test_id": "123", "namespace": "nt", "started_at": 1}
+    responses.get("https://load.test/tests/123", json=card)
+    responses.get("https://load.test/tests/123/results", json={**card, field: value})
+    result = HTTPLoadTesting("https://load.test").get_test_results("123")
+    assert not result["success"]
+    assert result["error_type"] == "INVALID_TEST_METADATA"
+
+
+@pytest.mark.parametrize("card_status,result_status", [("running", "completed"), ("completed", "running")])
+@responses.activate
+def test_running_status_wins_over_completed_results(card_status, result_status):
+    responses.get("https://load.test/tests/123", json={"status": card_status})
+    responses.get("https://load.test/tests/123/results", json={"status": result_status})
+    assert HTTPLoadTesting("https://load.test").get_test_results("123")["data"]["test_status"] == "running"
+
+
+@responses.activate
+def test_results_only_gateway_retains_data_and_reports_unavailable_card():
+    responses.get("https://load.test/tests/123", status=404)
+    responses.get("https://load.test/tests/123/results", json={"test_id": "123", "status": "completed"})
+    result = HTTPLoadTesting("https://load.test").get_test_results("123")
+    assert result["success"]
+    assert result["data"]["test_status"] == "completed"
+    assert result["errors"][0]["message"] == "HTTP_404"
+
+
+@pytest.mark.parametrize("metric,expression,field,value", [
+    ("p95_ms", "<500", "sla_p95_ms", 500),
+    ("p95", "p95 <= 0.5s", "sla_p95_ms", 500),
+    ("p99", "p99 < 1000ms", "sla_p99_ms", 1000),
+    ("error_rate", "error_rate < 0.01", "sla_error_rate", .01),
+    ("cpu", "cpu <= 85%", "sla_max_cpu", .85),
+])
+def test_gateway_threshold_units(metric, expression, field, value):
+    from agent.integrations.load_testing import threshold_fields
+    fields, errors = threshold_fields([{"metric": metric, "expression": expression}])
+    assert not errors
+    assert fields == {field: value}
+
+
+@pytest.mark.parametrize("item", [
+    {"metric": "p95", "observed": 100, "passed": True},
+    {"metric": "p95", "expression": "p99 < 100ms"},
+    {"metric": "error_rate", "expression": "<2"},
+    {"metric": "error_rate", "expression": "<10ms"},
+    {"metric": "p95", "expression": ">500ms"},
+    {"metric": "unknown", "expression": "<1"},
+])
+def test_gateway_unsupported_thresholds_are_explicit(item):
+    from agent.integrations.load_testing import threshold_fields
+    fields, errors = threshold_fields([item])
+    assert not fields
+    assert errors
 
 
 @responses.activate

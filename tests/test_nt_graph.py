@@ -116,6 +116,33 @@ def test_missing_input_and_running_test_do_not_fetch_metrics():
     assert not prom.calls
 
 
+@responses.activate
+def test_precheck_explains_empty_queries_and_gateway_failure_despite_missing_dates():
+    from agent.integrations.load_testing import HTTPLoadTesting
+
+    prom = FakePrometheus()
+    sources = Sources(Settings(), prometheus=prom,
+                      load_testing=HTTPLoadTesting("https://load.test"))
+    responses.get("https://load.test/tests/nt-run-2291/results", status=404)
+    state = nt_graph.build_graph(model(), sources=sources).compile().invoke(
+        {"messages": [HumanMessage("Проведи анализ НТ.\ntest_id=nt-run-2291")]},
+        {"configurable": {"publish": False}},
+    )
+
+    assert not prom.calls
+    assert not state.get("usage")
+    assert not state["precheck_result"]["success"]
+    assert "не настроен NT_METRIC_QUERIES" in state["missing_parameters"]
+    assert "не указаны SLA с явными единицами" in state["missing_parameters"]
+    assert "не указан started_at" in state["missing_parameters"]
+    report = state["artifacts"]["report"]
+    assert "Анализ не выполнен" in report
+    assert "nt-run-2291" in report
+    assert "LOAD_TESTING_UNAVAILABLE" in report
+    assert "Одних URL Prometheus/InfluxDB недостаточно" in report
+    assert "## Main anomalies" not in report
+
+
 def test_invalid_llm_claims_are_not_promoted_to_facts():
     sources, _ = setup_source()
     state = run(sources, AIMessage(content=json.dumps({"hypotheses": [{"service": "svc-0",
@@ -174,6 +201,64 @@ def test_publication_uses_existing_approval_and_resumes_without_reanalysis(monke
     assert len(prom.calls) == count
 
 
+def test_rejected_confluence_publication_saves_nt_report_as_a_file(monkeypatch):
+    from agent import confluence, publishers
+
+    sources, prom = setup_source()
+    monkeypatch.setenv("PUBLISH_REQUIRE_APPROVAL", "1")
+    monkeypatch.setenv("PUBLISH_TARGET", "confluence")
+    monkeypatch.setenv("CONFLUENCE_BASE_URL", "https://wiki.example.com")
+    monkeypatch.setenv("CONFLUENCE_TOKEN", "token")
+    monkeypatch.setenv("CONFLUENCE_SPACE_KEY", "NT")
+    monkeypatch.setattr(
+        publishers.ConfluencePublisher,
+        "preview",
+        lambda self, title: {"action": "create"},
+    )
+    monkeypatch.setattr(
+        confluence,
+        "publish_page",
+        lambda *args, **kwargs: pytest.fail("must not publish"),
+    )
+    app = nt_graph.build_graph(model(AIMessage(content="{}")), sources=sources).compile(
+        checkpointer=InMemorySaver()
+    )
+    config = {"configurable": {"thread_id": "nt-local-fallback", "publish": True}}
+
+    pending = app.invoke({**INPUT, "messages": [HumanMessage("Анализ НТ")]}, config)
+    payload = pending["__interrupt__"][0].value
+    assert payload["reject_label"] == "не публиковать; сохранить файл"
+    count = len(prom.calls)
+    final = app.invoke(Command(resume={"decision": "rejected"}), config)
+
+    assert final["publication"]["target"] == "file"
+    assert final["publication"]["fallback_from"] == "confluence"
+    assert final["publication"]["external_status"] == "rejected"
+    assert final["publication"]["status"] == "created"
+    assert len(final["publication"]["pages"]) == 1
+    saved = publishers.documents()
+    assert len(saved) == 1
+    assert "# NT Report" in publishers.read_document(saved[0]["name"])
+    assert len(prom.calls) == count
+
+
+def test_missing_confluence_credentials_save_nt_report_as_a_file(monkeypatch):
+    from agent import publishers
+
+    sources, _ = setup_source()
+    monkeypatch.setenv("PUBLISH_REQUIRE_APPROVAL", "1")
+    monkeypatch.setenv("PUBLISH_TARGET", "confluence")
+    state = nt_graph.build_graph(model(AIMessage(content="{}")), sources=sources).compile().invoke(
+        {**INPUT, "messages": [HumanMessage("Анализ НТ")]},
+        {"configurable": {"thread_id": "nt-no-confluence-token", "publish": True}},
+    )
+
+    assert "__interrupt__" not in state
+    assert state["publication"]["target"] == "file"
+    assert state["publication"]["external_status"] == "skipped"
+    assert len(publishers.documents()) == 1
+
+
 @responses.activate
 def test_jira_only_question_extracts_explicit_context_with_mock_http(monkeypatch):
     from agent import jira
@@ -185,6 +270,64 @@ def test_jira_only_question_extracts_explicit_context_with_mock_http(monkeypatch
                        {"configurable": {"publish": False}})
     assert state["jira_key"] == "NT-123"
     assert state["target_service"] == "svc-0"
+    assert state["analysis_result"] == "FAILED"
+
+
+@responses.activate
+def test_test_id_in_unclosed_json_fence_loads_gateway_metadata_and_metrics():
+    from agent.integrations.load_testing import HTTPLoadTesting
+
+    sources, prom = setup_source(anomaly=False)
+    sources.load_testing = HTTPLoadTesting("https://load.test")
+    responses.get("https://load.test/tests/nt-run-2291", json={
+        **INPUT, "test_id": "nt-run-2291", "status": "completed",
+    })
+    responses.get("https://load.test/tests/nt-run-2291/results", json={
+        **INPUT, "test_id": "nt-run-2291", "test_status": "completed",
+    })
+    state = nt_graph.build_graph(model(AIMessage(content="{}")), sources=sources).compile().invoke(
+        {"messages": [HumanMessage(
+            'Проведи анализ завершённого НТ. ```json {"test_id":"nt-run-2291"}'
+        )]},
+        {"configurable": {"publish": False}},
+    )
+
+    assert len(responses.calls) == 2
+    assert state["test_id"] == "nt-run-2291"
+    assert state["precheck_result"]["success"]
+    assert len(prom.calls) == 8
+    assert state["analysis_result"] == "PASSED"
+    assert "test_id: nt-run-2291" in state["artifacts"]["report"]
+
+
+@responses.activate
+def test_split_gateway_metadata_and_thresholds_reach_metric_analysis():
+    from agent.integrations.load_testing import HTTPLoadTesting
+
+    sources, prom = setup_source()
+    sources.load_testing = HTTPLoadTesting("https://load.test")
+    card = {k: v for k, v in INPUT.items() if not k.startswith("sla_")}
+    responses.get("https://load.test/tests/load-123", json={
+        **card, "status": "completed", "baseline_start": START - 600, "baseline_end": START,
+    })
+    responses.get("https://load.test/tests/load-123/results", json={
+        "test_id": "load-123", "status": "completed", "started_at": START, "finished_at": END,
+        "thresholds": [
+            {"metric": "p95_ms", "expression": "p95_ms < 500", "passed": True, "observed": 100},
+            {"metric": "error_rate", "expression": "error_rate < 0.01", "passed": True},
+        ],
+    })
+    state = nt_graph.build_graph(model(AIMessage(content="{}")), sources=sources).compile().invoke(
+        {"messages": [HumanMessage("Проанализируй НТ.\ntest_id=load-123")]},
+        {"configurable": {"publish": False}},
+    )
+    assert state["precheck_result"]["success"]
+    assert state["test_status"] == "completed"
+    assert state["baseline_start"] == START - 600
+    assert state["sla_p95_ms"] == 500
+    assert len(prom.calls) == 8
+    assert len(state["current_metrics"]) == 25
+    # Gateway flags cannot overrule violations found in the real metric series.
     assert state["analysis_result"] == "FAILED"
 
 

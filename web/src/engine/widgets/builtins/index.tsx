@@ -368,7 +368,10 @@ function ApprovalWidget({ value, binding, readonly, onAction }: WidgetProps) {
       <p className="hint">Откройте формы в Jira, внесите правки и создайте задачи вручную. Возможность заполнить поля по ссылке зависит от версии Jira.</p>
     </div> : null}
     <button ref={approve} className="btn-yes" disabled={readonly || (asksProject && !project.trim())} onClick={() => decide("approved")}>[подтвердить]</button>
-    <button className="btn-no" disabled={readonly} onClick={() => decide("rejected")}>[отклонить]</button>
+    <button className="btn-no" disabled={readonly} onClick={() => decide("rejected")}>
+      [{text(payload.reject_label) || "отклонить"}]
+    </button>
+    {payload.reject_hint ? <p className="hint">{text(payload.reject_hint)}</p> : null}
   </div>;
 }
 

@@ -154,6 +154,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             except Exception:
                 result = failure("LOAD_TESTING_UNAVAILABLE", "test metadata unavailable")
             if result.get("success"):
+                update["missing_parameters"].extend(result.get("missing_parameters", []))
+                update["source_errors"].extend(result.get("errors", []))
                 data = result["data"]
                 if data.get("test_id", extracted["test_id"]) != extracted["test_id"]:
                     update["missing_parameters"].append("gateway вернул другой test_id")
@@ -168,9 +170,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                                 if not same:
                                     update["missing_parameters"].append(f"период теста противоречит gateway: {field}")
                             extracted.setdefault(field, value)
-                    # A live test must never be treated as a completed historical run.
-                    if data.get("test_status") == "running":
-                        extracted["test_status"] = "running"
+                    # The gateway status is authoritative, including when state
+                    # still contains a default from an earlier failed precheck.
+                    if data.get("test_status") is not None:
+                        extracted["test_status"] = data["test_status"]
                     contexts.append({"kind": "load_testing", "id": extracted["test_id"], "text": _json(data)})
             else:
                 update["source_errors"].append(result)
@@ -241,6 +244,27 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 missing.append(f"не указан {key}")
         try:
             settings = settings_for()
+            if not settings.queries:
+                missing.append("не настроен NT_METRIC_QUERIES")
+        except (ValueError, TypeError, KeyError):
+            settings = None
+            missing.append("неверные настройки NT на сервере")
+        try:
+            if not thresholds.limits_from(state):
+                missing.append("не указаны SLA с явными единицами")
+            for field in NUMBER_FIELDS:
+                if state.get(field) is not None and (isinstance(state[field], bool)
+                    or not isinstance(state[field], (int, float)) or not 0 <= state[field] < float("inf")):
+                    raise ValueError("invalid numeric parameter")
+        except (ValueError, TypeError, OverflowError):
+            missing.append("неверные SLA или числовые параметры НТ")
+        if state.get("test_status") == "running":
+            missing.append("MVP 1 анализирует только завершённые тесты")
+        try:
+            # These checks are independent: missing dates must not hide an empty
+            # metric query map or missing SLA from the operator.
+            if settings is None:
+                raise ValueError("invalid server settings")
             start, end = window(state.get("started_at"), state.get("finished_at"), max_seconds=settings.max_window)
             if end > time.time():
                 raise ValueError("test period is in the future")
@@ -254,19 +278,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             update.update(started_at=start, finished_at=end, baseline_start=base_start, baseline_end=base_end,
                           elapsed_seconds=end - start)
             checks.append({"name": "historical_window", "success": True})
-            if not settings.queries:
-                missing.append("не настроен NT_METRIC_QUERIES")
-            limits = thresholds.limits_from(state)
-            if not limits:
-                missing.append("не указаны SLA с явными единицами")
-            for field in NUMBER_FIELDS:
-                if state.get(field) is not None and (isinstance(state[field], bool)
-                    or not isinstance(state[field], (int, float)) or not 0 <= state[field] < float("inf")):
-                    raise ValueError("invalid numeric parameter")
-            if state.get("test_status") == "running":
-                missing.append("MVP 1 анализирует только завершённые тесты")
         except (ValueError, TypeError, OverflowError):
-            missing.append("неверный период, числовые параметры или настройки NT")
+            if settings is not None and all(state.get(k) is not None for k in ("started_at", "finished_at")):
+                missing.append("неверный период теста или baseline")
+            checks.append({"name": "historical_window", "success": False})
         checks.append({"name": "required_parameters", "success": not missing, "missing": missing})
         return {**update, "precheck_result": {"success": not missing, "checks": checks},
                 "missing_parameters": list(dict.fromkeys(missing)), "stage": "precheck",
