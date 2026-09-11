@@ -161,6 +161,55 @@ def test_tool_loop_is_bounded_and_unknown_shell_tool_does_not_execute():
     assert state["source_errors"][-1]["error_type"] == "INVESTIGATION_SKIPPED"
 
 
+def test_investigation_limit_keeps_collected_evidence_and_history():
+    """Упор в лимит прекращает исследование, но не стирает оплаченную работу."""
+    sources, _ = setup_source()
+    turns = [AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
+        "args": {"metric": "cpu", "service": "svc-0"}, "id": f"call-{index}"}]) for index in range(4)]
+    state = run(sources, *turns)
+    assert state["iteration"] == 4
+    assert state["stop_reason"] == "investigation_limit"
+    assert len(state["investigation_history"]) > 1
+    assert not getattr(state["investigation_history"][-1], "tool_calls", None)
+    assert [key for key in state["evidence"] if key.startswith("tool:")]
+    assert "Исследование остановлено до вывода" in state["artifacts"]["report"]
+
+
+def test_report_limits_per_service_dumps_and_names_the_omission():
+    sources, _ = setup_source()
+    state = run(sources, AIMessage(content='{"hypotheses": [], "recommendations": []}'))
+    report = state["artifacts"]["report"]
+    section = report.split("## Baseline comparison")[1].split("## Previous test comparison")[0]
+    assert "svc-0" in section
+    assert "svc-24" not in section
+    assert "из 25 сервисов" in section
+
+
+def test_tool_says_why_a_metric_was_refused():
+    """«Не получилось» без причины заставляет модель гадать и жечь ходы."""
+    sources, _ = setup_source()
+    state = run(sources, AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
+        "args": {"metric": "disk_latency", "service": "svc-0"}, "id": "unknown-metric"}]),
+        AIMessage(content="{}"))
+    result = json.loads(state["investigation_history"][2].content)
+    assert not result["success"]
+    assert result["errors"][0]["error_type"] == "METRIC_NOT_ALLOWED"
+
+
+def test_turn_with_too_many_tool_calls_is_rejected_whole():
+    """Запрос сверх лимита отклоняется целиком; лимит назван в промпте."""
+    from agent import nt_prompts
+    assert "не более трёх за один ход" in nt_prompts.INVESTIGATE
+    sources, _ = setup_source()
+    greedy = AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
+        "args": {"metric": "cpu", "service": "svc-0"}, "id": f"call-{index}"} for index in range(4)])
+    state = run(sources, greedy, AIMessage(content=json.dumps({"hypotheses": [{"service": "svc-0",
+        "confidence": "likely", "description": "CPU", "evidence_ids": ["metric:svc-0:cpu"]}]})))
+    assert state["iteration"] == 1
+    assert not [k for k in state["evidence"] if k.startswith("tool:")]
+    assert state["root_cause_hypotheses"] == []
+
+
 def test_out_of_scope_and_unknown_metric_tools_return_structured_errors():
     sources, _ = setup_source()
     state = run(sources, AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
@@ -400,6 +449,26 @@ def test_previous_test_comparison_uses_actual_metrics():
     assert comparison["test_id"] == "previous"
     assert comparison["stable_rps"]["percent"] == 0
     assert comparison["metrics"]["svc-0"]["p95"]["percent"] == 0
+
+
+def test_previous_run_regression_reaches_the_investigation_brief():
+    """Сравнение с прошлым прогоном бесполезно, если приходит после гипотез."""
+    sources, _ = setup_source(anomaly=False)
+    class Gateway:
+        def get_test_results(self, test_id):
+            return {"success": True, "data": {**INPUT, "test_id": test_id,
+                "started_at": START - 3600 if test_id == "previous" else START,
+                "finished_at": END - 3600 if test_id == "previous" else END,
+                "scenario": "checkout", "test_status": "completed"}}
+    sources.load_testing = Gateway()
+    state = run(sources, AIMessage(content="{}"),
+                extra={"previous_test_id": "previous", "scenario": "checkout"})
+    brief = json.loads(state["investigation_history"][0].content)
+    assert brief["previous_comparison"]["test_id"] == "previous"
+    assert brief["previous_comparison"]["stable_rps"]["percent"] == 0
+    assert "previous_stable_rps" not in brief["previous_comparison"]
+    # Сравнение по всему контуру переполняет бриф и вытесняет из него улики.
+    assert set(brief["previous_comparison"]["metrics"]) == {"svc-0"}
 
 
 def test_live_gateway_status_cannot_be_overridden_by_input():

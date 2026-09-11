@@ -1,0 +1,50 @@
+{
+  "p95": {
+    "profile": "http",
+    "prometheus": "1000 * histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{namespace={{namespace}}}[1m])))"
+  },
+  "p99": {
+    "profile": "http",
+    "prometheus": "1000 * histogram_quantile(0.99, sum by (service, le) (rate(http_request_duration_seconds_bucket{namespace={{namespace}}}[1m])))"
+  },
+  "rps": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(http_requests_total{namespace={{namespace}}}[1m]))"
+  },
+  "error_rate": {
+    "profile": "http",
+    "prometheus": "(sum by (service) (rate(http_requests_total{namespace={{namespace}},code=~\"5..\"}[1m])) or sum by (service) (rate(http_requests_total{namespace={{namespace}}}[1m])) * 0) / sum by (service) (rate(http_requests_total{namespace={{namespace}}}[1m]))"
+  },
+  "http_5xx": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(http_requests_total{namespace={{namespace}},code=~\"5..\"}[1m]))"
+  },
+  "http_4xx": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(http_requests_total{namespace={{namespace}},code=~\"4..\"}[1m]))"
+  },
+  "cpu": {
+    "profile": "http",
+    "prometheus": "max by (service) (rate(container_cpu_usage_seconds_total{namespace={{namespace}}}[1m])) / max by (service) (kube_pod_container_resource_limits{namespace={{namespace}},resource=\"cpu\"})"
+  },
+  "memory": {
+    "profile": "http",
+    "prometheus": "max by (service) (container_memory_working_set_bytes{namespace={{namespace}}}) / max by (service) (kube_pod_container_resource_limits{namespace={{namespace}},resource=\"memory\"})"
+  },
+  "cpu_throttling": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(container_cpu_cfs_throttled_periods_total{namespace={{namespace}}}[1m])) / sum by (service) (rate(container_cpu_cfs_periods_total{namespace={{namespace}}}[1m]))"
+  },
+  "pod_restarts": {
+    "profile": "http",
+    "prometheus": "sum by (service) (kube_pod_container_status_restarts_total{namespace={{namespace}}})"
+  },
+  "network": {
+    "profile": "http",
+    "prometheus": "sum by (service) (rate(container_network_receive_bytes_total{namespace={{namespace}}}[1m]))"
+  },
+  "replicas": {
+    "profile": "http",
+    "prometheus": "sum by (service) (label_replace(kube_deployment_status_replicas_available{namespace={{namespace}}}, \"service\", \"$1\", \"deployment\", \"(.*)\"))"
+  }
+}

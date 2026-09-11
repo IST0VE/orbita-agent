@@ -74,6 +74,11 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
     for index, finding in enumerate(state.get("threshold_violations", []) + state.get("anomalies", [])):
         if finding["service"] in selected:
             evidence[f"finding:{index}"] = finding
+    previous = dict(state.get("previous_comparison") or {})
+    if previous:
+        # Сравнение прошлого прогона по всему контуру весит столько же, сколько
+        # все метрики: в бриф идут только отобранные сервисы.
+        previous["metrics"] = {s: previous.get("metrics", {}).get(s, {}) for s in sorted(selected)}
     summary = {
         "task": {k: state.get(k) for k in ("jira_key", "test_id", "target_service", "environment",
                     "namespace", "target_rps", "started_at", "finished_at")},
@@ -82,6 +87,7 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
         "dependencies": [e for e in state.get("dependencies", [])
                          if e.get("from") in selected or e.get("to") in selected][:100],
         "baseline_comparison": {s: state.get("baseline_comparison", {}).get(s, {}) for s in selected},
+        "previous_comparison": previous,
         "timeline": [e for e in state.get("timeline", []) if not e.get("service")
                      or e["service"] in selected][:100],
         "correlations": [e for e in state.get("correlations", []) if e["service"] in selected][:20],

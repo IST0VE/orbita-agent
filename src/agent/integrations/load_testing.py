@@ -17,6 +17,29 @@ _THRESHOLD_FIELDS = {
     "p99": "sla_p99_ms", "p99_ms": "sla_p99_ms",
     "error_rate": "sla_error_rate", "cpu": "sla_max_cpu", "memory": "sla_max_memory",
 }
+# k6 называет предел агрегатом внутри выражения, а не именем метрики:
+# у http_req_duration и p(95), и p(99) — одна и та же метрика.
+_K6_AGGREGATES = {
+    "http_req_duration": {"p(95)": "p95", "p(99)": "p99"},
+    "http_req_failed": {"rate": "error_rate"},
+}
+
+
+def normalize_k6(metric: str, expression: str) -> tuple[str, str] | None:
+    """Свести k6-порог к канонической паре (метрика, сравнение).
+
+    Единицы k6 совпадают с контрактом НТ: http_req_duration в миллисекундах,
+    http_req_failed — доля 0..1. Незнакомый агрегат не переводится: пропустить
+    предел молча нельзя, он может быть строже заданных оператором.
+    """
+    aggregates = _K6_AGGREGATES.get(metric)
+    if not aggregates:
+        return None
+    match = re.match(r"\s*([a-z]+(?:\(\s*\d+(?:\.\d+)?\s*\))?)\s*(?=<=|<|≤)", expression, re.I)
+    if not match:
+        return None
+    name = re.sub(r"\s+", "", match[1].lower())
+    return (aggregates[name], expression[match.end():]) if name in aggregates else None
 
 
 def threshold_fields(items: object) -> tuple[dict, list[str]]:
@@ -29,6 +52,8 @@ def threshold_fields(items: object) -> tuple[dict, list[str]]:
             errors.append("неверный threshold в gateway")
             continue
         metric, expression = item.get("metric"), item.get("expression")
+        if isinstance(metric, str) and isinstance(expression, str):
+            metric, expression = normalize_k6(metric, expression) or (metric, expression)
         field = _THRESHOLD_FIELDS.get(metric) if isinstance(metric, str) else None
         if not field or not isinstance(expression, str) or len(expression) > 500:
             errors.append("неподдерживаемый threshold в gateway; задайте SLA в каноническом формате")

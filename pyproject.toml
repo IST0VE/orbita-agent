@@ -47,6 +47,11 @@ dev = [
     "responses>=0.25",
     "ruff>=0.6",
 ]
+# Снимки портала для документации: scripts/shoot_nt_portal.py. Браузер ставится
+# отдельно (`playwright install chromium`), поэтому группа своя, а не в dev.
+docs = [
+    "playwright>=1.49",
+]
 
 # Постоянные чекпоинты и долгая память в Postgres (см. checkpointer.py и
 # docker-compose.yml). Отдельным экстра, потому что нужны не всем: по умолчанию

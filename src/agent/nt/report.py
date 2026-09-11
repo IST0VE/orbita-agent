@@ -43,6 +43,18 @@ def render_report(state: dict) -> str:
         "Вердикт вычислен кодом по доступным SLA. Проверяются максимумы временных рядов "
         "за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста.",
         "## Precheck", _json(state.get("precheck_result", {})), "## SLA"])
+    focus = {key.split(":")[1] for key in state.get("evidence", {}) if key.startswith("metric:")}
+    if state.get("target_service"):
+        focus.add(state["target_service"])
+
+    def limited(mapping, what):
+        """Разбор по всему namespace тонет в дампах сервисов, где ничего не было."""
+        mapping = mapping or {}
+        shown = {service: value for service, value in mapping.items() if service in focus}
+        note = (f"Показаны {len(shown)} из {len(mapping)} {what}: остальные вне фокуса "
+                f"анализа. Полные ряды остались в состоянии прогона.")
+        return [_json(shown), note] if len(shown) < len(mapping) else [_json(shown)]
+
     metrics = state.get("current_metrics", {}).get(state.get("target_service"), {})
     from agent.nt.thresholds import SLA_FIELDS
     for field, metric in SLA_FIELDS.items():
@@ -54,19 +66,36 @@ def render_report(state: dict) -> str:
     lines.extend(["## Maximum stable load", f"{stable} RPS" if stable is not None else "Не установлена.",
         "Наблюдаемая устойчивая нагрузка: минимум RPS в непрерывном окне соблюдения всех "
         "заданных SLA. Это нижняя оценка по наблюдениям, а не доказанный предел мощности.",
-        "## Main anomalies", f"Сервисов с данными: {len(state.get('current_metrics', {}))}.",
-        _json([r for r in state.get("ranked_services", []) if r["score"] > 0]),
-        "## Timeline", _json(state.get("timeline", [])), "## Root cause analysis"])
+        "## Main anomalies", f"Сервисов с данными: {len(state.get('current_metrics', {}))}."])
+    ranked = [r for r in state.get("ranked_services", []) if r["score"] > 0]
+    lines.append(_json(ranked[:20]))
+    if len(ranked) > 20:
+        lines.append(f"Показаны 20 сервисов с наибольшим score из {len(ranked)} со срабатываниями.")
+    timeline = [e for e in state.get("timeline", []) if not e.get("service") or e["service"] in focus]
+    lines.extend(["## Timeline", _json(timeline)])
+    if len(timeline) < len(state.get("timeline", [])):
+        lines.append(f"Показаны {len(timeline)} из {len(state.get('timeline', []))} событий: "
+                     f"остальные относятся к сервисам вне фокуса анализа.")
+    lines.append("## Root cause analysis")
     hypotheses = state.get("root_cause_hypotheses", [])
-    if not hypotheses:
+    if not hypotheses and state.get("stop_reason"):
+        lines.append("Исследование остановлено до вывода: улики собраны, но не "
+                     "интерпретированы. Причина остановки — в разделе Unverified assumptions.")
+    elif not hypotheses:
         lines.append("unknown: причина не установлена.")
     for hypothesis in hypotheses:
         lines.append(f"- Гипотеза ({hypothesis['confidence']}), {hypothesis['service']}: "
                      f"{hypothesis['description']}\n  Evidence: " + ", ".join(hypothesis["evidence_ids"]))
-    lines.extend(["## Evidence", _json(state.get("evidence", {})),
-        "## Baseline comparison", _json(state.get("baseline_comparison", {})),
-        "## Previous test comparison", _json(state.get("previous_comparison", {})),
-        "## Recommendations"])
+    lines.extend(["## Evidence", _json(state.get("evidence", {})), "## Baseline comparison",
+                  *limited(state.get("baseline_comparison"), "сервисов")])
+    previous = dict(state.get("previous_comparison") or {})
+    lines.append("## Previous test comparison")
+    if previous:
+        lines.extend([_json({k: v for k, v in previous.items() if k != "metrics"}),
+                      *limited(previous.get("metrics"), "сервисов прошлого прогона")])
+    else:
+        lines.append(_json({}))
+    lines.append("## Recommendations")
     lines.extend(f"- Предложение LLM, требует проверки: {r}" for r in state.get("recommendations", []))
     if not state.get("recommendations"):
         lines.append("Дополнительные рекомендации не сформированы.")

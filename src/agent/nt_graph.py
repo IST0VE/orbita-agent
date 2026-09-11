@@ -1,8 +1,8 @@
 """Historical NT analysis: explicit workflow, deterministic facts, bounded LLM research.
 
 START -> context -> load_context -> understand_task -> discover_scope -> precheck
-  -> collect_baseline -> collect_metrics -> detect_anomalies -> evaluate_test
-  -> investigate <-> additional_tools -> final_analysis -> compare_baseline
+  -> collect_baseline -> collect_metrics -> detect_anomalies -> compare_baseline
+  -> evaluate_test -> investigate <-> additional_tools -> final_analysis
   -> report -> remember -> approve -> publish -> END
 
 Missing inputs go directly to report. This MVP never starts or stops a test.
@@ -335,9 +335,23 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         update = {"analysis_result": verdict, "missing_parameters": list(dict.fromkeys(missing)),
             "maximum_stable_rps": metrics_analyzer.stable_load(state["metric_snapshots"],
                 state["target_service"], limits, settings.step, settings.stable_seconds), "stage": "evaluate_test"}
+        # Устойчивую нагрузку считает этот узел, он же сравнивает её с прошлым
+        # прогоном — до того, как бриф уйдёт модели.
+        previous = dict(state.get("previous_comparison") or {})
+        if previous.get("previous_stable_rps") is not None and update["maximum_stable_rps"] is not None:
+            previous["stable_rps"] = baseline.deviation(update["maximum_stable_rps"],
+                                                        previous.pop("previous_stable_rps"))
+            update["previous_comparison"] = previous
         evidence, summary = metrics_analyzer.make_evidence({**state, **update}, settings.top_n)
         # Bound the serialized input independently of datapoint and service limits.
-        while len(_json(summary)) > 48000 and evidence:
+        # Улики — то, на что обязана ссылаться гипотеза, и пустой их список
+        # выключает исследование целиком. Поэтому первым уходит контекст.
+        for field in ("timeline", "correlations", "previous_comparison", "baseline_comparison",
+                      "dependencies"):
+            if len(_json(summary)) <= 48000:
+                break
+            summary[field] = "omitted: LLM context capped"
+        while len(_json(summary)) > 48000 and len(evidence) > 1:
             evidence.pop(next(reversed(evidence)))
             summary["evidence"] = evidence
         if len(_json(summary)) > 48000:
@@ -345,13 +359,25 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                        "limitations": ["LLM context capped; see deterministic report"]}
         return {**update, "evidence": evidence, "llm_summary": summary}
 
+    def settled(history):
+        """Закрыть цикл, не забывая ход исследования.
+
+        Маршрут выбирается по висячим вызовам в последнем ответе: снимаем их —
+        и цикл завершается. Стирать историю нельзя, улики уже оплачены.
+        """
+        if history and getattr(history[-1], "tool_calls", None):
+            return [*history[:-1], nodes.without_tool_calls(history[-1])]
+        return list(history)
+
     def investigate(state: State, config: RunnableConfig) -> dict:
+        history = state.get("investigation_history") or []
         if (state.get("iteration", 0) >= state.get("max_iterations", 4)
                 or time.time() >= state.get("deadline_at", 0) or budget_gate(state) == "over_budget"
                 or not state.get("evidence")):
-            return {"stage": "investigate", "investigation_history": [],
+            return {"stage": "investigate", "investigation_history": settled(history),
+                    "stop_reason": "investigation_limit",
                     "source_errors": _error(state, "INVESTIGATION_SKIPPED", "no evidence, budget or iteration/time limit")}
-        history = state.get("investigation_history") or [HumanMessage(content=_json(state["llm_summary"]))]
+        history = history or [HumanMessage(content=_json(state["llm_summary"]))]
         try:
             result = investigate_role({**state, "messages": history}, config)
             response = result["messages"][-1]
@@ -363,7 +389,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             return {"usage": result["usage"], "cost": result["cost"], "stage": "investigate",
                     "investigation_history": [*history, response], "iteration": state.get("iteration", 0) + 1}
         except Exception:
-            return {"investigation_history": [], "source_errors": _error(state, "LLM_UNAVAILABLE",
+            return {"investigation_history": settled(history), "stop_reason": "investigation_error",
+                    "source_errors": _error(state, "LLM_UNAVAILABLE",
                     "investigation unavailable; deterministic report retained"), "stage": "investigate"}
 
     def additional_tools(state: State, config: RunnableConfig) -> dict:
@@ -417,7 +444,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             data = result.get("data", {})
             if not result.get("success") or data.get("test_status") != "completed":
                 raise ValueError("previous test unavailable")
-            for key in ("environment", "namespace", "target_service", "scenario"):
+            # Контур обязан совпадать. Сценарий — нет: прогоны регрессии
+            # именуются по своей ступени, и именно разный профиль нагрузки
+            # делает сравнение устойчивой нагрузки осмысленным.
+            for key in ("environment", "namespace", "target_service"):
                 if not data.get(key) or data[key] != state.get(key):
                     raise ValueError("previous test is not comparable")
             start, end = window(data["started_at"], data["finished_at"], max_seconds=settings_for().max_window)
@@ -429,8 +459,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 thresholds.limits_from(state), settings_for().step, settings_for().stable_seconds)
             payload = {"test_id": previous_id, "metrics": comparison,
                        "note": "stable load compared using current SLA limits"}
-            if stable is not None and state.get("maximum_stable_rps") is not None:
-                payload["stable_rps"] = baseline.deviation(state["maximum_stable_rps"], stable)
+            if stable is not None:
+                payload["previous_stable_rps"] = stable
+            if data.get("scenario") != state.get("scenario"):
+                payload["scenario_differs"] = {"current": state.get("scenario"),
+                                               "previous": data.get("scenario")}
             return {"previous_comparison": payload, "stage": "compare_baseline"}
         except Exception:
             return {"stage": "compare_baseline", "source_errors": _error(state, "PREVIOUS_TEST_UNAVAILABLE",
@@ -470,13 +503,14 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         builder.add_edge(left, right)
     builder.add_conditional_edges("precheck", lambda s: "collect_baseline" if s["precheck_result"]["success"] else "report",
                                   {"collect_baseline": "collect_baseline", "report": "report"})
-    middle = ["collect_baseline", "collect_metrics", "detect_anomalies", "evaluate_test", "investigate"]
+    middle = ["collect_baseline", "collect_metrics", "detect_anomalies", "compare_baseline",
+              "evaluate_test", "investigate"]
     for left, right in zip(middle, middle[1:], strict=False):
         builder.add_edge(left, right)
     builder.add_conditional_edges("investigate", investigation_route,
                                   {"additional_tools": "additional_tools", "final_analysis": "final_analysis"})
     builder.add_edge("additional_tools", "investigate")
-    tail = ["final_analysis", "compare_baseline", "report", "remember", "approve", "publish", END]
+    tail = ["final_analysis", "report", "remember", "approve", "publish", END]
     for left, right in zip(tail, tail[1:], strict=False):
         builder.add_edge(left, right)
     return builder

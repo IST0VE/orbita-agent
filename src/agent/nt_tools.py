@@ -55,8 +55,14 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
             return failure("OUT_OF_SCOPE", "service is outside the analysis scope")
         result = get_sources().query(metric, {**state, "services": [service], "scope_explicit": True},
                                     state["started_at"], state["finished_at"], source=source)
+        # Отказ без рядов приходит плоским (METRIC_NOT_ALLOWED и подобные).
+        # Без переноса причины модель видит только «не получилось» и гадает,
+        # метрики нет на сервере или нет данных по этому сервису.
+        errors = list(result.get("errors", []))
+        if not result["success"] and result.get("error_type"):
+            errors.append({k: result[k] for k in ("error_type", "message") if k in result})
         return {"success": result["success"], "metrics": summarize(result.get("series", [])),
-                "errors": result.get("errors", []), "period": "test"}
+                "errors": errors, "period": "test"}
 
     @tool
     def prometheus_range_query(metric: str, service: str,

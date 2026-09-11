@@ -168,8 +168,26 @@ def test_gateway_threshold_units(metric, expression, field, value):
     assert fields == {field: value}
 
 
+@pytest.mark.parametrize("metric,expression,field,value", [
+    ("http_req_duration", "p(95)<500", "sla_p95_ms", 500),
+    ("http_req_duration", "p(99)<1200", "sla_p99_ms", 1200),
+    ("http_req_duration", "p( 95 ) <= 500", "sla_p95_ms", 500),
+    ("http_req_failed", "rate<0.010", "sla_error_rate", .01),
+])
+def test_k6_thresholds_map_to_canonical_sla(metric, expression, field, value):
+    """k6 задаёт предел агрегатом в выражении: одна метрика — разные поля SLA."""
+    from agent.integrations.load_testing import threshold_fields
+    fields, errors = threshold_fields([{"metric": metric, "expression": expression,
+                                        "passed": False, "observed": 960.3}])
+    assert not errors
+    assert fields == {field: value}
+
+
 @pytest.mark.parametrize("item", [
     {"metric": "p95", "observed": 100, "passed": True},
+    {"metric": "http_req_duration", "expression": "avg<300"},
+    {"metric": "http_req_failed", "expression": "p(95)<0.01"},
+    {"metric": "vus", "expression": "value<100"},
     {"metric": "p95", "expression": "p99 < 100ms"},
     {"metric": "error_rate", "expression": "<2"},
     {"metric": "error_rate", "expression": "<10ms"},
