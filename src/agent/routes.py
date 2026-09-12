@@ -71,6 +71,12 @@ def make_tools_router(pipeline: Pipeline):
     просит инструмент, поэтому спрашивающий известен и искать его в истории
     сообщений не нужно. Ворота бюджета стоят и здесь: переписка с инструментами
     — это вызовы модели, и оборваться она обязана там же, где всё остальное.
+
+    Деньгами петля ограничена не всегда: BUDGET_USD_PER_THREAD по умолчанию
+    выключен. Собственный потолок ходов стоит не здесь, а в узле роли
+    (`nodes.make_role_node`, TOOL_TURNS_PER_RUN): маршрут состояние не меняет,
+    а исчерпанный потолок — это последний ход роли без инструментов, то есть
+    решение узла, а не ветки.
     """
     readers = {role.key for role in pipeline.roles if role.reads_files}
     fallback = next((role.key for role in pipeline.roles if role.reads_files), None)

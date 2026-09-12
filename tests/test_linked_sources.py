@@ -63,7 +63,10 @@ def test_unavailable_source_is_visible_and_context_reentry_does_not_refetch(monk
     )
     assert result["task"] == "ORB-12"
     assert "Данные не получены" in result["messages"][0].content
-    assert nodes.context_node(result, {}, external_sources=True) == {}
+    # Повторный вход в ноду в сеть не ходит и сообщение не трогает; обнуление
+    # счётчика ходов в инструменты — единственное, что он делает.
+    again = nodes.context_node(result, {}, external_sources=True)
+    assert "messages" not in again and again == {"tool_turns": 0}
 
 
 def test_analysis_can_search_then_read_confluence_before_writing(monkeypatch):

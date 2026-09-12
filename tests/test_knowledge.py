@@ -203,4 +203,8 @@ def test_substitution_happens_once_per_question(monkeypatch: pytest.MonkeyPatch)
     again = context_node({"messages": first["messages"]}, CONFIG)
 
     assert first["messages"][0].id == "m-1"  # правка, а не новая реплика
-    assert again == {}
+    # Справка не наращивается: сообщения нода второй раз не трогает. Счётчик
+    # ходов в инструменты она обнуляет всегда — это новый прогон, а не
+    # повторная подстановка.
+    assert "messages" not in again and "task" not in again
+    assert again == {"tool_turns": 0}

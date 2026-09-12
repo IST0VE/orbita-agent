@@ -38,9 +38,12 @@ def answer(text="Ответ оператору", miss=EXPENSIVE, hit=0, output=0
     )
 
 
-def asks_for_tool(call_id="call-1"):
+def asks_for_tool(call_id="call-1", text=""):
+    # `text` — то, что роль успела написать рядом с вопросом к инструменту.
+    # На последнем ходе вызов снимается, и написанное становится документом
+    # этапа: именно так конвейер выпускает бумаги по неполному материалу.
     return AIMessage(
-        content="",
+        content=text,
         tool_calls=[{"name": "read_task_file", "args": {"name": "встреча.md"}, "id": call_id}],
         response_metadata={
             "token_usage": {
@@ -182,3 +185,66 @@ def test_without_a_limit_the_pipeline_runs_all_the_way_through():
 
     assert result["messages"][-1].content == "Этап 10"
     assert result["usage"]["calls"] == 10
+
+
+# --------------------------------------------------------------------------
+# Потолок ходов в инструменты
+#
+# Ворота бюджета выключены по умолчанию, и тогда у петли «роль → инструменты
+# → роль» не остаётся тормоза вообще: она упирается в recursion_limit
+# LangGraph — тысячи оплаченных вызовов — и обрывается ошибкой мимо ветки,
+# которая публикует сделанное. Поэтому у петли есть собственный потолок,
+# не зависящий от денег и включённый по умолчанию.
+# --------------------------------------------------------------------------
+def test_tool_loop_ends_on_its_own_without_any_budget(monkeypatch: pytest.MonkeyPatch):
+    """
+    Модель зовёт инструмент на каждом ходе и сама не остановится никогда.
+
+    Конвейер обязан дойти до конца и выпустить документы: последний ход роли
+    делается без инструментов, вызов с него снимается, и роутер уводит на
+    следующий этап. Без потолка этот тест не кончился бы.
+    """
+    monkeypatch.delenv("BUDGET_USD_PER_THREAD", raising=False)
+    monkeypatch.setenv("TOOL_TURNS_PER_RUN", "3")
+    # Поддельная модель про отвязку схем не знает и просит инструмент всегда:
+    # проверяется ограничитель, а не сговорчивость модели.
+    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(40)])
+
+    result = app.invoke({"messages": [HumanMessage("вопрос")]}, config=CONFIG)
+
+    assert result["tool_turns"] == 3
+    # Три хода в инструменты плюс четвёртый, последний, и по одному на
+    # остальные четыре роли.
+    assert result["usage"]["calls"] == 8
+    assert sorted(result["artifacts"]) == ["api", "architecture", "data", "requirements", "review"]
+
+
+def test_the_tool_ceiling_is_per_run_not_per_thread(monkeypatch: pytest.MonkeyPatch):
+    """
+    Второй запрос в том же треде получает полный потолок заново.
+
+    Счётчик, который жил бы на треде, оставил бы вторую задачу вовсе без
+    инструментов — и роль писала бы документ, не открыв ни одного файла.
+    """
+    monkeypatch.delenv("BUDGET_USD_PER_THREAD", raising=False)
+    monkeypatch.setenv("TOOL_TURNS_PER_RUN", "2")
+    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(80)])
+
+    first = app.invoke({"messages": [HumanMessage("первая задача")]}, config=CONFIG)
+    assert first["tool_turns"] == 2
+    second = app.invoke({"messages": [HumanMessage("вторая задача")]}, config=CONFIG)
+
+    assert second["tool_turns"] == 2
+    assert second["usage"]["calls"] == first["usage"]["calls"] * 2
+
+
+def test_a_zero_ceiling_means_no_ceiling(monkeypatch: pytest.MonkeyPatch):
+    """Ноль снимает потолок — как и у бюджета; тормозом остаются ворота."""
+    monkeypatch.setenv("TOOL_TURNS_PER_RUN", "0")
+    monkeypatch.setenv("BUDGET_USD_PER_THREAD", "0.01")
+    app = thread(asks_for_tool(), answer("Ответ после инструмента"))
+
+    result = app.invoke({"messages": [HumanMessage("вопрос")]}, config=CONFIG)
+
+    assert result["usage"]["calls"] == 1
+    assert "Бюджет треда исчерпан" in result["messages"][-1].content

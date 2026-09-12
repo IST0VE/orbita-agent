@@ -11,6 +11,7 @@ Missing inputs go directly to report. This graph never starts or stops a test.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import time
@@ -557,11 +558,15 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 "resolved_inputs": input_state.snapshot(state, {})}
 
     def audited(name, function):
+        # Нужен ли узлу config — спрашиваем у самой функции. Список имён рядом
+        # был бы вторым местом, где записана сигнатура: разойтись они могут
+        # молча, а увидеть это можно только в рантайме, по TypeError.
+        wants_config = "config" in inspect.signature(function).parameters
+
         def node(state: State, config: RunnableConfig):
             began = time.monotonic()
             try:
-                if name in {"load_context", "understand_task", "investigate", "approve_tools",
-                            "additional_tools"}:
+                if wants_config:
                     return function(state, config)
                 return function(state)
             finally:
@@ -586,8 +591,13 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     prefix = [START, "context", "load_context", "understand_task", "discover_scope", "precheck"]
     for left, right in zip(prefix, prefix[1:], strict=False):
         builder.add_edge(left, right)
-    builder.add_conditional_edges("precheck", lambda s: "collect_baseline" if s["precheck_result"]["success"] else "report",
-                                  {"collect_baseline": "collect_baseline", "report": "report"})
+    # Не прошедшая проверка и не заполненный результат ведут одинаково — в
+    # отчёт: сюда приходят только после `precheck`, но ветка, которая падает
+    # на KeyError вместо перехода, обрывала бы прогон вместо отчёта о нём.
+    builder.add_conditional_edges(
+        "precheck",
+        lambda s: "collect_baseline" if (s.get("precheck_result") or {}).get("success") else "report",
+        {"collect_baseline": "collect_baseline", "report": "report"})
     middle = ["collect_baseline", "collect_metrics", "detect_anomalies", "compare_baseline",
               "evaluate_test", "investigate"]
     for left, right in zip(middle, middle[1:], strict=False):

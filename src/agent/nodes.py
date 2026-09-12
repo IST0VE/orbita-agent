@@ -180,6 +180,17 @@ def make_role_node(
         if unstable_prefix:
             prefix = f"Текущее время: {datetime.now().isoformat(timespec='seconds')}\n\n" + prefix
 
+        # Потолок ходов в инструменты. Роль решает «спросить ещё раз» сама, и
+        # без потолка петля упирается только в recursion_limit LangGraph —
+        # тысячи оплаченных вызовов и обрыв ошибкой мимо публикации сделанного.
+        # Исчерпав его, роль делает последний ход БЕЗ инструментов: так же
+        # кончается расследование в конвейере НТ. Схемы при этом не
+        # отвязываются — они часть кешируемого префикса, и снять их значило бы
+        # оплатить весь префикс заново; снимается только право спрашивать.
+        limit = cfg.tool_turns_per_run()
+        used = int(state.get("tool_turns") or 0)
+        asking = role.reads_files and (limit <= 0 or used < limit)
+
         if role.reads_files:
             # Роль с инструментами ведёт переписку: её вопрос к файлам и ответы
             # файлов обязаны остаться в истории, иначе следующий заход в ноду
@@ -188,6 +199,21 @@ def make_role_node(
             # бы платить за них на каждом вызове.
             turns = split_turns(state.get("messages") or [])
             history = trim_history(turns[-1] if turns else [])
+            if not asking:
+                # Предупреждение уезжает в КОНЕЦ переписки, а не в префикс:
+                # префикс обязан остаться побайтово тем же, иначе последний
+                # ход роли оплачивается по полной вместе со всем кешем.
+                history = [
+                    *history,
+                    HumanMessage(
+                        content=(
+                            f"Достигнут предел обращений к инструментам за прогон "
+                            f"({limit}, TOOL_TURNS_PER_RUN). Это последний ход: "
+                            "инструменты недоступны. Напиши документ по тому, что "
+                            "уже прочитано, и отметь в нём, чего не успел посмотреть."
+                        )
+                    ),
+                ]
         else:
             # Остальным сообщение собирается заново из задачи и документов
             # предыдущих этапов. Переписка аналитика с файлами им не нужна:
@@ -214,17 +240,18 @@ def make_role_node(
             response = llm.invoke(messages)
         else:
             response = tool_compat.invoke(
-                model_for, messages, config, tools, allow_tools=role.reads_files
+                model_for, messages, config, tools, allow_tools=asking
             )
 
-        # Роль без инструментов тоже может их позвать: схемы привязаны ко всем
-        # ролям конвейера ради общего префикса, и модель иногда ими пользуется.
-        # Вести её в `tools` нельзя — вход ей собирается заново, ответа
-        # инструмента она уже не увидит, — поэтому вызов снимается, а
-        # написанное остаётся документом этапа. Без этого документ, за который
-        # заплачено, молча пропадал бы, а следующая роль получала бы
-        # «этап не выполнен».
-        if not role.reads_files:
+        # Роль без права спрашивать тоже может позвать инструмент: схемы
+        # привязаны ко всем ролям конвейера ради общего префикса, и модель
+        # иногда ими пользуется. Вести её в `tools` нельзя — вход ей собирается
+        # заново, ответа инструмента она уже не увидит, — поэтому вызов
+        # снимается, а написанное остаётся документом этапа. Без этого
+        # документ, за который заплачено, молча пропадал бы, а следующая роль
+        # получала бы «этап не выполнен». На исчерпанном потолке довод тот же,
+        # и он же закрывает петлю: без вызовов роутер уводит на следующий этап.
+        if not asking:
             response = without_tool_calls(response)
 
         # Счётчики за этот вызов уедут в редьюсер, а деньги нужны уже готовыми:
@@ -240,7 +267,9 @@ def make_role_node(
         # Документ этапа — это финальный текст роли. Пока она зовёт инструменты,
         # документа ещё нет: она не ответила, а спросила.
         text = text_of(response)
-        if text and not getattr(response, "tool_calls", None):
+        if getattr(response, "tool_calls", None):
+            update["tool_turns"] = used + 1
+        elif text:
             update["artifacts"] = {role.key: text}
         return update
 
@@ -265,11 +294,19 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
 
     Сообщение заменяется по своему же id: `add_messages` понимает это как
     правку, а не как новую реплику.
+
+    Здесь же обнуляется счётчик ходов в инструменты. Нода контекста стоит
+    первой на каждом прогоне, и это единственное место, которое знает, что
+    начался новый ход оператора: потолок ограничивает прогон, а не тред,
+    иначе второй запрос в том же треде достался бы роли без инструментов.
     """
+    # Счётчик обнуляется на любом исходе ноды: не состоявшаяся подстановка —
+    # это всё равно начало нового прогона.
+    fresh = {"tool_turns": 0}
     messages = state.get("messages") or []
     last = messages[-1] if messages else None
     if last is None or getattr(last, "type", "") != "human":
-        return {}
+        return fresh
 
     question = text_of(last)
     if (
@@ -278,7 +315,7 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
         or inputs.BLOCK_TITLE in question
         or sources.LINKS_TITLE in question
     ):
-        return {}  # справка уже подставлена: повторный вход в ноду
+        return fresh  # справка уже подставлена: повторный вход в ноду
 
     task = operator_question(question)
 
@@ -301,8 +338,9 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
 
     addition = "".join(block for block in blocks if block)
     if not addition:
-        return {"task": task}
+        return {**fresh, "task": task}
     return {
+        **fresh,
         "task": task,
         "messages": [HumanMessage(content=question + addition, id=last.id)],
     }
