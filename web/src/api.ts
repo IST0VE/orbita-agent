@@ -168,7 +168,16 @@ export async function loadAssistants(): Promise<Assistant[]> {
   return (await res.json()) as Assistant[];
 }
 
-export const checkServer = () =>
-  authorizedFetch(API_URL + "/info")
-    .then((r) => r.ok)
-    .catch(() => false);
+/**
+ * Состояние связи. Отказ по токену — не то же самое, что упавший сервер:
+ * фоновая проверка не спрашивает токен, и без отдельного значения оператор
+ * читал бы просроченный токен как поломку сервера и чинил бы не то.
+ */
+export type ServerStatus = "ok" | "offline" | "unauthorized";
+
+export const checkServer = (signal?: AbortSignal): Promise<ServerStatus> =>
+  authorizedFetch(API_URL + "/info", {
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+  }, false)
+    .then((r): ServerStatus => (r.ok ? "ok" : r.status === 401 || r.status === 403 ? "unauthorized" : "offline"))
+    .catch((): ServerStatus => "offline");

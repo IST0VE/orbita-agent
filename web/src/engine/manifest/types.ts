@@ -151,7 +151,7 @@ export type WidgetMode = "view" | "edit" | "input" | "interrupt";
 export type WidgetAction = {
   kind: ActionKind;
   payload?: unknown;
-  /** Идентификатор остановки в рантайме: по нему считается идемпотентность. */
+  /** Настоящий ID остановки LangGraph: ответ адресуется только ей. */
   interruptId?: string;
   /** Идентификатор правила `interrupts[]`: по нему сервер берёт resume_schema. */
   ruleId?: string;

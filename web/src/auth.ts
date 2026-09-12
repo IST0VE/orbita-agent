@@ -3,7 +3,7 @@ const ADMIN_TOKEN_KEY = "orbita.adminApiToken";
 type AuthState = { revision: number; prompt: Promise<void> | null };
 const sessions = new WeakMap<Storage, AuthState>();
 
-export async function authorizedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+export async function authorizedFetch(input: RequestInfo | URL, init: RequestInit = {}, promptOnUnauthorized = true): Promise<Response> {
   const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (url.username || url.password || !(url.protocol === "https:" || (url.protocol === "http:" && loopback))) {
@@ -30,6 +30,8 @@ export async function authorizedFetch(input: RequestInfo | URL, init: RequestIni
     ...init, headers: requestHeaders(token), redirect: "error", cache: "no-store",
   });
   let response = await send(initialToken);
+  // Background health checks must never interrupt the user with token prompts.
+  if (!promptOnUnauthorized) return response;
   if (response.status !== 401 || response.headers.get("www-authenticate") !== "Bearer") return response;
   // A late 401 belongs to the credentials sent with that request. A completed
   // prompt (even cancellation) must also cover responses arriving on later ticks.

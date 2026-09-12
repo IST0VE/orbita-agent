@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict, deque
 from copy import deepcopy
 from datetime import UTC, datetime
+from itertools import islice
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -130,7 +131,12 @@ class EventNormalizer:
             log = self._logs.get(run_id)
             if log is None:
                 return []
-            return [deepcopy(event) for event in log.events if event["sequence"] > after][:size]
+            selected = list(islice(
+                (event for event in log.events if event["sequence"] > after), size,
+            ))
+        # Stored events are never mutated. Keep only selection under the lock;
+        # copying large payloads must not block emitters or other readers.
+        return deepcopy(selected)
 
 
 events = EventNormalizer()

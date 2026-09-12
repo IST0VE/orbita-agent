@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from "../runtime/types";
+import type { RuntimeEvent, RuntimeSnapshot } from "../runtime/types";
 
 /** The stream hides exception text but preserves its class in Error.name. */
 export function runErrorMessage(error: unknown): string {
@@ -92,15 +92,41 @@ export class LiveEventFactory {
     return this.event("state.snapshot", { state });
   }
 
-  interrupt(value: unknown, nodeId?: string): RuntimeEvent {
+  /**
+   * Только для `reconcileInterrupt`: остановку нельзя объявить в обход сверки
+   * с идентификатором сервера — именно так здесь однажды и завёлся
+   * синтетический `interrupt-${runId}`, на который нечего было адресовать.
+   */
+  private interrupt(interruptId: string, value: unknown, nodeId?: string): RuntimeEvent {
     return this.event("interrupt.created", {
-      interruptId: `interrupt-${this.runId}`,
+      interruptId,
       value,
       nodeId,
     });
   }
 
-  resolved(interruptId: string): RuntimeEvent {
+  /** Reconcile an idle SDK snapshot, including failed resume submissions. */
+  reconcileInterrupt(
+    runtime: RuntimeSnapshot,
+    interrupt: { id?: string; value?: unknown } | undefined,
+    nodeId?: string,
+  ): RuntimeEvent[] {
+    const pending = runtime.interrupts.find((item) => item.status === "pending");
+    const result: RuntimeEvent[] = [];
+    // Остановка без идентификатора адресовать ответ не даёт. Снять по ней
+    // карточку значило бы оставить оператора с пустым экраном и висящим run:
+    // лучше сохранить прежнюю — отправку всё равно не пропустит сверка id.
+    if (interrupt && !interrupt.id) return result;
+    if (pending && pending.interruptId !== interrupt?.id) {
+      result.push(this.resolved(pending.interruptId));
+    }
+    if (interrupt?.id && (pending?.interruptId !== interrupt.id || runtime.runStatus !== "interrupted")) {
+      result.push(this.interrupt(interrupt.id, interrupt.value, nodeId));
+    }
+    return result;
+  }
+
+  private resolved(interruptId: string): RuntimeEvent {
     return this.event("interrupt.resolved", { interruptId });
   }
 

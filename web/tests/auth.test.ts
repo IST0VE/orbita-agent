@@ -12,6 +12,28 @@ const unauthorized = () => new Response("{}", {
   status: 401, headers: { "www-authenticate": "Bearer" },
 });
 
+test("background health requests return 401 without prompting or erasing credentials", async (t) => {
+  const stored = new Map([["orbita.adminApiToken", "current-token"]]);
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_input, init) => {
+    calls += 1;
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer current-token");
+    return unauthorized();
+  });
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    location: { href: "http://localhost:5173/" },
+    prompt: () => { assert.fail("Background request opened a prompt"); },
+    sessionStorage: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      removeItem: (key: string) => stored.delete(key),
+    },
+  } });
+  t.after(() => { Reflect.deleteProperty(globalThis, "window"); });
+  assert.equal((await authorizedFetch("/info", {}, false)).status, 401);
+  assert.equal(calls, 1);
+  assert.equal(stored.get("orbita.adminApiToken"), "current-token");
+});
+
 for (const answer of ["  new-token  ", null, "   ", "wrong-token"]) {
   test(`ten staggered 401 responses share one prompt (${JSON.stringify(answer)})`, async (t) => {
     const stored = new Map<string, string>();

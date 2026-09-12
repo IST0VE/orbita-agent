@@ -16,7 +16,9 @@
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph-sdk": "^1.10.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.8",

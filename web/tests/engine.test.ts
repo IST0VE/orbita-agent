@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ActionDispatcher } from "../src/engine/actions/dispatcher.ts";
 
 import { conditionMatches, configurableOf, inputSurfaceOf, matchInterrupt, resolveBinding } from "../src/engine/manifest/bindings.ts";
 import { fallbackManifest, ManifestValidationError, validateManifest } from "../src/engine/manifest/validate.ts";
@@ -26,6 +27,88 @@ function event(sequence: number, type: string, data: unknown = {}, eventId = `ev
     schemaVersion: "1.0",
   };
 }
+
+test("failed approval submission can be retried without consuming its interrupt", async () => {
+  const factory = new LiveEventFactory("assistant", "demo", () => "thread");
+  let runtime = createRuntimeSnapshot("assistant", "demo");
+  const apply = (event: RuntimeEvent) => { runtime = runtimeReducer(runtime, { type: "event", event }); };
+  apply(factory.startRun());
+  const serverInterrupt = { id: "server-interrupt-id", value: { action: "stage" } };
+  for (const event of factory.reconcileInterrupt(runtime, serverInterrupt)) apply(event);
+  let attempts = 0;
+  const validations: Record<string, unknown>[] = [];
+  const dispatcher = new ActionDispatcher(fallbackManifest("demo"), null, () => runtime, {
+    "interrupt.resume": async (_, action) => {
+      assert.equal(action.interruptId, serverInterrupt.id);
+      attempts += 1;
+      if (attempts === 1) throw new Error("connection lost before dispatch");
+    },
+  }, async (body) => {
+    validations.push(body);
+    return { valid: true, idempotency_key: String(body.idempotency_key) };
+  });
+  const action = { kind: "interrupt.resume" as const, interruptId: serverInterrupt.id, payload: { decision: "approved" } };
+  await assert.rejects(dispatcher.dispatch(action), /connection lost/);
+  apply(factory.failed(new Error("connection lost")));
+  for (const event of factory.reconcileInterrupt(runtime, serverInterrupt)) apply(event);
+  assert.equal(runtime.runStatus, "interrupted");
+  assert.equal(runtime.interrupts.filter((item) => item.status === "pending").length, 1);
+  assert.deepEqual(factory.reconcileInterrupt(runtime, serverInterrupt), []);
+  assert.equal(await dispatcher.dispatch(action), true);
+  assert.equal(attempts, 2);
+  assert.equal(validations.length, 2);
+  for (const event of factory.reconcileInterrupt(runtime, undefined)) apply(event);
+  assert.equal(runtime.interrupts.filter((item) => item.status === "pending").length, 0);
+});
+
+test("concurrent approval clicks execute only one submission", async () => {
+  const runtime = { ...createRuntimeSnapshot("assistant", "demo"), runStatus: "interrupted" as const };
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  let calls = 0;
+  const dispatcher = new ActionDispatcher(fallbackManifest("demo"), null, () => runtime, {
+    "interrupt.resume": async () => { calls += 1; await pending; },
+  }, async () => ({ valid: true, idempotency_key: "test" }));
+  const action = { kind: "interrupt.resume" as const, interruptId: "server-id", payload: {} };
+  const first = dispatcher.dispatch(action);
+  assert.equal(await dispatcher.dispatch(action), false);
+  finish();
+  assert.equal(await first, true);
+  assert.equal(calls, 1);
+});
+
+test("interrupt IDs survive page reload and change at the next server stop", () => {
+  const serverInterrupt = { id: "server-first", value: { action: "stage" } };
+  for (let reload = 0; reload < 2; reload += 1) {
+    const factory = new LiveEventFactory("assistant", "demo", () => "thread");
+    let runtime = createRuntimeSnapshot("assistant", "demo");
+    const apply = (event: RuntimeEvent) => { runtime = runtimeReducer(runtime, { type: "event", event }); };
+    apply(factory.startRun());
+    for (const event of factory.reconcileInterrupt(runtime, serverInterrupt)) apply(event);
+    assert.equal(runtime.interrupts[0].interruptId, serverInterrupt.id);
+    for (const event of factory.reconcileInterrupt(runtime, { ...serverInterrupt, id: "server-second" })) apply(event);
+    assert.deepEqual(runtime.interrupts.filter((item) => item.status === "pending").map((item) => item.interruptId), ["server-second"]);
+  }
+});
+
+test("an interrupt without an id keeps the card instead of hanging the run", () => {
+  const factory = new LiveEventFactory("assistant", "demo", () => "thread");
+  let runtime = createRuntimeSnapshot("assistant", "demo");
+  const apply = (event: RuntimeEvent) => { runtime = runtimeReducer(runtime, { type: "event", event }); };
+  apply(factory.startRun());
+  for (const event of factory.reconcileInterrupt(runtime, { id: "server-id", value: {} })) apply(event);
+
+  // Так выглядит остановка, которую нечем адресовать: снять по ней карточку
+  // значило бы оставить оператора без формы и без следа, почему её нет.
+  assert.deepEqual(factory.reconcileInterrupt(runtime, { value: { action: "stage" } }), []);
+  assert.deepEqual(
+    runtime.interrupts.filter((item) => item.status === "pending").map((item) => item.interruptId),
+    ["server-id"],
+  );
+  // Остановки нет вовсе — это другое: карточку снимаем.
+  for (const event of factory.reconcileInterrupt(runtime, undefined)) apply(event);
+  assert.equal(runtime.interrupts.filter((item) => item.status === "pending").length, 0);
+});
 
 test("model authentication failures retain actionable guidance and their error class", () => {
   const error = new Error("An internal error occurred");

@@ -164,7 +164,40 @@ function ChatInputWidget({ readonly, onAction }: WidgetProps) {
   }} /><button disabled={readonly || !draft.trim()} onClick={send}>[запустить]</button></div>;
 }
 
-function fieldValue(value: unknown, schema: JsonSchema, onChange: (value: JsonValue) => void, path: string) {
+function ArrayField({ value, schema, onChange, path, onError }: {
+  value: unknown;
+  schema: JsonSchema;
+  onChange: (value: JsonValue) => void;
+  path: string;
+  onError: (path: string, error: string) => void;
+}) {
+  const serialized = JSON.stringify(value ?? [], null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const lastValue = useRef(serialized);
+  useEffect(() => {
+    if (serialized !== lastValue.current) {
+      lastValue.current = serialized;
+      setDraft(serialized);
+      onError(path, "");
+    }
+  }, [serialized, path, onError]);
+  useEffect(() => () => onError(path, ""), [path, onError]);
+  return <textarea aria-label={schema.title ?? path} value={draft} onChange={(event) => {
+    const source = event.target.value;
+    setDraft(source);
+    try {
+      const parsed = JSON.parse(source) as JsonValue;
+      if (!Array.isArray(parsed)) throw new Error("Ожидался JSON-массив");
+      lastValue.current = JSON.stringify(parsed, null, 2);
+      onError(path, "");
+      onChange(parsed);
+    } catch {
+      onError(path, "Введите корректный JSON-массив");
+    }
+  }} />;
+}
+
+function fieldValue(value: unknown, schema: JsonSchema, onChange: (value: JsonValue) => void, path: string, onError: (path: string, error: string) => void) {
   if (schema.enum) {
     return <select aria-label={schema.title ?? path} value={JSON.stringify(value)} onChange={(event) => onChange(JSON.parse(event.target.value) as JsonValue)}>{schema.enum.map((item, index) => <option value={JSON.stringify(item)} key={index}>{text(item)}</option>)}</select>;
   }
@@ -172,11 +205,9 @@ function fieldValue(value: unknown, schema: JsonSchema, onChange: (value: JsonVa
   if (schema.type === "number" || schema.type === "integer") return <input aria-label={schema.title ?? path} type="number" value={typeof value === "number" ? value : 0} min={schema.minimum} max={schema.maximum} onChange={(event) => onChange(Number(event.target.value))} />;
   if (schema.type === "object" || schema.properties) {
     const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
-    return <fieldset>{Object.entries(schema.properties ?? {}).map(([key, child]) => <label key={key}>{child.title ?? key}{fieldValue(record[key] ?? schemaDefaults(child), child, (next) => onChange({ ...record, [key]: next }), `${path}.${key}`)}</label>)}</fieldset>;
+    return <fieldset>{Object.entries(schema.properties ?? {}).map(([key, child]) => <label key={key}>{child.title ?? key}{fieldValue(record[key] ?? schemaDefaults(child), child, (next) => onChange({ ...record, [key]: next }), `${path}.${key}`, onError)}</label>)}</fieldset>;
   }
-  if (schema.type === "array") return <textarea aria-label={schema.title ?? path} value={JSON.stringify(value ?? [], null, 2)} onChange={(event) => {
-    try { const parsed = JSON.parse(event.target.value) as JsonValue; if (Array.isArray(parsed)) onChange(parsed); } catch { /* keep draft in DOM until valid JSON */ }
-  }} />;
+  if (schema.type === "array") return <ArrayField value={value} schema={schema} onChange={onChange} path={path} onError={onError} />;
   return schema.format === "multiline" || schema.format === "markdown"
     ? <textarea aria-label={schema.title ?? path} value={text(value)} maxLength={schema.maxLength} onChange={(event) => onChange(event.target.value)} />
     : <input aria-label={schema.title ?? path} type={schema.format === "date" ? "date" : schema.format === "date-time" ? "datetime-local" : "text"} value={text(value)} maxLength={schema.maxLength} onChange={(event) => onChange(event.target.value)} />;
@@ -198,15 +229,27 @@ function FormWidget({ binding, value, mode, readonly, onChange, onAction }: Widg
   const [draft, setDraft] = useState<JsonValue>(
     () => (resuming ? schemaDefaults(schema) : ((value as JsonValue) ?? schemaDefaults(schema))),
   );
-  const errors = useMemo(() => validateForm(draft, schema), [draft, schema]);
+  const [parseErrors, setParseErrors] = useState<Record<string, string>>({});
+  const onParseError = useCallback((path: string, error: string) => {
+    setParseErrors((previous) => {
+      if ((previous[path] ?? "") === error) return previous;
+      const next = { ...previous };
+      if (error) next[path] = error;
+      else delete next[path];
+      return next;
+    });
+  }, []);
+  const errors = useMemo(() => ({ ...validateForm(draft, schema), ...parseErrors }), [draft, schema, parseErrors]);
   const submit = () => onAction?.(
     resuming
       ? { kind: "interrupt.resume", interruptId, ruleId, payload: draft }
       : { kind: "run.start", payload: draft },
   );
-  return <form onSubmit={(event) => { event.preventDefault(); if (!Object.keys(errors).length) submit(); }}>
+  return <form onSubmit={(event) => { event.preventDefault(); if (!readonly && !Object.keys(errors).length) submit(); }}>
     {resuming ? <JsonWidget {...({ value } as WidgetProps)} /> : null}
-    {fieldValue(draft, schema, (next) => { setDraft(next); onChange?.(next); }, "$")}
+    <fieldset className="form-fields" disabled={readonly}>
+      {fieldValue(draft, schema, (next) => { setDraft(next); onChange?.(next); }, "$", onParseError)}
+    </fieldset>
     {Object.keys(errors).length ? <ul className="error">{Object.entries(errors).map(([path, message]) => <li key={path}>{path}: {message}</li>)}</ul> : null}
     <button disabled={readonly || !!Object.keys(errors).length}>[отправить]</button>
   </form>;
@@ -315,14 +358,8 @@ function DraftListWidget({ value }: WidgetProps) {
 
 function ApprovalWidget({ value, binding, readonly, onAction }: WidgetProps) {
   const [reason, setReason] = useState("");
-  const approve = useRef<HTMLButtonElement>(null);
   const payloadOf = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const [project, setProject] = useState(() => text(payloadOf.project));
-  useEffect(() => {
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    approve.current?.focus();
-    return () => previous?.focus();
-  }, []);
   const interruptId = text(binding.options?.interruptId);
   const ruleId = text(binding.options?.ruleId);
   const payload = payloadOf;
@@ -376,7 +413,7 @@ function ApprovalWidget({ value, binding, readonly, onAction }: WidgetProps) {
       <button disabled={readonly || !project.trim()} onClick={() => decide("drafts")}>[подготовить формы для проверки в Jira]</button>
       <p className="hint">Откройте формы в Jira, внесите правки и создайте задачи вручную. Возможность заполнить поля по ссылке зависит от версии Jira.</p>
     </div> : null}
-    <button ref={approve} className="btn-yes" disabled={readonly || (asksProject && !project.trim())} onClick={() => decide("approved")}>[подтвердить]</button>
+    <button autoFocus className="btn-yes" disabled={readonly || (asksProject && !project.trim())} onClick={() => decide("approved")}>[подтвердить]</button>
     <button className="btn-no" disabled={readonly} onClick={() => decide("rejected")}>
       [{text(payload.reject_label) || "отклонить"}]
     </button>
@@ -842,15 +879,22 @@ function PublishedListWidget({ value, binding, context, onAction }: WidgetProps)
   const [documents, setDocuments] = useState<Array<{ name: string; title: string; size: number }>>([]);
   const [open, setOpen] = useState(() => localStorage.getItem(PUBLISHED_OPEN_KEY) === "1");
   const [error, setError] = useState("");
+  const [listError, setListError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [revision, setRevision] = useState(0);
   const resource = context.resource;
   useEffect(() => {
     let live = true;
+    setLoading(true);
+    setListError("");
     resource("orbita.publications", "list").then((response) => {
       const items = (response as { documents?: Array<{ name: string; title: string; size: number }> }).documents;
       if (live) setDocuments(Array.isArray(items) ? items : []);
-    }).catch(() => undefined);
+    }).catch((reason: Error) => {
+      if (live) { setDocuments([]); setListError(reason.message); }
+    }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [resource, runtimePublicationKey(publication)]);
+  }, [resource, runtimePublicationKey(publication), revision]);
   const read = (name: string, title: string) =>
     resource("orbita.publications", "read", { name })
       .then((response) => {
@@ -871,19 +915,26 @@ function PublishedListWidget({ value, binding, context, onAction }: WidgetProps)
     <summary>
       <span className="engine-outline-mark">{open ? "▾" : "▸"}</span>
       {binding.title ?? "Опубликованные документы"}
-      <span className="hint">{documents.length}</span>
+      <span className={listError ? "error" : "hint"}>{loading ? "загрузка…" : listError ? "ошибка загрузки" : documents.length}</span>
     </summary>
     {documents.length ? (
       <ul className="resource-list">{documents.map((item) => <li key={item.name}>
         <button onClick={() => read(item.name, item.title)}>{item.title || item.name}</button>
         <span className="hint">{formatBytes(item.size)}</span>
       </li>)}</ul>
-    ) : <span className="hint">пока пусто</span>}
+    ) : !loading && !listError ? <span className="hint">пока пусто</span> : null}
+    {listError ? <div className="error" role="alert">Не удалось загрузить публикации: {listError}</div> : null}
+    <button disabled={loading} onClick={() => setRevision((current) => current + 1)}>
+      [{loading ? "загрузка…" : listError ? "повторить загрузку" : "обновить список"}]
+    </button>
     {error ? <span className="error">{error}</span> : null}
   </details>;
 }
 
 function runtimePublicationKey(value: { status?: string; pages?: unknown[] }): string {
+  // Ключ перезапроса списка, а не снимок отчёта: файлы на сервере меняет сама
+  // публикация, а не поля внутри её результата. Полный JSON гонял бы запрос на
+  // каждое вложенное изменение; за остальные случаи отвечает `[обновить список]`.
   return `${value.status ?? ""}:${value.pages?.length ?? 0}`;
 }
 

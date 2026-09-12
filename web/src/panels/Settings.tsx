@@ -15,7 +15,7 @@
  * читают глазами, и «зачем это здесь» должно лежать рядом со значением.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   loadSettings,
   saveSettings,
@@ -23,6 +23,7 @@ import {
   type SettingsDoc,
 } from "../api";
 import { Panel } from "../ui";
+import { Modal } from "../Modal";
 
 /** Как значение выглядело бы в файле после сохранения: пара знаков и звёздочки. */
 function maskPreview(value: string): string {
@@ -189,7 +190,7 @@ function Comment({
   );
 }
 
-export function SettingsOverlay({ onClose }: { onClose: () => void }) {
+export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [doc, setDoc] = useState<SettingsDoc | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -197,18 +198,18 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState("");
+  const savingRef = useRef(false);
+  const loadVersion = useRef(0);
 
   useEffect(() => {
-    loadSettings().then(setDoc).catch((e: Error) => setError(e.message));
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    if (!open || savingRef.current) return;
+    let live = true;
+    const version = ++loadVersion.current;
+    loadSettings().then((value) => {
+      if (live && version === loadVersion.current) { setDoc(value); setError(null); }
+    }).catch((e: Error) => { if (live && version === loadVersion.current) setError(e.message); });
+    return () => { live = false; };
+  }, [open]);
 
   const patch =
     (set: typeof setDrafts) => (name: string, value: string | undefined) =>
@@ -240,15 +241,34 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
 
   const dirty = new Set([...Object.keys(drafts), ...Object.keys(notes)]).size;
 
+  const secrets = useMemo(
+    () => new Set((doc?.sections ?? []).flatMap((s) => s.fields.filter((f) => f.secret).map((f) => f.name))),
+    [doc],
+  );
+  useEffect(() => {
+    // Черновик обычной переменной переживает закрытие окна — это удобство.
+    // Черновик секрета не переживает: незаписанный токен не должен лежать в
+    // памяти вкладки всю сессию только потому, что окно закрыли не глядя.
+    if (open) return;
+    setDrafts((current) => {
+      const kept = Object.fromEntries(Object.entries(current).filter(([name]) => !secrets.has(name)));
+      return Object.keys(kept).length === Object.keys(current).length ? current : kept;
+    });
+  }, [open, secrets]);
+
   const save = async () => {
+    if (savingRef.current || !dirty) return;
+    savingRef.current = true;
+    ++loadVersion.current;
     setSaving(true);
     setError(null);
     setStatus(null);
     try {
       const result = await saveSettings(drafts, notes);
-      setDrafts({});
-      setNotes({});
       setDoc(await loadSettings());
+      // Clear only submitted values; preserve edits made during the request.
+      setDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key, value]) => drafts[key] !== value)));
+      setNotes((current) => Object.fromEntries(Object.entries(current).filter(([key, value]) => notes[key] !== value)));
       const restart = result.restart_required;
       setStatus(
         `записано ${result.saved.length} в ${result.path}` +
@@ -259,12 +279,16 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
+  // Панель остаётся смонтированной, чтобы правки пережили закрытие окна; в
+  // storage они не уезжают никогда, а секреты снимаются эффектом выше.
+  if (!open) return null;
   return (
-    <div className="overlay">
+    <Modal label="Настройки" onClose={onClose}>
       <Panel
         title="НАСТРОЙКИ"
         right={<span className="hint">{doc?.path ?? "…"}</span>}
@@ -278,11 +302,12 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
                 setDrafts({});
                 setNotes({});
               }}
-              disabled={!dirty}
+              disabled={!dirty || saving}
             >
               [сбросить правки]
             </button>
             <button onClick={onClose}>[закрыть · esc]</button>
+            {dirty ? <span className="hint">Правки сохранятся при закрытии окна до обновления страницы.</span> : null}
             {status ? <span className="ok">{status}</span> : null}
             {error ? <span className="error">{error}</span> : null}
           </>
@@ -316,6 +341,6 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
           </div>
         ))}
       </Panel>
-    </div>
+    </Modal>
   );
 }

@@ -473,7 +473,7 @@ def _resume_schema(manifest: dict, rule_id: str) -> dict | None:
 
 
 async def validate_ui_action(request: Request) -> JSONResponse:
-    """Validate and deduplicate a mutating UI action before SDK dispatch."""
+    """Validate an action before SDK dispatch, without consuming its execution."""
     if denied := _auth_error(request):
         return denied
     try:
@@ -492,6 +492,8 @@ async def validate_ui_action(request: Request) -> JSONResponse:
             400,
             error_code="ui_idempotency_missing",
         )
+    if len(key) > 200:
+        return _error("invalid idempotency key", 400, error_code="ui_action_invalid")
     try:
         manifest = registry.resolve(graph_id).value
     except ManifestNotFound:
@@ -524,34 +526,21 @@ async def validate_ui_action(request: Request) -> JSONResponse:
             validate_value(body.get("payload"), schema)
         except FormValidationError as exc:
             return _error(str(exc), 422, error_code=error_code)
-    try:
-        fresh = actions.register(key, body)
-        if kind == "interrupt.resume":
-            # Ключ по самой остановке, а не по нажатию: повторный ответ на ту
-            # же остановку — это дубль, даже если пришёл с новым ключом.
-            resume_key = f"resume:{graph_id}:{body['thread_id']}:{body['interrupt_id']}"
-            fresh = actions.register(
-                resume_key,
-                {
-                    "graph_id": graph_id,
-                    "thread_id": body["thread_id"],
-                    "run_id": body.get("run_id"),
-                    "interrupt_id": body["interrupt_id"],
-                    "payload": body.get("payload"),
-                },
-            ) and fresh
-    except IdempotencyConflict as exc:
-        return _error(str(exc), 409, error_code="ui_idempotency_conflict")
+    # Validation cannot prove that the following SDK request was executed.
+    # Consuming a key here would permanently block retries after a lost request.
+    # Resume commands address the actual LangGraph interrupt ID; execution and
+    # stale-answer handling belong to LangGraph, not this preflight endpoint.
+    # The key therefore stays required but purely as an audit correlation id:
+    # it ties this record to the SDK request the operator's click produced.
     _LOG.info(
         "ui action validated",
         extra={
             "ui_graph_id": graph_id,
             "ui_action_kind": kind,
             "ui_idempotency_key": key,
-            "ui_duplicate": not fresh,
         },
     )
-    return JSONResponse({"valid": True, "duplicate": not fresh, "idempotency_key": key})
+    return JSONResponse({"valid": True, "idempotency_key": key})
 
 
 async def get_ui_events(request: Request) -> JSONResponse:

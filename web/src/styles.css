@@ -903,10 +903,11 @@ textarea:focus-visible {
 /* ======================================================================
    Настройки: полноэкранная накладка
    ====================================================================== */
+/* Накладка — всегда <dialog> в top layer: он лежит поверх страницы сам, без
+   z-index, а порядок двух открытых окон задаёт очередь showModal(). */
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
   background: rgba(4, 6, 5, 0.94);
   display: flex;
   flex-direction: column;
@@ -1045,6 +1046,13 @@ textarea:focus-visible {
 .safe-markdown { overflow-wrap: anywhere; line-height: 1.5; }
 .safe-markdown p { margin: 0 0 8px; white-space: pre-wrap; }
 .safe-markdown h1, .safe-markdown h2, .safe-markdown h3, .safe-markdown h4, .safe-markdown h5, .safe-markdown h6 { margin: 14px 0 6px; color: var(--fg); }
+.safe-markdown pre { max-width: 100%; overflow: auto; padding: 10px; border: 1px solid var(--line); white-space: pre; }
+.safe-markdown code { font-family: inherit; }
+.safe-markdown ul, .safe-markdown ol { padding-left: 2em; margin: 8px 0; }
+.safe-markdown blockquote { margin: 8px 0; padding-left: 1em; border-left: 2px solid var(--line); }
+.form-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+dialog.overlay { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; color: var(--fg); }
+dialog.overlay:not([open]) { display: none; }
 .json-preview { max-height: 360px; margin: 6px 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .table-scroll { overflow: auto; }
 .table-scroll table, .graph-list { width: 100%; border-collapse: collapse; }
@@ -1391,7 +1399,7 @@ textarea:focus-visible {
 .engine-app .col-resizer { touch-action: none; }
 .engine-app .graph-list tr { cursor: pointer; }
 .engine-app .graph-list tr:focus-visible { outline: 1px solid var(--green); }
-.engine-app .overlay { position: fixed; z-index: 20; }
+.engine-app .graph-list tr.selected { color: var(--cyan); }
 @media (max-width: 1100px) {
   .engine-app .engine-columns { grid-template-columns: minmax(180px, 26ch) minmax(0, 1fr); }
   .engine-app .col-right { grid-column: 1 / -1; }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 
-import { API_URL, checkServer, loadAssistants, type Assistant } from "./api";
+import { API_URL, checkServer, loadAssistants, type Assistant, type ServerStatus } from "./api";
 import { authorizedFetch } from "./auth";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
@@ -13,6 +13,7 @@ import {
   loadResource,
   loadUiBundle,
   mutateResource,
+  validateAction,
   type UiBundle,
 } from "./engine/api/client";
 import { LiveEventFactory, runErrorMessage } from "./engine/api/langgraphAdapter";
@@ -72,7 +73,7 @@ export function App() {
   const [inputs, setInputs] = useState<Record<string, unknown>>(() => ({
     task: localStorage.getItem(TASK_KEY) || "",
   }));
-  const [online, setOnline] = useState<boolean | null>(null);
+  const [online, setOnline] = useState<ServerStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [animated, setAnimated] = useState(() => localStorage.getItem("orbita.animation") === "1");
@@ -98,7 +99,6 @@ export function App() {
   const actionPending = useRef(false);
   const [busy, setBusy] = useState(false);
   const wasLoading = useRef(false);
-  const lastInterrupt = useRef<unknown>(undefined);
 
   const current = assistants.find((item) => item.assistant_id === assistantId);
   const graphId = current?.graph_id ?? bundle?.manifest.graph_id ?? DEFAULT_GRAPH;
@@ -183,10 +183,16 @@ export function App() {
     },
   });
 
+  // `stream.interrupt` объявлен как одна остановка, но SDK отдаёт под этим
+  // именем массив, когда остановок несколько: тип врёт, и `?.id` на массиве
+  // молча даёт undefined — форма подтверждения исчезает, а run висит.
+  // `interrupts` типизирован честно, поэтому берём остановку только отсюда.
+  // Очередь из нескольких карточек пока не построена: адресуем первую.
+  const serverInterrupt = stream.interrupts.at(0);
+
   useEffect(() => {
     let live = true;
     loadCapabilities(apiUrl).then((value) => live && setCapabilities(value)).catch(() => live && setCapabilities(null));
-    checkServer().then((value) => live && setOnline(value));
     loadAssistants()
       .then((items) => {
         if (!live) return;
@@ -222,6 +228,36 @@ export function App() {
     return () => { live = false; };
     // Initial graph preference is intentionally read only once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    let checking = false;
+    const controller = new AbortController();
+    const check = async () => {
+      if (checking || document.visibilityState === "hidden") return;
+      checking = true;
+      try {
+        const value = await checkServer(controller.signal);
+        if (live) setOnline(value);
+      } finally { checking = false; }
+    };
+    const offline = () => setOnline("offline");
+    void check();
+    const timer = window.setInterval(check, 15_000);
+    window.addEventListener("online", check);
+    window.addEventListener("offline", offline);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      live = false;
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("online", check);
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
   }, []);
 
   useEffect(() => {
@@ -268,38 +304,30 @@ export function App() {
       snapshot: {
         state: values ?? {},
         threadId,
-        runStatus: stream.interrupt
-          ? "interrupted"
-          : stream.isLoading
-            ? "running"
+        runStatus: stream.isLoading
+          ? "running"
+          : serverInterrupt
+            ? "interrupted"
             : runtimeRef.current.runStatus,
       },
     });
-  }, [stream.values, stream.interrupt, stream.isLoading, threadId, bundle, assistantId]);
+  }, [stream.values, serverInterrupt, stream.isLoading, threadId, bundle, assistantId]);
 
   useEffect(() => {
-    // Восстанавливаем остановку после reset при загрузке схемы, иначе
-    // быстрый ответ thread/state теряет диалог подтверждения.
-    if (!bundle || bundle.assistant.assistant_id !== assistantId) return;
-    if (stream.interrupt && stream.interrupt.value !== lastInterrupt.current) {
-      let factory = eventFactory.current;
-      if (!factory) {
-        factory = new LiveEventFactory(
-          assistantId,
-          graphId,
-          () => threadRef.current ?? "pending",
-        );
-        eventFactory.current = factory;
-        dispatch({ type: "event", event: factory.startRun() });
-      }
-      dispatch({
-        type: "event",
-        event: factory.interrupt(stream.interrupt.value, waitingNode(stream.interrupt)),
-      });
-      lastInterrupt.current = stream.interrupt.value;
+    // Only the idle SDK snapshot decides whether an approval was consumed.
+    // A failed submission keeps the same server interrupt available for retry.
+    if (!bundle || bundle.assistant.assistant_id !== assistantId || stream.isLoading) return;
+    let factory = eventFactory.current;
+    if (!factory && serverInterrupt) {
+      factory = new LiveEventFactory(assistantId, graphId, () => threadRef.current ?? "pending");
+      eventFactory.current = factory;
+      dispatch({ type: "event", event: factory.startRun() });
     }
-    if (!stream.interrupt) lastInterrupt.current = undefined;
-  }, [assistantId, graphId, stream.interrupt, bundle]);
+    if (!factory) return;
+    for (const event of factory.reconcileInterrupt(runtimeRef.current, serverInterrupt, waitingNode(serverInterrupt))) {
+      dispatch({ type: "event", event });
+    }
+  }, [assistantId, graphId, serverInterrupt, stream.isLoading, bundle, runtime.interrupts, runtime.runStatus]);
 
   useEffect(() => {
     if (stream.isLoading && !wasLoading.current && !runStarted.current) {
@@ -311,7 +339,7 @@ export function App() {
       eventFactory.current = factory;
       dispatch({ type: "event", event: factory.startRun() });
     }
-    if (!stream.isLoading && wasLoading.current && !stream.interrupt && !runFailed.current && !runCancelled.current) {
+    if (!stream.isLoading && wasLoading.current && !serverInterrupt && !runFailed.current && !runCancelled.current) {
       const factory = eventFactory.current;
       if (factory) dispatch({ type: "event", event: factory.completed() });
       runStarted.current = false;
@@ -320,7 +348,7 @@ export function App() {
       runStarted.current = false;
     }
     wasLoading.current = stream.isLoading;
-  }, [assistantId, graphId, stream.interrupt, stream.isLoading]);
+  }, [assistantId, graphId, serverInterrupt, stream.isLoading]);
 
   const startRun = useCallback(
     (payload: unknown) => {
@@ -361,7 +389,6 @@ export function App() {
     runFailed.current = false;
     runCancelled.current = false;
     wasLoading.current = false;
-    lastInterrupt.current = undefined;
     setKnownThread(null);
     eventFactory.current = null;
     dispatch({
@@ -375,26 +402,29 @@ export function App() {
 
   const dispatcher = useMemo(
     () =>
-      new ActionDispatcher(apiUrl, manifest, capabilities, () => runtimeRef.current, {
+      new ActionDispatcher(manifest, capabilities, () => runtimeRef.current, {
         "thread.create": newThread,
         "run.start": startRun,
         "run.stop": () => {
           runCancelled.current = true;
           stream.stop();
         },
-        "interrupt.resume": (payload) => {
-          const pending = runtimeRef.current.interrupts.find(
-            (interrupt) => interrupt.status === "pending",
-          );
-          const factory = eventFactory.current;
-          if (factory && pending) {
-            dispatch({ type: "event", event: factory.resolved(pending.interruptId) });
+        "interrupt.resume": (payload, action) => {
+          if (!action.interruptId || action.interruptId !== serverInterrupt?.id) {
+            throw new Error("Остановка изменилась. Дождитесь актуальной формы подтверждения.");
+          }
+          // `reject` не отменяет предыдущий run — сервер откажет новому, а
+          // идущий продолжит идти. Ошибка в интерфейсе при работающем графе
+          // хуже отказа заранее, поэтому во время прогона не отправляем.
+          if (stream.isLoading) {
+            throw new Error("Прогон ещё идёт. Дождитесь его завершения.");
           }
           runStarted.current = true;
           runFailed.current = false;
           runCancelled.current = false;
           return stream.submit(undefined, {
-            command: { resume: payload },
+            command: { resume: { [action.interruptId]: payload } },
+            multitaskStrategy: "reject",
             streamMode: ["values", "updates", "tasks"],
           });
         },
@@ -406,7 +436,7 @@ export function App() {
           });
         },
         "resource.refresh": () => undefined,
-      }),
+      }, (body) => validateAction(apiUrl, body)),
     [capabilities, manifest, newThread, startRun, stream],
   );
 
@@ -465,7 +495,6 @@ export function App() {
     setThreadId(localStorage.getItem(threadKey(next.graph_id)) || null);
     setSelectedNode(null);
     setActionError(null);
-    lastInterrupt.current = undefined;
     runStarted.current = false;
     runFailed.current = false;
     runCancelled.current = false;
@@ -525,8 +554,8 @@ export function App() {
         <span className="rule">{"─".repeat(400)}</span>
         <span className="status">
           <Spinner on={stream.isLoading} />
-          <span className={online === null ? "dot-idle" : online ? "dot-ok" : "dot-bad"}>
-            {online === null ? "◇ связь…" : online ? "◆ на связи" : "◆ нет сервера"}
+          <span className={online === null ? "dot-idle" : online === "ok" ? "dot-ok" : "dot-bad"}>
+            {online === null ? "◇ связь…" : online === "ok" ? "◆ на связи" : online === "unauthorized" ? "◆ нет доступа" : "◆ нет сервера"}
           </span>
           <span
             className={`connection connection-${runtime.connection}`}
@@ -663,12 +692,19 @@ export function App() {
           <span className="error" role="alert">{runErrorMessage(stream.error)}</span>
         ) : null}
       </footer>
-      {settingsOpen ? <SettingsOverlay onClose={() => setSettingsOpen(false)} /> : null}
+      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/*
+        Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на
+        время отправки нельзя: пока идёт прогон, оператор должен видеть, что
+        именно он подтвердил, — а не пустой экран. Отправку в это время
+        запирает `busy`, подмену остановки — сверка id в reconcile.
+      */}
       <InterruptSurface
         manifest={manifest}
         runtime={runtime}
         context={safeContext}
         onAction={handleAction}
+        busy={busy || stream.isLoading}
       />
     </div>
   );

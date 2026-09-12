@@ -1,4 +1,4 @@
-import { validateAction } from "../api/client";
+import type { ActionValidation } from "../api/client";
 import type { ActionKind, EngineCapabilities, UiManifest, WidgetAction } from "../manifest/types";
 import type { RuntimeSnapshot } from "../runtime/types";
 
@@ -25,25 +25,25 @@ const MUTATING_ACTIONS = new Set<ActionKind>([
   "artifact.edit",
 ]);
 
-type Handlers = Partial<Record<ActionKind, (payload: unknown) => void | Promise<void>>>;
+type Handlers = Partial<Record<ActionKind, (payload: unknown, action: WidgetAction) => void | Promise<void>>>;
 
 export class ActionDispatcher {
   private inflight = new Set<string>();
 
-  private readonly apiUrl: string;
+  private readonly validate: (body: Record<string, unknown>) => Promise<ActionValidation>;
   private readonly manifest: UiManifest;
   private readonly capabilities: EngineCapabilities | null;
   private readonly runtime: () => RuntimeSnapshot;
   private readonly handlers: Handlers;
 
   constructor(
-    apiUrl: string,
     manifest: UiManifest,
     capabilities: EngineCapabilities | null,
     runtime: () => RuntimeSnapshot,
     handlers: Handlers,
+    validate: (body: Record<string, unknown>) => Promise<ActionValidation>,
   ) {
-    this.apiUrl = apiUrl;
+    this.validate = validate;
     this.manifest = manifest;
     this.capabilities = capabilities;
     this.runtime = runtime;
@@ -76,10 +76,11 @@ export class ActionDispatcher {
     if (this.inflight.has(action.kind)) return false;
     this.inflight.add(action.kind);
     try {
-      // Every mutating manifest-shaped action crosses the UI API permission
-      // and idempotency boundary before an adapter can reach LangGraph.
+      // Preflight validates the payload; it does not consume execution.
+      // The actual resume command is addressed to a LangGraph interrupt ID.
       if (MUTATING_ACTIONS.has(action.kind)) {
-        const validation = await validateAction(this.apiUrl, {
+        // Отказ валидации бросает исключение и не даёт дойти до adapter.
+        await this.validate({
           graph_id: this.manifest.graph_id,
           kind: action.kind,
           ...(action.interruptId ? { interrupt_id: action.interruptId } : {}),
@@ -89,9 +90,8 @@ export class ActionDispatcher {
           payload: action.payload,
           idempotency_key: idempotencyKey,
         });
-        if (validation.duplicate) return false;
       }
-      await handler(action.payload);
+      await handler(action.payload, action);
       return true;
     } finally {
       this.inflight.delete(action.kind);

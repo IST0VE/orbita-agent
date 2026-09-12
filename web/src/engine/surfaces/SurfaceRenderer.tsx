@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import { Modal } from "../../Modal";
 
 import { conditionMatches, inputSurfaceOf, matchInterrupt, resolveBinding } from "../manifest/bindings";
 import type { InputBinding, SafeWidgetContext, SurfaceId, UiManifest, WidgetAction, WidgetBinding } from "../manifest/types";
@@ -98,11 +99,13 @@ export function InterruptSurface({
   runtime,
   context,
   onAction,
+  busy = false,
 }: {
   manifest: UiManifest;
   runtime: RuntimeSnapshot;
   context: SafeWidgetContext;
   onAction: (action: WidgetAction) => void;
+  busy?: boolean;
 }) {
   const interrupt = runtime.interrupts.find((item) => item.status === "pending");
   if (!interrupt) return null;
@@ -115,7 +118,7 @@ export function InterruptSurface({
     options: {
       interruptId: interrupt.interruptId,
       // Правило и остановка — разные идентификаторы: по первому сервер берёт
-      // resume_schema, по второму считает идемпотентность ответа.
+      // resume_schema, по второму LangGraph адресует ответ остановке.
       ruleId: rule?.id ?? "",
       schema: rule?.resume_schema ?? { type: "object" },
     },
@@ -125,17 +128,17 @@ export function InterruptSurface({
     ? definition.component
     : widgetRegistry.resolve("unknown").component;
   return (
-    <div className="overlay engine-interrupt-overlay">
+    <Modal key={interrupt.interruptId} className="engine-interrupt-overlay" label="Требуется решение оператора">
       <WidgetErrorBoundary widget={binding.widget} binding={binding.path}>
         <Component
           value={interrupt.value}
           binding={binding}
           mode="interrupt"
-          readonly={runtime.runStatus === "running" || runtime.runStatus === "queued"}
+          readonly={busy || runtime.runStatus === "running" || runtime.runStatus === "queued"}
           context={context}
           onAction={onAction}
         />
       </WidgetErrorBoundary>
-    </div>
+    </Modal>
   );
 }

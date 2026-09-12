@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from starlette.testclient import TestClient
 
 from agent import api, audit_graph, drawio_graph, jira_graph, nt_graph, prep_graph, update_graph
@@ -301,7 +304,7 @@ def test_resource_registry_blocks_arbitrary_urls_and_unknown_operations(monkeypa
     assert created.json()["created"]["name"] == "engine-demo"
 
 
-def test_resume_action_is_schema_validated_and_idempotent(monkeypatch):
+def test_resume_preflight_does_not_consume_an_unexecuted_action(monkeypatch):
     monkeypatch.setenv("API_ADMIN_TOKEN", "test-only-auth-token-with-32-characters")
     client = TestClient(api.app, headers={"Authorization": "Bearer test-only-auth-token-with-32-characters"})
     key = f"test-{uuid4()}"
@@ -328,12 +331,41 @@ def test_resume_action_is_schema_validated_and_idempotent(monkeypatch):
         json={**body, "idempotency_key": f"bad-{uuid4()}", "payload": {"decision": "later"}},
     )
 
-    assert first.status_code == 200 and first.json()["duplicate"] is False
-    assert duplicate.status_code == 200 and duplicate.json()["duplicate"] is True
-    assert same_interrupt_new_key.status_code == 200
-    assert same_interrupt_new_key.json()["duplicate"] is True
+    # Повтор той же валидации — не «дубль»: она ничего не выполнила и в
+    # ответе нет поля, по которому клиент мог бы отменить вторую попытку.
+    for response in [first, duplicate, same_interrupt_new_key]:
+        assert response.status_code == 200
+        assert response.json()["valid"] is True
+        assert "duplicate" not in response.json()
+    assert first.json()["idempotency_key"] == key
     assert invalid.status_code == 422
     assert invalid.json()["error_code"] == "ui_resume_invalid"
+
+
+def test_addressed_resume_cannot_approve_the_next_stage():
+    builder = StateGraph(dict)
+    builder.add_node("first", lambda state: {**state, "first": interrupt({"stage": "first"})})
+    builder.add_node("second", lambda state: {**state, "second": interrupt({"stage": "second"})})
+    builder.add_edge(START, "first")
+    builder.add_edge("first", "second")
+    builder.add_edge("second", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": str(uuid4())}}
+
+    first = graph.invoke({}, config)["__interrupt__"][0]
+    command = Command(resume={first.id: {"decision": "approved"}})
+    result = graph.invoke(command, config)
+    second = result["__interrupt__"][0]
+    assert first.id != second.id
+
+    # Lost response / another tab repeats the first approval after execution.
+    repeated = graph.invoke(command, config)
+    assert repeated["__interrupt__"][0].id == second.id
+    assert "second" not in repeated
+
+    finished = graph.invoke(Command(resume={second.id: {"decision": "rejected"}}), config)
+    assert finished["first"] == {"decision": "approved"}
+    assert finished["second"] == {"decision": "rejected"}
 
 
 def test_resume_rule_is_resolved_by_manifest_id_not_by_runtime_id(monkeypatch):
@@ -424,7 +456,7 @@ def test_unregistered_graph_keeps_a_working_fallback_gate(monkeypatch):
         },
     )
 
-    assert allowed.status_code == 200 and allowed.json()["duplicate"] is False
+    assert allowed.status_code == 200 and allowed.json()["valid"] is True
     assert forbidden.status_code == 403
     assert forbidden.json()["error_code"] == "ui_action_forbidden"
     assert [item["kind"] for item in fallback_manifest("x")["actions"]] == [
@@ -468,6 +500,29 @@ def test_event_normalizer_forgets_old_runs_instead_of_growing_forever():
     window = normalizer.replay("run-2")
     assert [event["sequence"] for event in window] == [4, 5]
     assert len(normalizer._logs["run-2"].ids) == 2
+
+
+def test_event_replay_copies_only_the_requested_page_outside_the_lock(monkeypatch):
+    normalizer = EventNormalizer()
+    for index in range(1000):
+        normalizer.emit(
+            "node.update", {"nested": {"index": index}}, graph_id="agent",
+            assistant_id="agent", thread_id="thread", run_id="run",
+        )
+    copied = []
+
+    def checked_copy(value):
+        assert not normalizer._lock.locked()
+        copied.extend(value)
+        return deepcopy(value)
+
+    monkeypatch.setattr("agent.ui_engine.events.deepcopy", checked_copy)
+    result = normalizer.replay("run", after=7, limit=1)
+
+    assert len(copied) == len(result) == 1
+    assert result[0]["sequence"] == 8
+    result[0]["data"]["nested"]["index"] = -1
+    assert normalizer.replay("run", after=7, limit=1)[0]["data"]["nested"]["index"] == 7
 
 
 def test_json_schema_artifacts_match_the_python_and_typescript_validators():

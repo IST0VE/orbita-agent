@@ -171,7 +171,12 @@ export async function mutateResource(
   return response.json();
 }
 
-export type ActionValidation = { valid: true; duplicate: boolean; idempotency_key: string };
+/**
+ * Ответ preflight. Поля «дубль» здесь нет намеренно: валидация не выполняет
+ * действие и не может знать, дошёл ли следующий запрос до SDK. Ключ возвращается
+ * для сверки записи в журнале с запросом, который породил клик.
+ */
+export type ActionValidation = { valid: true; idempotency_key: string };
 
 export async function validateAction(
   apiUrl: string,
