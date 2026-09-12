@@ -149,7 +149,7 @@ def _kinds_from_config_source() -> dict[str, str]:
 # --------------------------------------------------------------------------
 _FENCE = re.compile(r"^#\s*=+\s*$")
 _SECTION = re.compile(r"^#\s*(.+?)\s*$")
-_ASSIGN = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+_ASSIGN = re.compile(r"^(?P<export>export\s+)?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>.*)$")
 
 
 def _root() -> Path:
@@ -199,7 +199,7 @@ def _parse_example() -> list[dict]:
 
         assign = _ASSIGN.match(line)
         if assign:
-            name, default = assign.group(1), assign.group(2).strip()
+            name, default = assign.group("name"), assign.group("value").strip()
             fields.append(
                 {
                     "name": name,
@@ -277,7 +277,7 @@ def _parse_env_comments() -> dict[str, str]:
         if start == index:
             continue
         block = [lines[position].strip().lstrip("#").strip() for position in range(start, index)]
-        comments[assign.group(1)] = "\n".join(block).strip()
+        comments[assign.group("name")] = "\n".join(block).strip()
     return comments
 
 
@@ -404,16 +404,40 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
         pending = dict(updates)
         waiting = dict(encoded)
         out: list[str] = []
+        # Закрывающая кавычка значения, которое продолжается на следующих
+        # строках. Пока она ждёт, строки файла — это части чужого значения,
+        # а не присваивания, и трогать их нельзя.
+        tail = ""
         for index, line in enumerate(existing):
+            if tail:
+                out.append(line)
+                if tail in line:
+                    tail = ""
+                continue
             assign = _ASSIGN.match(line.strip())
-            name = assign.group(1) if assign else None
-            if name is not None and name in waiting:
+            name = assign.group("name") if assign else None
+            value = assign.group("value") if assign else ""
+            quote = value[:1] if value[:1] in ('"', "'") else ""
+            if quote and quote not in value[1:]:
+                # Многострочное значение переписать построчно нельзя: хвост
+                # остался бы мусором. Оставляем как есть — новое значение
+                # допишется в конец, а dotenv берёт последнее присваивание.
+                tail = quote
+                out.append(line)
+                continue
+            if name is not None and name in encoded:
                 # Прежний блок комментария этой переменной уже уехал в `out` —
-                # снимаем его оттуда и кладём на его место новый.
+                # снимаем его оттуда и кладём на его место новый. У повторных
+                # присваиваний того же имени блок только снимается: описание
+                # переменной живёт над первым из них.
                 del out[len(out) - (index - _comment_start(existing, index)) :]
-                out.extend(waiting.pop(name))
-            if name is not None and name in pending:
-                out.append(f"{name}={_encode_env_value(pending.pop(name))}")
+                out.extend(waiting.pop(name, []))
+            if name is not None and name in updates:
+                # dotenv uses the last assignment. Update every occurrence so
+                # an older duplicate cannot override the value just saved.
+                prefix = assign.group("export") or "" if assign else ""
+                out.append(f"{prefix}{name}={_encode_env_value(updates[name])}")
+                pending.pop(name, None)
             else:
                 out.append(line)
 

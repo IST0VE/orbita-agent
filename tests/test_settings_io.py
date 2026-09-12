@@ -76,6 +76,46 @@ def test_save_round_trips_spaces_hashes_and_quotes(settings_root: Path) -> None:
     assert fields["AGENT_NAME"]["value"] == "O'Brien # 1"
 
 
+@pytest.mark.parametrize("value", ["new-model", "", "model # with spaces"])
+def test_save_updates_all_duplicate_assignments(settings_root: Path, value: str) -> None:
+    path = settings_root / ".env"
+    path.write_text(
+        "# first\nLLM_MODEL=first\nMANUAL_SETTING=kept\n"
+        "# last\nexport LLM_MODEL=last\n", encoding="utf-8",
+    )
+
+    settings_io.save({"LLM_MODEL": value})
+
+    assert settings_io._read_env_file()["LLM_MODEL"] == value
+    contents = path.read_text(encoding="utf-8")
+    assert "MANUAL_SETTING=kept" in contents
+    assert "# first\n" in contents and "# last\n" in contents
+    assert "LLM_MODEL=first" not in contents and "LLM_MODEL=last" not in contents
+    # `export` — не украшение: файл могут читать и через `source`.
+    assert "export LLM_MODEL=" in contents
+
+
+def test_save_does_not_cut_a_multiline_value_of_another_variable(settings_root: Path) -> None:
+    """
+    Значение в кавычках может занимать несколько строк.
+
+    Его продолжение — не присваивание, даже когда выглядит как оно. Переписать
+    такую строку значило бы оставить в файле хвост от чужого значения.
+    """
+    path = settings_root / ".env"
+    path.write_text(
+        'JIRA_TOKEN="first\nLLM_MODEL=not an assignment\nlast"\nLLM_MODEL=real\n',
+        encoding="utf-8",
+    )
+
+    settings_io.save({"LLM_MODEL": "saved"})
+
+    contents = path.read_text(encoding="utf-8")
+    assert "LLM_MODEL=not an assignment" in contents
+    assert settings_io._read_env_file()["JIRA_TOKEN"] == "first\nLLM_MODEL=not an assignment\nlast"
+    assert settings_io._read_env_file()["LLM_MODEL"] == "saved"
+
+
 def test_interface_can_add_a_documented_variable_with_a_comment(settings_root: Path) -> None:
     settings_io.save({"LLM_MAX_RETRIES": "42"}, {"LLM_MAX_RETRIES": "зачем это здесь\nвторая строка"})
 
