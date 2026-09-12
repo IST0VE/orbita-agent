@@ -29,6 +29,7 @@ dependencies = [
     "langchain-openai>=0.1",
     "python-dotenv>=1.0",
     "requests>=2.31",
+    "typing-extensions>=4.7",
 ]
 
 # Всё, что нужно для разработки и для запуска Studio, но не нужно
