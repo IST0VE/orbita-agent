@@ -24,39 +24,51 @@ ARTIFACTS = ROOT / ".tmp" / "ui-smoke"
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 
+# Имена исполняемого файла Chromium в порядке предпочтения. Соседние файлы
+# каталога — chrome_crashpad_handler, chrome_sandbox — под точное совпадение
+# не попадают.
+CHROME_BINARIES = ("chrome.exe", "chrome", "Google Chrome for Testing", "Chromium")
+
+
 def _chrome() -> Path:
     """
     Chromium для проверок: `UI_TEST_CHROME`, иначе кеш Playwright.
 
-    Версия браузера в имени папки — не константа: зашитый номер ревизии
-    отваливался бы при каждом обновлении Playwright, поэтому берём самую
-    свежую из установленных, а не угаданную.
+    Ни ревизия, ни раскладка каталога внутри неё не угадываются. Ревизия — не
+    константа: зашитый номер отвалился бы на первом же обновлении Playwright.
+    Подкаталог — тем более: он называется `chrome-win64` на Windows,
+    `chrome-linux64` на Linux и `chrome-mac-*/…​.app/Contents/MacOS` на macOS,
+    и написанная по памяти строка `chrome-linux` уже один раз уронила CI при
+    полностью установленном браузере. Поэтому берётся самая свежая ревизия, а
+    бинарник ищется в ней по имени.
+
+    Каталог `chromium_headless_shell-*` под шаблон не попадает намеренно:
+    оболочка не принимает часть флагов обычного Chromium.
     """
     if override := os.environ.get("UI_TEST_CHROME"):
         return Path(override)
     if sys.platform == "win32":
         root = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
-        relative = Path("chrome-win64") / "chrome.exe"
     elif sys.platform == "darwin":
         root = Path.home() / "Library" / "Caches" / "ms-playwright"
-        relative = Path("chrome-mac") / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
     else:
         root = Path.home() / ".cache" / "ms-playwright"
-        relative = Path("chrome-linux") / "chrome"
     installed = sorted(
         (
-            (int(entry.name.rpartition("-")[2]), entry / relative)
+            (int(entry.name.rpartition("-")[2]), entry)
             for entry in root.glob("chromium-*")
             if entry.name.rpartition("-")[2].isdigit()
         ),
         reverse=True,
     )
-    for _, binary in installed:
-        if binary.exists():
-            return binary
+    for _, entry in installed:
+        for name in CHROME_BINARIES:
+            binary = next((found for found in entry.rglob(name) if found.is_file()), None)
+            if binary is not None:
+                return binary
     raise SystemExit(
-        "Chromium не найден. Поставьте его командой `python -m playwright install chromium` "
-        "или укажите путь в переменной UI_TEST_CHROME."
+        f"Chromium не найден в {root}. Поставьте его командой "
+        "`python -m playwright install chromium` или укажите путь в UI_TEST_CHROME."
     )
 
 
