@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -21,18 +22,45 @@ from websockets.sync.client import connect
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / ".tmp" / "ui-smoke"
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
-CHROME = Path(
-    os.environ.get(
-        "UI_TEST_CHROME",
-        str(
-            Path(os.environ["LOCALAPPDATA"])
-            / "ms-playwright"
-            / "chromium-1234"
-            / "chrome-win64"
-            / "chrome.exe"
+
+
+def _chrome() -> Path:
+    """
+    Chromium для проверок: `UI_TEST_CHROME`, иначе кеш Playwright.
+
+    Версия браузера в имени папки — не константа: зашитый номер ревизии
+    отваливался бы при каждом обновлении Playwright, поэтому берём самую
+    свежую из установленных, а не угаданную.
+    """
+    if override := os.environ.get("UI_TEST_CHROME"):
+        return Path(override)
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
+        relative = Path("chrome-win64") / "chrome.exe"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Caches" / "ms-playwright"
+        relative = Path("chrome-mac") / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+    else:
+        root = Path.home() / ".cache" / "ms-playwright"
+        relative = Path("chrome-linux") / "chrome"
+    installed = sorted(
+        (
+            (int(entry.name.rpartition("-")[2]), entry / relative)
+            for entry in root.glob("chromium-*")
+            if entry.name.rpartition("-")[2].isdigit()
         ),
+        reverse=True,
     )
-)
+    for _, binary in installed:
+        if binary.exists():
+            return binary
+    raise SystemExit(
+        "Chromium не найден. Поставьте его командой `python -m playwright install chromium` "
+        "или укажите путь в переменной UI_TEST_CHROME."
+    )
+
+
+CHROME = _chrome()
 MESSAGES = [
     {
         "id": str(i),
@@ -140,7 +168,7 @@ class Handler(SimpleHTTPRequestHandler):
             if body.get("payload", {}).get("value") == "Reject":
                 return self.reply({"error": "Fixture validation failure"}, 503)
             return self.reply(
-                {"valid": True, "duplicate": False, "idempotency_key": body.get("idempotency_key")}
+                {"valid": True, "idempotency_key": body.get("idempotency_key")}
             )
         if self.path.endswith("/runs/stream"):
             self.send_response(200)
@@ -160,7 +188,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.reply({})
 
 
-def main():
+def main(extra_checks=None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     profile = ARTIFACTS / f"profile-{time.time_ns()}"
@@ -178,7 +206,8 @@ def main():
         ],
         stdout=subprocess.DEVNULL,
         stderr=browser_log,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        # Окно консоли прячем только там, где оно бывает: флаг Windows-only.
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     try:
         active_port = profile / "DevToolsActivePort"
@@ -220,7 +249,14 @@ def main():
                     if js(expression):
                         return
                     time.sleep(0.1)
-                raise AssertionError(expression)
+                raise AssertionError(
+                    {
+                        "condition": expression,
+                        "errors": errors,
+                        "page": js("document.body.innerText.slice(0, 2000)"),
+                        "requests": REQUESTS[-20:],
+                    }
+                )
 
             def click(label):
                 js(
@@ -320,6 +356,7 @@ def main():
                 "document.querySelector('.pick select').value === 'demo' && document.querySelector('.graph') !== null"
             )
             assert js("document.querySelectorAll('.msg').length") == 0
+            additional = extra_checks(call, js, until, click) if extra_checks else []
             js("fetch('/fixture/interrupt',{method:'POST'})")
             call(
                 "Page.addScriptToEvaluateOnNewDocument",
@@ -332,6 +369,18 @@ def main():
             time.sleep(0.3)
             assert js("document.querySelector('.engine-interrupt-overlay') !== null"), (
                 "Delayed bundle erased the saved interrupt"
+            )
+            assert js("document.querySelector('.engine-interrupt-overlay').matches(':modal')")
+            call(
+                "Input.dispatchKeyEvent",
+                {"type": "keyDown", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27},
+            )
+            call(
+                "Input.dispatchKeyEvent",
+                {"type": "keyUp", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27},
+            )
+            assert js("document.querySelector('.engine-interrupt-overlay').matches(':modal')"), (
+                "Escape dismissed approval"
             )
             assert not errors, errors
             print(
@@ -354,15 +403,29 @@ def main():
                             "new thread clears messages",
                             "graph switching",
                             "saved interrupt survives delayed bundle",
-                        ],
+                        ]
+                        + additional,
                         "screenshots": str(ARTIFACTS),
                     },
                     ensure_ascii=False,
                 )
             )
+            # Let Chromium close its child processes and profile before waiting.
+            ws.send(json.dumps({"id": sequence + 1, "method": "Browser.close"}))
     finally:
-        browser.terminate()
-        browser.wait(timeout=10)
+        # Уборка не имеет права решать судьбу проверок. Chromium иногда не
+        # успевает закрыть дочерние процессы и за десять секунд после
+        # `Browser.close`, и раньше такой прогон — со всеми зелёными
+        # проверками — падал на таймауте ожидания. Поэтому здесь лестница
+        # «подождать → попросить → убить», и ни одна ступень не бросает.
+        for step in (None, browser.terminate, browser.kill):
+            if step is not None:
+                step()
+            try:
+                browser.wait(timeout=10)
+                break
+            except subprocess.TimeoutExpired:
+                continue
         browser_log.close()
         server.shutdown()
 

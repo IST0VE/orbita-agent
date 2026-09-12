@@ -53,6 +53,14 @@ dev = [
 docs = [
     "playwright>=1.49",
 ]
+# Браузерные проверки интерфейса: web/tests/browser_regressions.py. Браузер
+# берётся из кеша Playwright, а с Chromium по CDP говорим напрямую по WebSocket.
+# `websockets` приезжает и транзитивно с langgraph — но проверка не должна
+# ломаться от того, что зависимость чужого пакета однажды сменят.
+uitest = [
+    "playwright>=1.49",
+    "websockets>=13",
+]
 
 # Постоянные чекпоинты и долгая память в Postgres (см. checkpointer.py и
 # docker-compose.yml). Отдельным экстра, потому что нужны не всем: по умолчанию
