@@ -5,7 +5,13 @@
 # в workflow не нужны, и форки прогоняются так же, как основная ветка.
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # Периодическая проверка истории: обезличивание файла не удаляет его прежние
+  # версии из объектов репозитория, и на каждый коммит такую проверку не гоняют.
+  schedule:
+    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
@@ -36,6 +42,34 @@ jobs:
       - run: ruff check .
 
       - run: pytest
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    # Правила распознавания общие с проверкой исходящих документов
+    # (`agent.outgoing`): два набора шаблонов разошлись бы тихо. Значения
+    # находок в лог не выводятся — лог CI доступен шире, чем исходный файл.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Для сравнения с базой и для проверки истории нужен не мелкий клон.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Самопроверка: сканер обязан находить контрольную закладку. Без неё
+      # «ничего не найдено» означает только то, что ничего не искали.
+      - run: python scripts/scan_secrets.py --self-test --mode tree
+
+      - name: changes against the base branch
+        if: github.event_name == 'pull_request'
+        run: python scripts/scan_secrets.py --mode changed --base origin/${{ github.base_ref }}
+
+      - name: repository history
+        if: github.event_name == 'schedule'
+        run: python scripts/scan_secrets.py --mode history
 
   web:
     name: frontend build and audit
