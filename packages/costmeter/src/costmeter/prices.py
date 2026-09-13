@@ -49,9 +49,19 @@ class Prices:
     output: float = 0.0
     #: Откуда приехали числа — видно в отчёте, чтобы не гадать.
     source: str = "неизвестно"
-    #: Нашлась ли модель в таблице. False означает, что стоимость может быть
-    #: нулевой не потому, что она нулевая, а потому, что тариф неизвестен.
+    #: Нашлась ли модель в таблице или задана переменными. False означает, что
+    #: стоимость может быть нулевой не потому, что она нулевая, а потому, что
+    #: тариф неизвестен.
     known: bool = False
+    #: Все ли статьи тарифа откуда-то взялись. Половина цены — это не цена:
+    #: заданный `PRICE_OUTPUT_PER_MTOK` при модели вне таблицы оставляет вход
+    #: нулевым, и счёт получается тем же «бесплатно», только незаметнее.
+    complete: bool = False
+    #: Версия тарифа: дата снятия таблицы или «окружение». Нужна и в отчёте,
+    #: и в состоянии: цена, посчитанная прошлогодним прайсом, — не та же цена.
+    version: str = ""
+    #: Статьи, для которых тарифа нет вовсе.
+    missing: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ENV_BY_ARTICLE:
@@ -125,30 +135,50 @@ def for_model(provider: str, model: str, use_env: bool = True) -> Prices:
     хуже отсутствующего: отсутствующий видно сразу.
     """
     entry = ((table().get("prices") or {}).get(provider) or {}).get(model)
-    known = entry is not None
+    in_table = entry is not None
     values = {
-        article: float(entry.get(article, 0.0)) if known else 0.0 for article in ENV_BY_ARTICLE
+        article: float(entry.get(article, 0.0)) if in_table else 0.0 for article in ENV_BY_ARTICLE
     }
 
     overridden = []
+    priced = set(ENV_BY_ARTICLE) if in_table else set()
     if use_env:
         for article, variable in ENV_BY_ARTICLE.items():
             value = _env_float(variable)
             if value is not None:
                 values[article] = value
                 overridden.append(variable)
+                priced.add(article)
 
-    if not known and not overridden:
+    known = in_table or bool(overridden)
+    # Строка таблицы описывает тариф целиком: отсутствующая статья означает
+    # «этой статьи у модели нет» (запись в кеш у DeepSeek), а не «цена неизвестна».
+    missing = tuple(sorted(set(ENV_BY_ARTICLE) - priced))
+
+    if not known:
         _warn_once(provider, model)
 
-    if known and overridden:
+    if in_table and overridden:
         source = f"prices.toml ({captured_at()}) + окружение"
-    elif known:
+    elif in_table:
         source = f"prices.toml ({captured_at()})"
     elif overridden:
         source = "окружение"
-        known = True
     else:
         source = "тариф неизвестен"
 
-    return Prices(**values, source=source, known=known)
+    if in_table:
+        version = captured_at()
+    elif overridden:
+        version = "окружение"
+    else:
+        version = ""
+
+    return Prices(
+        **values,
+        source=source,
+        known=known,
+        complete=known and not missing,
+        version=version,
+        missing=missing,
+    )

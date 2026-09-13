@@ -120,3 +120,34 @@ jobs:
       - run: python -m pip install --upgrade pip pip-audit
       - run: pip install -e ./packages/costmeter -e ".[dev]"
       - run: pip-audit --local --skip-editable
+
+  lock:
+    name: clean install from the lock
+    runs-on: ubuntu-latest
+    # Зафиксированный набор проверяется установкой, а не чтением: файл, который
+    # никто не ставит, расходится с pyproject первой же правкой зависимостей.
+    # Здесь же ловится уязвимая транзитивная версия — ради неё файл и заведён.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - run: python -m pip install --upgrade pip pip-audit
+
+      # Тот же порядок, что в Dockerfile: сначала закреплённый набор, затем
+      # пакеты репозитория без повторного разрешения зависимостей.
+      - run: pip install -r requirements.lock
+      - run: pip install --no-deps ./packages/costmeter .
+
+      # Набор обязан покрывать зависимости приложения: недостающее означает,
+      # что lock устарел относительно pyproject.
+      - run: pip check
+
+      - run: pip-audit --local --skip-editable
+
+      # Приложение должно подниматься на этом наборе, а не только ставиться.
+      - run: python -c "import agent.graph, agent.api, costmeter"

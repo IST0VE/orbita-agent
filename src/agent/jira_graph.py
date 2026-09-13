@@ -67,7 +67,16 @@ from langgraph.graph import StateGraph
 from langgraph.types import interrupt
 
 from agent import config as cfg
-from agent import confluence, drafts, inputs, jira_plan, jira_roles, jira_writer, sources
+from agent import (
+    confluence,
+    drafts,
+    inputs,
+    jira_journal,
+    jira_plan,
+    jira_roles,
+    jira_writer,
+    sources,
+)
 from agent import graph as common_graph
 
 PIPELINE = jira_roles.PIPELINE
@@ -438,10 +447,21 @@ def create_node(state: State, config: RunnableConfig) -> dict:
             "не указан проект: выберите его в интерфейсе или задайте JIRA_PROJECT_KEY",
         )
 
+    # Ключ прогона: тред, проект и сам план. Повтор узла после падения даёт тот
+    # же ключ и потому находит свои прошлые операции; следующий прогон с другим
+    # планом — другой ключ, и заводит он своё.
+    thread = str((config.get("configurable") or {}).get("thread_id") or "no-thread")
+    run = jira_journal.run_key(thread, project, plan.fingerprint())
     try:
-        result = jira_writer.create_issues(plan, project, source=source)
+        result = jira_writer.create_issues(
+            plan, project, source=source, run=run, journal=jira_journal.Journal()
+        )
     except jira_writer.JiraError as exc:
         return skip("failed", str(exc))
+    except OSError as exc:
+        # Журнал недоступен — заводить вслепую нельзя: именно он и отличает
+        # повтор от первого раза.
+        return skip("failed", f"журнал операций недоступен ({exc})")
 
     return {
         "issues": result,
@@ -461,6 +481,14 @@ def _created_note(result: dict) -> str:
     failed = result.get("failed") or []
     if failed:
         head += f", отказов {len(failed)}"
+    unresolved = result.get("unresolved") or []
+    if unresolved:
+        # Неопределённость называется отдельно от отказа: «не заведено» и
+        # «неизвестно, заведено ли» требуют от человека разных действий.
+        head += f", с неизвестным результатом {len(unresolved)}"
+    recovered = [item for item in created if item.get("recovered")]
+    if recovered:
+        head += f", восстановлено из журнала {len(recovered)}"
     body = jira_writer.format_created(result)
     return f"{head}.\n{body}" if body else f"{head}."
 

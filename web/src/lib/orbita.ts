@@ -21,6 +21,26 @@ export type CostSummary = {
   output: number;
   cache_hit: number;
   calls: number;
+  /** Тариф: известен ли, откуда и какой версии. Без него ноль неотличим от «бесплатно». */
+  price?: PriceInfo;
+  /** Вызовы, прошедшие по неизвестному тарифу: в сумму они не вошли. */
+  unpriced_calls?: number;
+};
+
+/** Происхождение тарифа — то, что `cost.price_state()` кладёт в состояние. */
+export type PriceInfo = {
+  /** Тариф откуда-то взялся: таблица или переменные окружения. */
+  known: boolean;
+  /** Все статьи тарифа имеют источник. Неполный тариф — это не тариф. */
+  complete: boolean;
+  /** Человеческое описание источника: `prices.toml (2026-08)`, `окружение`. */
+  source: string;
+  /** Версия тарифа: дата снятия таблицы или `окружение`. */
+  version: string;
+  /** Статьи без цены. */
+  missing: string[];
+  model: string;
+  provider: string;
 };
 
 /** Одна опубликованная страница: свой этап, свой адрес, свой исход. */
@@ -123,6 +143,31 @@ export function isStageInterrupt(value: unknown): value is StageInterrupt {
 export function formatUsd(value: number | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `$${value.toFixed(value < 1 ? 6 : 2)}`;
+}
+
+/**
+ * Стоимость для показа. Без тарифа она не ноль, а неизвестность.
+ *
+ * Ноль долларов и «цены нет» выглядели одинаково, и на этом же равенстве
+ * денежные ворота пропускали вызовы при включённом лимите.
+ */
+export function formatCost(cost: CostSummary): { text: string; hint: string } {
+  const price = cost.price;
+  if (price && !price.complete) {
+    const what = price.known
+      ? `тариф неполон: нет статей ${price.missing.join(", ")}`
+      : "тариф модели неизвестен";
+    return {
+      text: "неизвестно",
+      hint: `${what} (${price.provider}/${price.model}, ${price.source}). `
+        + "Задайте тариф в prices.toml или переменными PRICE_*.",
+    };
+  }
+  const version = price?.version ? ` (тариф: ${price.source})` : "";
+  const unpriced = cost.unpriced_calls
+    ? ` Вызовов по неизвестному тарифу: ${cost.unpriced_calls}; они в сумму не вошли.`
+    : "";
+  return { text: formatUsd(cost.usd), hint: `Накоплено по вызовам${version}.${unpriced}` };
 }
 
 /** Во сколько раз кеш срезал счёт. Без потраченного делить не на что. */

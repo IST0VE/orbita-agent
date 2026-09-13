@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent import config as cfg
-from agent import jira, jira_fields, jira_plan, outgoing
+from agent import jira, jira_fields, jira_journal, jira_plan, outgoing
 
 JiraError = jira.JiraError
 
@@ -380,6 +380,7 @@ def create_issue(
     schema: dict[str, Any] | None = None,
     extra_fields: dict | None = None,
     mapped: set[str] | None = None,
+    operation: str = "",
 ) -> dict:
     """Одна задача. Возвращает ключ и ссылку — то, за чем приходил оператор."""
     s = settings or jira.load_settings()
@@ -391,8 +392,11 @@ def create_issue(
         "issuetype": {"name": type_name or item.type},
         "description": text_to_adf(description) if _cloud(s) else description,
     }
-    if item.labels:
-        fields["labels"] = list(item.labels)
+    # Метка операции уезжает вместе с задачей: по ней потом видно, что этот
+    # POST трекер принял, даже если ответ на него потерялся (см. jira_journal).
+    labels = [*item.labels, operation] if operation else list(item.labels)
+    if labels:
+        fields["labels"] = labels
     for field, value in (extra_fields or {}).items():
         # Cloud multiline custom fields use the same document format as description.
         metadata = schema.get("field_metadata", {}).get(field, {})
@@ -457,12 +461,54 @@ def link(blocker: str, blocked: str, settings: jira.Settings | None = None) -> N
     )
 
 
+def _recover(
+    journal: jira_journal.Journal,
+    run: str,
+    kind: str,
+    local: str,
+    s: jira.Settings,
+) -> tuple[str, dict | None, str]:
+    """
+    Что журнал и трекер знают об этой операции до того, как её повторять.
+
+    Возвращает решение: `done` — уже сделано (второй элемент описывает
+    результат), `send` — не отправлялось или не дошло, отправлять можно,
+    `unknown` — ответа нет и сверка не удалась, повторять вслепую нельзя.
+
+    Сверка идёт по метке операции, а не по теме: темы у карточек повторяются
+    между прогонами, и совпадение по ней означало бы «похоже на то же самое»,
+    а нужно «ровно то же самое».
+    """
+    record = journal.record(run, kind, local)
+    if record and record["state"] == jira_journal.COMPLETED:
+        return "done", {"key": record["remote"], "url": record["url"]}, ""
+    if not record or record["state"] == jira_journal.FAILED:
+        # Записи нет — операция не начиналась. Явный отказ трекера означает,
+        # что запрос дошёл и был отклонён: повторять его можно.
+        return "send", None, ""
+
+    try:
+        found = jira.find_by_label(record["label"], s)
+    except JiraError as exc:
+        journal.unresolved(run, kind, local, f"сверка не удалась: {exc}")
+        return "unknown", None, str(exc)
+    if found:
+        issue = found[0]
+        journal.finish(run, kind, local, remote=issue["key"], url=issue["url"],
+                       detail="восстановлено сверкой по метке операции")
+        return "done", issue, ""
+    # Сверка прошла и ничего не нашла: предыдущий POST до трекера не доехал.
+    return "send", None, ""
+
+
 def create_issues(
     plan: jira_plan.Plan,
     project: str,
     *,
     settings: jira.Settings | None = None,
     source: str = "",
+    run: str = "",
+    journal: jira_journal.Journal | None = None,
 ) -> dict:
     """
     Завести пачку и вернуть, что из неё получилось.
@@ -472,6 +518,12 @@ def create_issues(
     в `failed` с причиной. Ребёнок, чей родитель не завёлся, всё равно
     заводится, но уже без родителя: задача без эпика полезнее отсутствующей
     задачи, а расхождение видно в предупреждениях.
+
+    `run` — устойчивый ключ прогона. С ним каждая операция проходит через
+    журнал (`jira_journal`): повтор узла после падения между принятым POST и
+    сохранением результата не заводит задачу второй раз, а находит уже
+    заведённую по метке операции. Без `run` поведение прежнее — так вызывают
+    из тестов и из чужого кода, которому нечего восстанавливать.
     """
     s = settings or jira.load_settings()
     project = (project or "").strip().upper()
@@ -485,9 +537,32 @@ def create_issues(
     schema = _schema(s, project, tuple(sorted(number for number in used if number)))
     created: list[dict] = []
     failed: list[dict] = []
+    unresolved: list[dict] = []
     keys: dict[str, str] = {}
+    # Журнал заводится только при устойчивом ключе прогона: без него
+    # восстанавливать нечего — следующий прогон всё равно будет другим.
+    book = journal if (journal is not None and run) else None
 
     for item in plan.items:
+        if book is not None:
+            state, found, reason = _recover(book, run, "issue", item.local, s)
+            if state == "done" and found:
+                # Уже заведено этим же прогоном: ключ нужен детям, а второй
+                # POST завёл бы дубликат с теми же словами.
+                keys[item.local] = found["key"]
+                created.append({"local": item.local, "key": found["key"], "url": found["url"],
+                                "type": types.get(item.type, item.type), "summary": item.summary,
+                                "recovered": True})
+                continue
+            if state == "unknown":
+                unresolved.append({"local": item.local, "summary": item.summary, "reason": reason})
+                warnings.append(
+                    f"{item.local}: судьба предыдущей отправки неизвестна, сверка не удалась "
+                    f"({reason}). Задача не отправлена повторно: проверьте проект {project} "
+                    f"по метке {jira_journal.label_for(run, 'issue', item.local)}."
+                )
+                continue
+
         metadata = schema.get("create_fields", {}).get(numbers.get(types.get(item.type, item.type), ""), {})
         extra_fields, mapped, field_warnings = jira_fields.map_item(item, metadata)
         warnings.extend(field_warnings)
@@ -501,6 +576,10 @@ def create_issues(
         parent_key = keys.get(item.parent, "")
         if item.parent and not parent_key:
             warnings.append(f"{item.local}: родитель {item.parent} не заведён, задача без родителя")
+        # Запись «отправляем» делается ДО запроса. Журнал, заполняемый после
+        # ответа, не знает ровно о том случае, ради которого он заведён:
+        # о принятом POST, ответ на который не дошёл.
+        operation = book.begin(run, "issue", item.local) if book is not None else ""
         try:
             result = create_issue(
                 item,
@@ -513,24 +592,42 @@ def create_issues(
                 schema={**schema, "field_metadata": metadata},
                 extra_fields=extra_fields,
                 mapped=mapped,
+                operation=operation,
             )
         except JiraError as exc:
+            if book is not None:
+                book.fail(run, "issue", item.local, str(exc))
             failed.append({"local": item.local, "summary": item.summary, "reason": str(exc)})
             continue
+        if book is not None:
+            book.finish(run, "issue", item.local, remote=result["key"], url=result["url"])
         keys[item.local] = result["key"]
         created.append(result)
 
-    warnings += _link_dependencies(plan, keys, s)
-    return {
-        "status": _status(created, failed),
+    link_warnings, link_unresolved = _link_dependencies(plan, keys, s, book, run)
+    warnings += link_warnings
+    unresolved += link_unresolved
+    result = {
+        "status": _status(created, failed, unresolved),
         "project": project,
         "created": created,
         "failed": failed,
         "warnings": warnings + plan.warnings,
     }
+    if unresolved:
+        # Неопределённые результаты видны оператору отдельно от отказов:
+        # отказ означает «не заведено», неопределённость — «неизвестно».
+        result["unresolved"] = unresolved
+    return result
 
 
-def _link_dependencies(plan: jira_plan.Plan, keys: dict[str, str], s: jira.Settings) -> list[str]:
+def _link_dependencies(
+    plan: jira_plan.Plan,
+    keys: dict[str, str],
+    s: jira.Settings,
+    book: jira_journal.Journal | None = None,
+    run: str = "",
+) -> tuple[list[str], list[dict]]:
     """
     Связать заведённое по зависимостям плана.
 
@@ -538,8 +635,13 @@ def _link_dependencies(plan: jira_plan.Plan, keys: dict[str, str], s: jira.Setti
     типа связи зависит от схемы, а прав на связывание может не быть. Поэтому
     её отказ не портит результат и оседает предупреждением: задачи заведены,
     а порядок работ остался в описании и в документе.
+
+    Восстанавливаются связи так же, как задачи, но сверяются иначе: метку
+    на связь не повесишь, поэтому спрашивается сама пара задач. Повторная
+    связь на доске выглядит дубликатом ровно так же, как повторная задача.
     """
     warnings: list[str] = []
+    unresolved: list[dict] = []
     for item in plan.items:
         blocked = keys.get(item.local)
         if not blocked:
@@ -548,14 +650,43 @@ def _link_dependencies(plan: jira_plan.Plan, keys: dict[str, str], s: jira.Setti
             blocker = keys.get(local)
             if not blocker:
                 continue
+            pair = f"{blocker}->{blocked}"
+            if book is not None:
+                record = book.record(run, "link", pair)
+                if record and record["state"] == jira_journal.COMPLETED:
+                    continue
+                if record and record["state"] == jira_journal.PENDING:
+                    try:
+                        if jira.find_link(blocker, blocked, s):
+                            book.finish(run, "link", pair, detail="связь уже существует")
+                            continue
+                    except JiraError as exc:
+                        book.unresolved(run, "link", pair, f"сверка не удалась: {exc}")
+                        unresolved.append({"local": pair, "summary": "связь «блокирует»",
+                                           "reason": str(exc)})
+                        warnings.append(
+                            f"{blocker} → {blocked}: судьба связи неизвестна, сверка не удалась "
+                            f"({exc}). Повторно не отправлена."
+                        )
+                        continue
+                book.begin(run, "link", pair)
             try:
                 link(blocker, blocked, s)
             except JiraError as exc:
+                if book is not None:
+                    book.fail(run, "link", pair, str(exc))
                 warnings.append(f"{blocker} → {blocked}: связь не создана ({exc})")
-    return warnings
+                continue
+            if book is not None:
+                book.finish(run, "link", pair)
+    return warnings, unresolved
 
 
-def _status(created: list[dict], failed: list[dict]) -> str:
+def _status(created: list[dict], failed: list[dict], unresolved: list[dict] | None = None) -> str:
+    if unresolved and not failed and created:
+        return "partial"
+    if unresolved and not created:
+        return "unknown"
     if failed and created:
         return "partial"
     if failed:

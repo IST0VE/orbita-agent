@@ -15,13 +15,13 @@ from langgraph.types import interrupt
 
 from agent import config as cfg
 from agent import drafts, inputs, nodes, outgoing, publishers, update_plan, update_roles
-from agent.cost import cost_summary, extract_usage
+from agent.cost import charge, cost_summary, extract_usage
 from agent.routes import budget_gate
 from agent.runtime import options
 from agent.sources import question_of
 from agent.state import Options as BaseOptions
 from agent.state import State as BaseState
-from agent.state import _merge_usage
+from agent.state import _merge_spend, _merge_usage
 
 
 class Options(BaseOptions, total=False):
@@ -119,10 +119,14 @@ def make_propose_node(llm: Any = None):
             ]
         )
         usage = extract_usage(answer)
+        money = charge(usage)
         return {
             "proposal": nodes.text_of(answer),
             "usage": usage,
-            "cost": cost_summary(_merge_usage(state.get("usage"), usage)),
+            "spend": money,
+            "cost": cost_summary(
+                _merge_usage(state.get("usage"), usage), _merge_spend(state.get("spend"), money)
+            ),
             "stage": "changes",
         }
 

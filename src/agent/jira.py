@@ -440,6 +440,58 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def find_by_label(label: str, settings: Settings | None = None) -> list[dict]:
+    """
+    Задачи с этой меткой. Сверка после потерянного ответа на POST.
+
+    JQL здесь тоже собирается кодом, а не приходит от модели, и он предельно
+    узкий: одна метка, которую сам конвейер и проставил. Это единственный
+    способ узнать, что заведено, когда ответ на запрос не дошёл: своего
+    идемпотентного ключа у создания задач в Jira нет.
+    """
+    s = settings or load_settings()
+    text = (label or "").strip()
+    if not text:
+        return []
+    data = call(
+        "GET",
+        f"{s.api_path}{s.search_path}",
+        s,
+        params={
+            "jql": f'labels = "{_escape(text)}" ORDER BY created ASC',
+            "maxResults": 50,
+            "fields": "summary,issuetype",
+        },
+    )
+    found = []
+    for item in data.get("issues") or []:
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        key = str(item["key"])
+        found.append({"key": key, "url": issue_url(key, s),
+                      "summary": str((item.get("fields") or {}).get("summary") or "")})
+    return found
+
+
+def find_link(blocker: str, blocked: str, settings: Settings | None = None) -> bool:
+    """
+    Есть ли уже связь «блокирует» между двумя задачами.
+
+    Связь создаётся отдельным запросом и повторяется так же легко, как
+    создание задачи; повторная связь на доске выглядит дубликатом.
+    """
+    s = settings or load_settings()
+    data = call("GET", f"{s.api_path}/issue/{blocker}", s, params={"fields": "issuelinks"})
+    for link in ((data.get("fields") or {}).get("issuelinks") or []):
+        if not isinstance(link, dict):
+            continue
+        outward = (link.get("outwardIssue") or {}).get("key")
+        inward = (link.get("inwardIssue") or {}).get("key")
+        if blocked in {outward, inward}:
+            return True
+    return False
+
+
 def search(query: str, settings: Settings | None = None) -> list[dict]:
     """
     Поиск задач по тексту.

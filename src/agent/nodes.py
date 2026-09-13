@@ -41,7 +41,7 @@ from agent import (
     sources,
     tool_compat,
 )
-from agent.cost import cost_summary, extract_usage
+from agent.cost import charge, cost_summary, extract_usage
 from agent.documents import (
     document_header,
     operator_question,
@@ -55,7 +55,7 @@ from agent.documents import (
 )
 from agent.pipeline import Pipeline
 from agent.runtime import options
-from agent.state import State, _merge_usage
+from agent.state import State, _merge_spend, _merge_usage
 from agent.tools import FILE_TOOLS as TOOLS
 
 # Провайдер, модель, ключ (LLM_API_KEY), адрес API (LLM_API_BASE — прокси,
@@ -273,12 +273,18 @@ def make_role_node(
             response = without_tool_calls(response)
 
         # Счётчики за этот вызов уедут в редьюсер, а деньги нужны уже готовыми:
-        # складываем ровно то же, что сложит редьюсер, и переводим в доллары.
+        # складываем ровно то же, что сложат редьюсеры. Деньги считаются здесь,
+        # тарифом этого вызова, и дальше только складываются: пересчёт итоговых
+        # счётчиков текущей ценой переоценил бы историю при смене модели.
         turn = extract_usage(response)
+        money = charge(turn)
         update = {
             "messages": [response],
             "usage": turn,
-            "cost": cost_summary(_merge_usage(state.get("usage"), turn)),
+            "spend": money,
+            "cost": cost_summary(
+                _merge_usage(state.get("usage"), turn), _merge_spend(state.get("spend"), money)
+            ),
             "stage": role.key,
         }
 

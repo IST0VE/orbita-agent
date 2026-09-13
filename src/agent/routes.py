@@ -23,7 +23,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent import config as cfg
 from agent import roles
-from agent.cost import estimate_cost
+from agent.cost import spent_usd, unpriced_calls
 from agent.pipeline import Pipeline
 from agent.state import State
 
@@ -91,11 +91,23 @@ def make_tools_router(pipeline: Pipeline):
 
 
 def budget_gate(state: State) -> str:
+    """
+    Есть ли ещё деньги на следующий вызов.
+
+    Лимит без тарифа — это не лимит. Неизвестная цена давала ноль, ноль всегда
+    меньше потолка, и ворота пропускали каждый вызов при формально включённом
+    контроле. Поэтому при активном денежном лимите неполный тариф закрывает
+    ворота: либо тариф, либо явно объявленный `BUDGET_UNKNOWN_PRICE=allow`.
+
+    Ограничения на количество шагов и на историю живут отдельно и от тарифа
+    не зависят: они не про деньги.
+    """
     limit = cfg.budget_usd_per_thread()
     if limit <= 0:
         return "agent"
-    spent = estimate_cost(state.get("usage") or {})
-    return "over_budget" if spent >= limit else "agent"
+    if not cfg.price_info().complete and cfg.budget_unknown_price() == "block":
+        return "over_budget"
+    return "over_budget" if spent_usd(state) >= limit else "agent"
 
 
 # --------------------------------------------------------------------------
@@ -155,16 +167,46 @@ def make_gate_router(role: roles.Role):
 def over_budget_node(state: State, pipeline: Pipeline = roles.PIPELINE) -> dict:
     """Сообщение вместо вызова модели. Денег не тратит."""
     limit = cfg.budget_usd_per_thread()
-    spent = estimate_cost(state.get("usage") or {})
     left = [role.title for role in pipeline.pending(state.get("artifacts"))]
     remaining = f" Не выполнены этапы: {', '.join(left)}." if left else ""
+
+    price = cfg.price_info()
+    if limit > 0 and not price.complete:
+        # Отдельная причина, а не «деньги кончились»: они не кончились, их
+        # нечем посчитать. Отправлять человека поднимать лимит, который и так
+        # не работает, — значит скрыть настоящую проблему.
+        what = (
+            "тариф модели неизвестен"
+            if not price.known
+            else "тариф модели неполон: нет статей " + ", ".join(price.missing)
+        )
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"Денежный лимит включён (BUDGET_USD_PER_THREAD=${limit:.6f}), "
+                        f"но проверить его нечем: {what} "
+                        f"({price.source}, {cfg.llm_provider()}/{cfg.model_name()}). "
+                        "Обращение к модели не выполнено.{remaining} Задайте тариф "
+                        "(prices.toml или переменные PRICE_*) либо объявите режим "
+                        "без денежного контроля: BUDGET_UNKNOWN_PRICE=allow."
+                    ).format(remaining=remaining)
+                )
+            ]
+        }
+
+    spent = spent_usd(state)
+    unpriced = unpriced_calls(state)
+    note = (
+        f" Вызовов по неизвестному тарифу: {unpriced}; они в сумму не вошли." if unpriced else ""
+    )
     return {
         "messages": [
             AIMessage(
                 content=(
                     f"Бюджет треда исчерпан: потрачено ${spent:.6f} при лимите "
                     f"${limit:.6f} (BUDGET_USD_PER_THREAD). Обращение к модели "
-                    f"не выполнено.{remaining} Поднимите лимит или начните новый тред."
+                    f"не выполнено.{remaining}{note} Поднимите лимит или начните новый тред."
                 )
             )
         ]

@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
@@ -158,6 +159,23 @@ class Plan:
         if rest:
             parts.append(f"задач {rest}")
         return ", ".join(parts)
+
+    def fingerprint(self) -> str:
+        """
+        Отпечаток плана: по нему прогон отличается от прогона.
+
+        Нужен журналу операций (`jira_journal`): повтор того же узла обязан
+        узнать свои прошлые отправки, а следующий прогон с исправленным
+        планом — не узнать чужие. Считается по составу карточек, а не по
+        тексту документа: перестановка пробелов плана не меняет.
+        """
+        parts = []
+        for item in self.items:
+            parts.append(
+                "|".join([item.local, item.type, item.summary, item.parent,
+                          ",".join(item.depends_on)])
+            )
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
 
     def table(self) -> str:
         """План списком — то, что оператор видит перед заведением задач."""

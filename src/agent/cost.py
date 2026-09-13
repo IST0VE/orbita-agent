@@ -46,8 +46,77 @@ def extract_usage(message: Any) -> dict:
 
 
 def estimate_cost(usage: dict) -> float:
-    """Стоимость в долларах по накопленным счётчикам и текущему тарифу."""
+    """
+    Стоимость счётчиков по тарифу, который действует прямо сейчас.
+
+    Годится для одного вызова и для отчёта «сколько стоил бы этот расход».
+    Для накопленного расхода треда так считать нельзя: смена `LLM_MODEL`
+    переоценила бы им всю историю задним числом — см. `charge` и `spent_usd`.
+    """
     return sum(usage.get(key, 0) / 1_000_000 * price for key, price in cfg.price_per_mtok().items())
+
+
+def price_state() -> dict:
+    """
+    Тариф в виде, который уезжает в состояние треда и в интерфейс.
+
+    Неизвестная цена обязана выглядеть неизвестной. Раньше она выглядела
+    нулём — и ноль был неотличим от бесплатного вызова.
+    """
+    price = cfg.price_info()
+    return {
+        "known": price.known,
+        "complete": price.complete,
+        "source": price.source,
+        "version": price.version,
+        "missing": list(price.missing),
+        "model": cfg.model_name(),
+        "provider": cfg.llm_provider(),
+    }
+
+
+def charge(usage: dict) -> dict:
+    """
+    Деньги за один вызов по тарифу, действующему в момент вызова.
+
+    Возвращается приращением: состояние складывает его редьюсером. Считать
+    накопленный расход умножением итоговых счётчиков на текущую цену нельзя —
+    смена модели или прайса переоценивает все прошлые вызовы разом, и тред,
+    который вчера стоил доллар, сегодня стоит десять, не сделав ни одного
+    нового запроса.
+
+    Вызов по неизвестному тарифу считается неоценённым, а не бесплатным:
+    ноль в деньгах и ноль в «мы не знаем» — разные вещи, и ворота бюджета
+    обязаны их различать.
+    """
+    price = cfg.price_info()
+    if not price.complete:
+        return {"usd": 0.0, "naive_usd": 0.0, "priced_calls": 0, "unpriced_calls": 1}
+    return {
+        "usd": estimate_cost(usage),
+        "naive_usd": naive_cost(usage),
+        "priced_calls": 1,
+        "unpriced_calls": 0,
+    }
+
+
+def spent_usd(state: dict) -> float:
+    """
+    Потрачено в треде. Накопленное, если оно есть; иначе оценка по счётчикам.
+
+    Вторая ветка — для чекпоинтов, сделанных до накопления: там, кроме
+    счётчиков, ничего нет, и оценка текущим тарифом остаётся единственным
+    доступным ответом.
+    """
+    spend = state.get("spend") or {}
+    if spend:
+        return float(spend.get("usd", 0.0))
+    return estimate_cost(state.get("usage") or {})
+
+
+def unpriced_calls(state: dict) -> int:
+    """Сколько вызовов треда прошло по неизвестному тарифу."""
+    return int((state.get("spend") or {}).get("unpriced_calls", 0))
 
 
 def input_tokens(usage: dict) -> int:
@@ -69,7 +138,7 @@ def naive_cost(usage: dict) -> float:
     )
 
 
-def cost_summary(usage: dict) -> dict:
+def cost_summary(usage: dict, spend: dict | None = None) -> dict:
     """
     Накопленные счётчики треда, переведённые в деньги по текущему тарифу.
 
@@ -78,9 +147,16 @@ def cost_summary(usage: dict) -> dict:
     хранения, которое рано или поздно разъедется с тем, по которому считает
     граф. Поэтому перевод делается здесь, а интерфейсы показывают готовое.
     """
+    spend = spend or {}
     return {
-        "usd": estimate_cost(usage),
-        "naive_usd": naive_cost(usage),
+        # Накопленное по вызовам, если оно есть: тариф мог меняться по дороге,
+        # и пересчёт истории текущей ценой — это другая история, не эта.
+        "usd": float(spend.get("usd", 0.0)) if spend else estimate_cost(usage),
+        "naive_usd": float(spend.get("naive_usd", 0.0)) if spend else naive_cost(usage),
+        # Тариф: известен ли, откуда и какой версии. Без этого нулевая
+        # стоимость в интерфейсе читается как «бесплатно».
+        "price": price_state(),
+        "unpriced_calls": int(spend.get("unpriced_calls", 0)),
         "hit_rate": hit_rate(usage),
         # Лимит треда: по нему интерфейс рисует, сколько бюджета уже съедено.
         # 0 означает «без лимита» — ровно как в BUDGET_USD_PER_THREAD.

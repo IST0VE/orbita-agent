@@ -461,8 +461,10 @@ def tracker(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("JIRA_TOKEN", "tok")
     calls: list[dict] = []
 
-    def create_issues(plan, project, *, settings=None, source=""):
-        calls.append({"project": project, "items": [item.local for item in plan.items]})
+    def create_issues(plan, project, *, settings=None, source="", run="", journal=None):
+        # `run` и `journal` — журнал операций (R6): подделке достаточно принять
+        # их и запомнить ключ прогона, повтор проверяется отдельными тестами.
+        calls.append({"project": project, "items": [item.local for item in plan.items], "run": run})
         return {
             "status": "created",
             "project": project,
@@ -506,7 +508,11 @@ def test_issues_are_created_in_the_configured_project(
 
     update = jira_graph.create_node(state_with_cards(), {})
 
-    assert tracker == [{"project": "ORB", "items": ["EPIC-1", "TASK-1"]}]
+    assert [
+        {"project": call["project"], "items": call["items"]} for call in tracker
+    ] == [{"project": "ORB", "items": ["EPIC-1", "TASK-1"]}]
+    # Ключ прогона есть и он устойчив: по нему журнал узнаёт свои операции.
+    assert tracker[0]["run"]
     assert update["issues"]["status"] == "created"
     assert "ORB-1" in update["messages"][0].content
     assert "https://jira.example.com/browse/ORB-2" in update["messages"][0].content

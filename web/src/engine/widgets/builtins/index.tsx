@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 
-import { formatBytes, formatTokens, formatUsd, type CostSummary } from "../../../lib/orbita";
+import { formatBytes, formatCost, formatTokens, type CostSummary } from "../../../lib/orbita";
 import { SafeMarkdown } from "../../security/safeMarkdown";
 import { safeUrl } from "../../security/safeUrl";
 import type { JsonSchema, JsonValue, WidgetDefinition, WidgetProps } from "../../manifest/types";
@@ -848,7 +848,8 @@ function FilePickerWidget({ binding, context, value, onChange, readonly }: Widge
 
 function CostSummaryWidget({ value }: WidgetProps) {
   const cost = (value && typeof value === "object" ? value : {}) as CostSummary;
-  return <dl className="key-value"><div><dt>стоимость</dt><dd>{formatUsd(cost.usd)}</dd></div><div><dt>вызовы</dt><dd>{formatTokens(cost.calls)}</dd></div><div><dt>вход</dt><dd>{formatTokens(cost.input)}</dd></div><div><dt>выход</dt><dd>{formatTokens(cost.output)}</dd></div><div><dt>cache hit</dt><dd>{typeof cost.hit_rate === "number" ? `${cost.hit_rate.toFixed(1)}%` : "—"}</dd></div></dl>;
+  const money = formatCost(cost);
+  return <dl className="key-value"><div><dt>стоимость</dt><dd title={money.hint}>{money.text}</dd></div><div><dt>вызовы</dt><dd>{formatTokens(cost.calls)}</dd></div><div><dt>вход</dt><dd>{formatTokens(cost.input)}</dd></div><div><dt>выход</dt><dd>{formatTokens(cost.output)}</dd></div><div><dt>cache hit</dt><dd>{typeof cost.hit_rate === "number" ? `${cost.hit_rate.toFixed(1)}%` : "—"}</dd></div></dl>;
 }
 
 function PublicationWidget({ value }: WidgetProps) {

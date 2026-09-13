@@ -21,10 +21,16 @@ WORKDIR /app
 
 # Зависимости ставятся до копирования остального кода: слой с ними меняется
 # редко и переиспользуется между сборками.
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE requirements.lock ./
 COPY packages ./packages
 COPY src ./src
-RUN pip install ./packages/costmeter && pip install ".[server,postgres]"
+# Сначала зафиксированный набор, потом сами пакеты без повторного разрешения:
+# иначе установка образа сегодня и через месяц даёт разные версии, и уязвимая
+# транзитивная зависимость приезжает молча. Обновляется файл явно —
+# scripts/write_lock.py, см. комментарий в самом requirements.lock.
+RUN pip install -r requirements.lock \
+    && pip install --no-deps ./packages/costmeter \
+    && pip install --no-deps "."
 
 COPY langgraph.json run_demo.py ./
 COPY .env.example ./

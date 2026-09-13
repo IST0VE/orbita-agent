@@ -67,6 +67,28 @@ def _merge_artifacts(old: dict | None, new: dict | None) -> dict:
     return merged
 
 
+#: Статьи накопленного расхода. Складываются, как и счётчики токенов.
+SPEND_KEYS = ("usd", "naive_usd", "priced_calls", "unpriced_calls")
+
+
+def _merge_spend(old: dict | None, new: dict | None) -> dict:
+    """
+    Редьюсер денег: складывает приращения вызовов.
+
+    Отдельно от `_merge_usage` намеренно. Счётчики токенов — факт, который не
+    зависит ни от чего; деньги зависят от тарифа, действовавшего в момент
+    вызова, и именно поэтому их нельзя пересчитать из счётчиков потом.
+    """
+    merged = dict.fromkeys(SPEND_KEYS, 0) | dict(old or {})
+    for key, value in (new or {}).items():
+        before = merged.get(key, 0)
+        if _is_number(before) and _is_number(value):
+            merged[key] = before + value
+        else:
+            merged[key] = value
+    return merged
+
+
 class State(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     usage: Annotated[dict, _merge_usage]
@@ -109,9 +131,14 @@ class State(TypedDict, total=False):
     # между предпросмотром и записью успевают поменяться и PUBLISH_DIR,
     # и адрес Confluence, и сама страница на той стороне.
     publication_plan: dict
-    # Те же счётчики, что в usage, но в деньгах по текущему тарифу. Считается
-    # на сервере (см. `cost_summary`) и перезаписывается целиком: величина
-    # накопительная, складывать нечего.
+    # Деньги, накопленные по вызовам: каждый вызов оценён тарифом, который
+    # действовал в момент вызова, и приращения складываются. Умножать итоговые
+    # счётчики на текущую цену нельзя — смена LLM_MODEL переоценила бы всю
+    # историю треда задним числом. Вызов по неизвестному тарифу попадает
+    # в `unpriced_calls`, а не в нулевую стоимость.
+    spend: Annotated[dict, _merge_spend]
+    # Сводка для интерфейса: накопленные деньги, тариф и его происхождение.
+    # Перезаписывается целиком — это производная величина, складывать нечего.
     cost: dict
 
 
