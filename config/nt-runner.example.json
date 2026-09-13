@@ -1,0 +1,16 @@
+{
+  "k6_binary": "k6",
+  "max_rps": 100,
+  "max_vus": 20,
+  "max_duration_seconds": 600,
+  "lease_seconds": 20,
+  "targets": {
+    "local-demo": {
+      "url": "http://127.0.0.1:8088",
+      "target_service": "demo-api",
+      "environment": "nt",
+      "namespace": "local",
+      "auth_env": ""
+    }
+  }
+}

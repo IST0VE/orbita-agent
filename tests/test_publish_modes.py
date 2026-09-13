@@ -160,6 +160,27 @@ def test_manual_publishes_on_explicit_request(
     assert result["publication"]["status"] == "created"
 
 
+@pytest.mark.parametrize("mode", ["each", "changed", "manual"])
+def test_explicit_refusal_beats_any_mode(
+    published, monkeypatch: pytest.MonkeyPatch, mode: str
+):
+    """
+    `publish: False` запрещает публикацию в любом режиме, а не только в manual.
+
+    Так граф, который вызывает чужой конвейер ради одного результата, не выпускает
+    наружу его промежуточный документ: иначе при режиме по умолчанию оператор
+    подтверждает публикацию черновика, которого не просил.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH_MODE", mode)
+
+    result = publish_node(
+        state(), {"configurable": {"thread_id": "t-1", "publish": False}}
+    )
+
+    assert published == []
+    assert result["publication"]["status"] == "postponed"
+
+
 # --------------------------------------------------------------------------
 # Валидация
 # --------------------------------------------------------------------------

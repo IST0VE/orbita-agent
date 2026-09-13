@@ -95,3 +95,9 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated load-test artifacts, synthetic data and portable verification tools.
+.nt-runs/
+.nt-tools/
+.pytest-nt-*/
+config/nt-runner.json

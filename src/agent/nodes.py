@@ -455,8 +455,15 @@ def _publish_skip(
     if publisher.name == "none":
         return ("disabled", "PUBLISH_TARGET=none: документы собраны, но никуда не уходят")
 
+    # Флаг трёхпозиционный: ключа нет — решает режим, True — публиковать, False —
+    # не публиковать ни в каком режиме. Последнее нужно вложенным прогонам: граф,
+    # который вызывает чужой конвейер ради одного лишь результата, не должен
+    # выпускать наружу его промежуточный документ и просить на это оператора.
+    requested = options(config).get("publish")
+    if requested is False:
+        return ("postponed", "публикация отключена вызывающей стороной")
     mode = cfg.confluence_publish_mode()
-    if mode == "manual" and not options(config).get("publish"):
+    if mode == "manual" and not requested:
         return ("postponed", "режим manual: публикация не запрошена")
     if mode == "changed" and digest == state.get("document_hash"):
         return ("unchanged", "документы не изменились с прошлой публикации")

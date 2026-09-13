@@ -4,6 +4,8 @@
 
 **Для локальной работы проще всего два процесса:** Python backend и Vite frontend. Этот путь полностью описан в [первом запуске](GETTING_STARTED.md). Ниже — Docker и вопросы хранения.
 
+Для `nt_run` нужен третий процесс — [локальный runner](NT_RUN.md), а также k6 и доступная цель нагрузки. Штатный Compose их не создаёт. Runner слушает только `127.0.0.1`: backend в отдельном контейнере не сможет обратиться к runner на хосте по этому адресу. Описанный в NT_RUN.md путь предполагает backend и runner на одном хосте вне контейнеров; отдельная схема контейнерного размещения runner в поставку не входит.
+
 ## Что запускает штатный Compose
 
 [`docker-compose.yml`](../docker-compose.yml) содержит PostgreSQL, backend `agent` и отдельный профиль `demo`. **Frontend в Compose отсутствует.** Обычный `docker compose up` не запускает платное демо.
@@ -90,6 +92,7 @@ docker compose -f docker-compose.yml -f compose.local.yaml up -d --force-recreat
 | :--- | :--- | :--- |
 | Исходные материалы | `input/` или `AGENT_INPUT_DIR` | `input/` хоста, подключённый read-only |
 | Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/` | `/data/published` в томе `data` либо bind mount |
+| Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | Runner отсутствует в штатном Compose; сохраняйте его каталог отдельно |
 | Треды dev-сервера | Локальное runtime-хранилище `.langgraph_api/` | В файловой системе контейнера; штатный Compose его отдельно не сохраняет |
 | Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, если используется собственный рантайм |
 | Настройки | `.env` в корне | `.env` на хосте → окружение контейнера |
