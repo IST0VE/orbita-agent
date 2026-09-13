@@ -5,9 +5,122 @@ from datetime import UTC, datetime
 
 from agent import confluence
 
+# Полный текст источника нужен модели во время исследования, но в отчёте он
+# вытесняет разбор: приложение Evidence занимало 59% страницы. В улике остаётся
+# начало, по которому её узнают; сам источник перечитывается по ссылке в Sources.
+TOOL_TEXT_LIMIT = 600
+
 
 def _json(value) -> str:
     return "```json\n" + json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n```"
+
+
+def _num(value) -> str:
+    """Агрегаты приходят с хвостом float: 180.9523809523809 не читают, а пролистывают."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    return str(value) if isinstance(value, int) else f"{value:.4g}"
+
+
+def _time(value) -> str:
+    """Секунды эпохи в таблице ничего не сообщают тому, кто читает отчёт."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+    return "—" if value is None else str(value)
+
+
+def _cell(value) -> str:
+    """Вертикальная черта и перевод строки внутри ячейки разрывают строку таблицы."""
+    text = value if isinstance(value, str) else _num(value)
+    return text.replace("|", "\\|").replace("\n", " ").strip() or "—"
+
+
+def _table(headers: list[str], rows: list[list]) -> str:
+    """Те же поля, что в дампе, но без кавычек, отступов и повторения имён ключей."""
+    if not rows:
+        return "Нет данных."
+    return "\n".join(["| " + " | ".join(headers) + " |",
+                      "| " + " | ".join("---" for _ in headers) + " |",
+                      *("| " + " | ".join(_cell(cell) for cell in row) + " |" for row in rows)])
+
+
+def _shortened(item):
+    """Улику инструмента показываем целиком по структуре и урезанно по тексту."""
+    if not isinstance(item, dict):
+        return item
+    return {key: value[:TOOL_TEXT_LIMIT] + f"… (ещё {len(value) - TOOL_TEXT_LIMIT} знаков)"
+            if isinstance(value, str) and len(value) > TOOL_TEXT_LIMIT else value
+            for key, value in item.items()}
+
+
+def _quality(item: dict) -> str:
+    """Неполный ряд меняет цену наблюдения, и знать об этом надо в той же строке."""
+    notes = []
+    if item.get("partial"):
+        notes.append("частичный ряд")
+    if item.get("invalid_points"):
+        notes.append(f"негодных точек: {item['invalid_points']}")
+    # Шага ряда в улике нет, поэтому сравниваем с фактическим средним расстоянием
+    # между точками: провал вдвое шире среднего — это пропуск, а не округление.
+    gap, start, end, count = (item.get("max_gap"), item.get("start"),
+                              item.get("end"), item.get("count"))
+    if all(isinstance(v, (int, float)) for v in (gap, start, end, count)) and count > 1:
+        if gap > 2 * (end - start) / (count - 1):
+            notes.append(f"пропуск до {_num(gap)} с")
+    return "; ".join(notes)
+
+
+def _evidence(state: dict, focus: set) -> list[str]:
+    """
+    Улики — таблица наблюдений, а не дамп состояния.
+
+    Строку сохраняет всё, на что ссылается гипотеза, и всё по сервисам в фокусе:
+    по evidence_id из раздела Root cause analysis наблюдение обязано находиться.
+    Остальное сворачивается счётчиком — это сервисы, где ничего не сработало.
+    """
+    evidence = state.get("evidence", {}) or {}
+    cited = set()
+    for hypothesis in state.get("root_cause_hypotheses", []) or []:
+        cited.update(hypothesis.get("evidence_ids") or [])
+        cited.update(hypothesis.get("counter_evidence_ids") or [])
+    kept, hidden = {}, 0
+    for key, item in evidence.items():
+        service = item.get("service") if isinstance(item, dict) else None
+        if key in cited or not service or service in focus:
+            kept[key] = item
+        else:
+            hidden += 1
+    metrics = [[key, item.get("service"), item.get("metric"), item.get("unit"),
+                _num(item.get("median")), _num(item.get("p95")), _num(item.get("max")),
+                item.get("count"), item.get("source"), _quality(item)]
+               for key, item in kept.items()
+               if key.startswith("metric:") and isinstance(item, dict)]
+    # Столбец качества нужен там, где ряд неполон. Когда он пуст у всех рядов,
+    # это шестьдесят прочерков, за которыми теряются те, где пропуск был.
+    metric_headers = ["evidence_id", "сервис", "метрика", "единица", "медиана", "p95",
+                      "максимум", "точек", "источник", "качество"]
+    if not any(row[-1] for row in metrics):
+        metric_headers = metric_headers[:-1]
+        metrics = [row[:-1] for row in metrics]
+    findings = [[key, item.get("service"), item.get("metric"), _num(item.get("limit")),
+                 _num(item.get("peak")), item.get("count"), _time(item.get("first_at")),
+                 _time(item.get("last_at")), item.get("source")]
+                for key, item in kept.items()
+                if key.startswith("finding:") and isinstance(item, dict)]
+    rest = {key: _shortened(item) for key, item in kept.items()
+            if not key.startswith(("metric:", "finding:"))}
+    out = [f"**Ряды метрик ({len(metrics)})**",
+           _table(metric_headers, metrics),
+           f"**Срабатывания порогов ({len(findings)})**",
+           _table(["evidence_id", "сервис", "метрика", "предел", "пик", "срабатываний",
+                   "первое", "последнее", "источник"], findings),
+           f"**Улики инструментов ({len(rest)})**", _json(rest)]
+    if hidden:
+        out.append(f"Свёрнуто улик: {hidden}. Это сервисы вне фокуса анализа, на которые не "
+                   "ссылается ни одна гипотеза; наблюдения целиком остаются в состоянии прогона.")
+    return out
 
 
 def render_report(state: dict) -> str:
@@ -55,9 +168,18 @@ def render_report(state: dict) -> str:
         """Разбор по всему namespace тонет в дампах сервисов, где ничего не было."""
         mapping = mapping or {}
         shown = {service: value for service, value in mapping.items() if service in focus}
+        # Сравнение всегда про одно и то же: baseline, текущее, разница. Таблицей
+        # это читают глазами, дампом — нет. Незнакомую форму не ломаем.
+        comparable = all(isinstance(changes, dict) and all(isinstance(c, dict) for c in changes.values())
+                         for changes in shown.values())
+        body = _table(["сервис", "метрика", "baseline", "текущее", "разница", "%"],
+                      [[service, metric, _num(change.get("baseline")), _num(change.get("current")),
+                        _num(change.get("absolute")), _num(change.get("percent"))]
+                       for service, changes in shown.items()
+                       for metric, change in changes.items()]) if comparable else _json(shown)
         note = (f"Показаны {len(shown)} из {len(mapping)} {what}: остальные вне фокуса "
                 f"анализа. Агрегаты доступны в состоянии прогона; исходные точки перечитываются из источников.")
-        return [_json(shown), note] if len(shown) < len(mapping) else [_json(shown)]
+        return [body, note] if len(shown) < len(mapping) else [body]
 
     metrics = state.get("current_metrics", {}).get(state.get("target_service"), {})
     from agent.nt.thresholds import SLA_FIELDS
@@ -76,11 +198,15 @@ def render_report(state: dict) -> str:
         "## Load phases", _json(state.get("load_phases", [])),
         "## Main anomalies", f"Сервисов с данными: {len(state.get('current_metrics', {}))}."])
     ranked = [r for r in state.get("ranked_services", []) if r["score"] > 0]
-    lines.append(_json(ranked[:20]))
+    lines.append(_table(["сервис", "score", "важность", "метрики со срабатываниями"],
+        [[item.get("service"), _num(item.get("score")), item.get("severity"),
+          ", ".join(item.get("metrics") or [])] for item in ranked[:20]]))
     if len(ranked) > 20:
         lines.append(f"Показаны 20 сервисов с наибольшим score из {len(ranked)} со срабатываниями.")
     timeline = [e for e in state.get("timeline", []) if not e.get("service") or e["service"] in focus]
-    lines.extend(["## Timeline", _json(timeline)])
+    lines.extend(["## Timeline", _table(["время", "событие", "сервис", "метрика"],
+        [[_time(event.get("at")), event.get("event"), event.get("service"), event.get("metric")]
+         for event in timeline])])
     if len(timeline) < len(state.get("timeline", [])):
         lines.append(f"Показаны {len(timeline)} из {len(state.get('timeline', []))} событий: "
                      f"остальные относятся к сервисам вне фокуса анализа.")
@@ -96,7 +222,17 @@ def render_report(state: dict) -> str:
                      f"{hypothesis['description']}\n  Evidence: " + ", ".join(hypothesis["evidence_ids"]))
         lines.append(f"  Механизм: {hypothesis.get('mechanism', 'unknown')}. "
                      "Причинная связь не установлена.")
-        lines.append("  Проверенные наблюдения: " + _json(hypothesis.get("observations", [])))
+        # Блок кода, приклеенный к строке, не начинается с начала строки и блоком
+        # не становится: его закрывающий забор открывал следующий, чётность сбивалась
+        # на каждой гипотезе, и в storage-разметке Confluence весь дальнейший отчёт
+        # уезжал внутрь кода. Наблюдения — такая же таблица, как остальные улики.
+        lines.append("  Проверенные наблюдения:")
+        lines.append(_table(["evidence_id", "метрика", "максимум", "пик", "предел", "первое",
+                             "вид", "%"],
+            [[item.get("evidence_id"), item.get("metric"), _num(item.get("max")),
+              _num(item.get("peak")), _num(item.get("limit")), _time(item.get("first_at")),
+              item.get("kind"), _num(item.get("percent"))]
+             for item in hypothesis.get("observations", [])]))
         lines.append("  Противоречащие данные: " + ", ".join(hypothesis.get("counter_evidence_ids", [])))
         lines.append("  Следующая проверка: " + hypothesis.get("next_check", "не указана"))
     lines.append(_json(state.get("hypothesis_assessment", {})))
@@ -115,7 +251,7 @@ def render_report(state: dict) -> str:
                 f"  `{item.get('query', '')}`",
                 f"  Evidence: {item.get('evidence_id', '')}",
             ]))
-    lines.extend(["## Evidence", _json(state.get("evidence", {})), "## Baseline comparison",
+    lines.extend(["## Evidence", *_evidence(state, focus), "## Baseline comparison",
                   *limited(state.get("baseline_comparison"), "сервисов")])
     previous = dict(state.get("previous_comparison") or {})
     lines.append("## Previous test comparison")
