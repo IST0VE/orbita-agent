@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import re
@@ -103,6 +104,9 @@ class ConfluencePublisher:
             "action": "update",
             "url": confluence.page_url(existing, s),
             "version": (existing.get("version") or {}).get("number"),
+            # Идентификатор нужен, чтобы показать diff: тело страницы отдаёт
+            # только чтение по id, а поиск по заголовку его не возвращает.
+            "page_id": str(existing.get("id") or ""),
         }
 
 
@@ -363,6 +367,72 @@ def _write_atomic(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+#: Сколько строк различий показывать. Полный diff страницы на сорок килобайт
+#: читать никто не будет, а решение принимают по первым расхождениям.
+DIFF_LINES = 200
+
+
+def current_text(publisher: Publisher, title: str, preview: dict) -> str | None:
+    """
+    Что лежит на месте документа сейчас. None — прочитать не удалось.
+
+    Нужно одному: показать оператору, чем новая версия отличается от той,
+    которую она затрёт. «Перезапишет существующую» без этого — предупреждение
+    без содержания: перезапись бывает уточнением абзаца и бывает потерей
+    чужой работы, и решают их по-разному.
+    """
+    if preview.get("action") != "update":
+        return None
+    if publisher.name == "file" and preview.get("path"):
+        try:
+            body = Path(preview["path"]).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        # Первая строка файла — заголовок, приписанный публикацией, а последний
+        # перевод строки — её же. Снимаем оба: сравнивать надо документы, а не
+        # обёртку, в которой они лежат.
+        head, _, rest = body.partition("\n\n")
+        if not head.startswith("# "):
+            return body
+        return rest[:-1] if rest.endswith("\n") else rest
+    if publisher.name == "confluence" and preview.get("page_id"):
+        try:
+            page = confluence.read_page_body(str(preview["page_id"]))
+        except confluence.ConfluenceError:
+            return None
+        return page
+    return None
+
+
+def diff_of(before: str | None, after: str) -> dict:
+    """
+    Различия между тем, что лежит, и тем, что уедет.
+
+    Считается по строкам и обрезается: решение принимают по первым
+    расхождениям, а не по сорока килобайтам контекста.
+    """
+    if before is None:
+        return {"available": False, "reason": "прежняя версия не прочитана"}
+    lines = list(
+        difflib.unified_diff(
+            before.splitlines(), after.splitlines(),
+            fromfile="сейчас", tofile="после публикации", lineterm="", n=2,
+        )
+    )
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    shown = lines[:DIFF_LINES]
+    if len(lines) > DIFF_LINES:
+        shown.append(f"[…показаны первые {DIFF_LINES} строк различий из {len(lines)}]")
+    return {
+        "available": True,
+        "added": added,
+        "removed": removed,
+        "unchanged": not lines,
+        "text": "\n".join(shown),
+    }
 
 
 def collisions(publisher: Publisher, titles: list[str]) -> list[str]:

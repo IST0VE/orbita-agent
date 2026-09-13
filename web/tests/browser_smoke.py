@@ -230,7 +230,19 @@ def main(extra_checks=None):
         port = active_port.read_text().splitlines()[0]
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(f"http://127.0.0.1:{port}/json") as response:
-            page = json.load(response)[0]
+            targets = json.load(response)
+        # Первый в списке — не обязательно вкладка приложения: Chromium держит
+        # собственные служебные страницы (`chrome://webui-toolbar.top-chrome`)
+        # такими же целями, и подключение к ним давало пустую страницу без
+        # единого запроса к фикстуре. Это и была вся «мигающая» проверка.
+        pages = [
+            target for target in targets
+            if target.get("type") == "page"
+            and not str(target.get("url", "")).startswith(("chrome://", "devtools://"))
+        ]
+        if not pages:
+            raise AssertionError({"reason": "нет вкладки приложения", "targets": targets})
+        page = pages[0]
         with connect(page["webSocketDebuggerUrl"], max_size=20_000_000, proxy=None) as ws:
             sequence = 0
             errors = []
@@ -255,8 +267,8 @@ def main(extra_checks=None):
                 assert "exceptionDetails" not in result, result
                 return result.get("result", {}).get("value")
 
-            def until(expression):
-                deadline = time.monotonic() + 10
+            def until(expression, seconds=10):
+                deadline = time.monotonic() + seconds
                 while time.monotonic() < deadline:
                     if js(expression):
                         return
@@ -266,6 +278,11 @@ def main(extra_checks=None):
                         "condition": expression,
                         "errors": errors,
                         "page": js("document.body.innerText.slice(0, 2000)"),
+                        # Адрес и состояние документа: пустая страница без
+                        # единого запроса к фикстуре — это не провал проверки,
+                        # а не состоявшаяся загрузка, и лечится она иначе.
+                        "url": js("location.href"),
+                        "ready": js("document.readyState"),
                         "requests": REQUESTS[-20:],
                     }
                 )
@@ -286,7 +303,10 @@ def main(extra_checks=None):
                 {"source": "localStorage.setItem('orbita.thread.agent','saved-thread');"},
             )
             call("Page.navigate", {"url": f"http://127.0.0.1:{server.server_port}"})
-            until("document.querySelectorAll('.msg').length === 50")
+            # Первой загрузке — больший запас: холодный старт Chromium вместе с
+            # разбором бандла на занятой машине не укладывался в общие десять
+            # секунд, и проверка падала не на том, что проверяет.
+            until("document.querySelectorAll('.msg').length === 50", seconds=45)
             assert js("document.querySelector('.pick').getBoundingClientRect().width > 0"), (
                 "Agent picker is hidden on desktop"
             )

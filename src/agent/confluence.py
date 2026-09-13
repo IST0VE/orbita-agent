@@ -545,6 +545,20 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
     return found
 
 
+def read_page_body(page_id: str, settings: Settings | None = None) -> str:
+    """
+    Тело страницы в storage format — как оно лежит на сервере.
+
+    Отличается от `fetch_page` тем, что не превращает разметку в плоский текст:
+    diff перед публикацией сравнивает то, что уедет, с тем, что лежит, а
+    уезжает storage format. Сравнение через пересказ показывало бы различия,
+    которых нет, и прятало бы те, которые есть.
+    """
+    s = settings or load_settings()
+    data = backend(s).read_page(str(page_id), s)
+    return ((data.get("body") or {}).get("storage") or {}).get("value") or ""
+
+
 def fetch_page(page_id: str, settings: Settings | None = None) -> dict:
     """Заголовок, адрес и текст страницы по её идентификатору."""
     s = settings or load_settings()

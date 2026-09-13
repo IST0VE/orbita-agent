@@ -17,6 +17,55 @@ NOTES = {"TEST_VALUE": "original note"}
 HEALTH = "ok"
 PUBLICATIONS_OK = True
 SAVE_OK = True
+APPROVAL = False
+
+# Состояние прогона с проблемой: план публикации устарел после подтверждения.
+# Ровно тот случай, ради которого итог стоит первым — иначе его собирают
+# глазами по четырём блокам JSON.
+RUN_STATE = {
+    "summary": {
+        "outcome": ["Документов этапов: 2", "Публикация: stale"],
+        "problems": [
+            "Публикация: план изменился после подтверждения",
+            "Вызовов по неизвестному тарифу: 2",
+        ],
+        "next": [
+            "Повторите ход и подтвердите публикацию по новому плану.",
+            "Задайте тариф модели: иначе денежный лимит не проверяется.",
+        ],
+    },
+}
+
+# Остановка перед публикацией с различиями: «перезапишет существующую» без
+# них — предупреждение без содержания.
+APPROVAL_PAYLOAD = {
+    "action": "publish",
+    "target": "file",
+    "title": "Сохранить документы",
+    "drafts": [
+        {
+            "id": "requirements",
+            "kind": "page",
+            "title": "Orbita: тема — 01 Требования",
+            "action": "update",
+            "where": "file",
+            "format": "markdown",
+            "document": "новая версия документа",
+            "chars": 24,
+            "fields": [{"label": "Файл", "value": "/data/published/orbita-01.md"}],
+            "diff": {
+                "available": True,
+                "added": 2,
+                "removed": 1,
+                "unchanged": False,
+                "text": "\n".join([
+                    "--- сейчас", "+++ после публикации",
+                    "-старая строка", "+новая строка", "+ещё строка",
+                ]),
+            },
+        }
+    ],
+}
 MARKDOWN = """**bold** and *italic*
 
 - one
@@ -66,8 +115,25 @@ def manifest(graph):
                 "widget": "published-list",
                 "surface": "left",
             },
+            # Итог прогона: то, ради чего оператор открывает экран. Привязан
+            # к состоянию целиком — он сводит воедино то, что лежит в четырёх
+            # разных местах (см. `run-summary` в builtins).
+            {"id": "summary", "path": "summary", "widget": "run-summary", "surface": "right"},
         ]
     )
+    value["interrupts"] = [
+        {
+            "id": "publish-approval",
+            "match": {"path": "action", "equals": "publish"},
+            "widget": "approval",
+            "resume_schema": {
+                "type": "object",
+                "required": ["decision"],
+                "additionalProperties": False,
+                "properties": {"decision": {"enum": ["approved", "rejected"]}},
+            },
+        }
+    ]
     return value
 
 
@@ -75,6 +141,11 @@ class Handler(smoke.Handler):
     def reply(self, value, status=200):
         if isinstance(value, dict) and "values" in value:
             value["values"]["document"] = MARKDOWN
+            value["values"].update(RUN_STATE)
+            if APPROVAL:
+                value["values"]["__interrupt__"] = [
+                    {"id": "publish-decision", "value": APPROVAL_PAYLOAD}
+                ]
         return super().reply(value, status)
 
     def do_GET(self):
@@ -137,7 +208,7 @@ class Handler(smoke.Handler):
 
 
 def regressions(call, js, until, click):
-    global HEALTH, PUBLICATIONS_OK, SAVE_OK
+    global HEALTH, PUBLICATIONS_OK, SAVE_OK, APPROVAL
 
     def fill(selector, value):
         js(f"""(()=>{{const e=document.querySelector({json.dumps(selector)});
@@ -329,6 +400,40 @@ def regressions(call, js, until, click):
     until("document.querySelector('.status').textContent.includes('нет сервера')")
     js("window.dispatchEvent(new Event('online'))")
     until("document.querySelector('.status').textContent.includes('на связи')")
+    # Итог прогона: три строки вместо четырёх блоков JSON. Проблема названа,
+    # следующее действие сказано.
+    until("document.querySelector('.run-summary') !== null")
+    assert js("document.querySelector('.run-summary-outcome').textContent.includes('Документов этапов: 2')")
+    assert js("document.querySelector('.run-summary-problems').textContent.includes('план изменился')")
+    assert js("document.querySelector('.run-summary-problems').textContent.includes('неизвестному тарифу')")
+    assert js("document.querySelector('.run-summary-next').textContent.includes('подтвердите публикацию')")
+    assert js("document.querySelector('.run-summary-next').textContent.includes('тариф модели')")
+
+    # Подтверждение публикации: назначение, судьба страницы и различия.
+    # «Перезапишет существующую» без них — предупреждение без содержания.
+    APPROVAL = True
+    js("window.dispatchEvent(new Event('focus'))")
+    call("Page.reload")
+    until("document.querySelector('.approve') !== null")
+    assert js("document.querySelector('.draft-action-update').textContent.includes('перезаписать')")
+    assert js("document.querySelector('.draft-fields').textContent.includes('/data/published/orbita-01.md')")
+    assert js("document.querySelector('.draft-diff > summary').textContent.includes('+2')")
+    assert js("document.querySelector('.draft-diff > summary').textContent.includes('строк')")
+    # Строки различий раскрываются по запросу, а не вываливаются сразу.
+    assert js("document.querySelector('.draft-diff').open === false")
+    js("document.querySelector('.draft-diff').open = true")
+    until("document.querySelector('.draft-diff-body') !== null")
+    assert js("document.querySelector('.draft-diff-body').textContent.includes('+новая строка')")
+    # Окно остаётся модальным и доступным с клавиатуры.
+    assert js("document.querySelector('.approve').getAttribute('role') === 'dialog'")
+    # Кнопки решения доступны с клавиатуры: фокус ставится и остаётся.
+    js("document.querySelector('.btn-yes').focus()")
+    assert js("document.activeElement.classList.contains('btn-yes')")
+    assert js("document.querySelector('.btn-yes').disabled === false")
+    APPROVAL = False
+    call("Page.reload")
+    until("document.querySelector('.approve') === null")
+
     (smoke.ARTIFACTS / "regressions.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
@@ -342,6 +447,8 @@ def regressions(call, js, until, click):
         "secret draft dropped on close",
         "publication failure/retry",
         "server disconnect/recovery and expired token",
+        "run summary: outcome, problems, next action",
+        "publish approval: destination, create/update and diff",
     ]
 
 

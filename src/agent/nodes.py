@@ -56,6 +56,7 @@ from agent.documents import (
 from agent.pipeline import Pipeline
 from agent.runtime import options
 from agent.state import State, _merge_spend, _merge_usage
+from agent.summary import summary_of
 from agent.tools import FILE_TOOLS as TOOLS
 
 # Провайдер, модель, ключ (LLM_API_KEY), адрес API (LLM_API_BASE — прокси,
@@ -841,6 +842,20 @@ def _stale_approval(state: State, plan: dict, decision: dict) -> str:
 
 
 def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
+    """
+    Публикация плюс итог хода.
+
+    Итог считается здесь, потому что здесь заканчивается ход: это последний
+    узел перед END у всех конвейеров этой формы, и всё, из чего складывается
+    итог, к этому моменту уже есть. Считать его в интерфейсе значило бы отдать
+    браузеру состояние целиком — вместе с историей сообщений, которая к итогу
+    отношения не имеет, — и пересчитывать на каждом кадре.
+    """
+    update = _publish(state, config, pipeline)
+    return {**update, "summary": summary_of({**state, **update})}
+
+
+def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
     """
     Финальный этап: разложить документы конвейера по страницам цели публикации.
 

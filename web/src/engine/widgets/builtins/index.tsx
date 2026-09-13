@@ -267,6 +267,15 @@ type Draft = {
   url?: string;
   note?: string;
   fields?: Array<{ label?: string; value?: string }>;
+  /** Различия с тем, что лежит сейчас. Есть только у перезаписи. */
+  diff?: {
+    available?: boolean;
+    reason?: string;
+    added?: number;
+    removed?: number;
+    unchanged?: boolean;
+    text?: string;
+  };
 };
 
 // Что остановка сделает с объектом, словами оператора. Ключи приходят из
@@ -313,6 +322,19 @@ function draftSummary(drafts: Draft[]): string {
  * storage format показывается текстом намеренно: оператор должен видеть то,
  * что уедет на wiki, а не браузерную интерпретацию этого.
  */
+/** Что изменится в существующем объекте: числа сразу, строки — по запросу. */
+function DraftDiff({ diff }: { diff: NonNullable<Draft["diff"]> }) {
+  if (!diff.available) {
+    return diff.reason ? <p className="hint draft-diff-note">{text(diff.reason)}</p> : null;
+  }
+  if (diff.unchanged) return <p className="hint draft-diff-note">Содержимое не меняется.</p>;
+  const summary = `Изменения: +${diff.added ?? 0} / −${diff.removed ?? 0} строк`;
+  return <details className="draft-diff">
+    <summary>{summary}</summary>
+    <pre className="draft-diff-body">{text(diff.text)}</pre>
+  </details>;
+}
+
 function DraftListWidget({ value }: WidgetProps) {
   const drafts = Array.isArray(value) ? (value as Draft[]) : [];
   if (!drafts.length) return <div className="hint">Черновиков нет.</div>;
@@ -345,6 +367,13 @@ function DraftListWidget({ value }: WidgetProps) {
           ? <SafeMarkdown value={body} />
           : <pre className="draft-body">{body}</pre>}
       </details>
+        {/*
+          Различия — рядом с карточкой, а не внутри неё: «перезапишет
+          существующую» без них предупреждение без содержания. Перезапись
+          бывает уточнением абзаца и бывает потерей чужой работы, и решают
+          их по-разному.
+        */}
+        {draft.diff ? <DraftDiff diff={draft.diff} /> : null}
         {action === "form" ? <div className="external-drafts-action">
           {href ? <a href={href} target="_blank" rel="noreferrer noopener">Открыть в Jira ↗</a> : null}
           <CopyDraftButton value={text(draft.title)} label="копировать заголовок" />
@@ -846,6 +875,66 @@ function FilePickerWidget({ binding, context, value, onChange, readonly }: Widge
   </div>;
 }
 
+/**
+ * Итог хода: что получилось, что мешает и что делать дальше.
+ *
+ * Три строки, ради которых оператор открывает экран. Считает их сервер
+ * (`agent/summary.py`): правило одно на все интерфейсы, а собирать итог здесь
+ * значило бы получать состояние целиком — вместе с историей сообщений, к
+ * итогу отношения не имеющей, — и пересчитывать его на каждом кадре.
+ */
+function RunSummaryWidget({ value }: WidgetProps) {
+  const summary = (value && typeof value === "object" ? value : {}) as {
+    outcome?: string[]; problems?: string[]; next?: string[];
+  };
+  const outcome = summary.outcome ?? [];
+  const problems = summary.problems ?? [];
+  const next = summary.next ?? [];
+  if (!outcome.length && !problems.length && !next.length) {
+    return <span className="hint">Итога ещё нет.</span>;
+  }
+  return <div className="run-summary">
+    {outcome.length ? <p className="run-summary-outcome">{outcome.join(" · ")}</p> : null}
+    {problems.length ? <ul className="run-summary-problems">
+      {problems.map((item, index) => <li key={index}>{text(item)}</li>)}
+    </ul> : null}
+    {next.length ? <p className="run-summary-next"><b>Дальше:</b> {next.map(text).join(" ")}</p> : null}
+  </div>;
+}
+
+/** Вердикт НТ читаемой сводкой: чем измерен и почему именно такой. */
+function VerdictWidget({ value }: WidgetProps) {
+  const verdict = (value && typeof value === "object" ? value : {}) as {
+    result?: string; service?: string; environment?: string; namespace?: string;
+    period?: { from?: string; to?: string; seconds?: number };
+    sources?: string[]; simulated_sources?: string[]; metrics?: string[];
+    basis?: string; reasons?: string[];
+    capacity?: { status?: string; maximum_stable_rps?: number | null; plateaus?: number };
+  };
+  if (!verdict.result) return <span className="hint">Вердикт ещё не вычислен.</span>;
+  const period = verdict.period ?? {};
+  const rows: Array<[string, string]> = [
+    ["сервис", [verdict.service, verdict.environment, verdict.namespace].filter(Boolean).join(" / ") || "—"],
+    ["период", `${text(period.from) || "—"} — ${text(period.to) || "—"}`],
+    ["источники", (verdict.sources ?? []).join(", ") || "нет"],
+    ["метрики", (verdict.metrics ?? []).join(", ") || "нет"],
+    ["чем измерен", verdict.basis === "whole_run_maxima" ? "максимумы рядов за весь период, не плато" : text(verdict.basis)],
+    ["устойчивая RPS", `${verdict.capacity?.maximum_stable_rps ?? "—"} (${text(verdict.capacity?.status) || "INCONCLUSIVE"})`],
+  ];
+  if ((verdict.simulated_sources ?? []).length) {
+    rows.push(["симулированные источники", (verdict.simulated_sources ?? []).join(", ")]);
+  }
+  return <div className="nt-verdict">
+    <StatusWidget {...({ value: verdict.result } as WidgetProps)} />
+    <dl className="key-value">
+      {rows.map(([label, item]) => <div key={label}><dt>{label}</dt><dd>{item}</dd></div>)}
+    </dl>
+    {(verdict.reasons ?? []).length ? <ul className="run-summary-problems">
+      {(verdict.reasons ?? []).map((item, index) => <li key={index}>{item}</li>)}
+    </ul> : null}
+  </div>;
+}
+
 function CostSummaryWidget({ value }: WidgetProps) {
   const cost = (value && typeof value === "object" ? value : {}) as CostSummary;
   const money = formatCost(cost);
@@ -952,6 +1041,7 @@ export const BUILTIN_WIDGETS: WidgetDefinition[] = [
   definition("draft-list", DraftListWidget, ["view"], true),
   definition("document-preview", DocumentPreviewWidget), definition("document-diff", DocumentDiffWidget),
   definition("file-list", FileListWidget), definition("task-picker", TaskPickerWidget, ["input"], true),
+  definition("run-summary", RunSummaryWidget), definition("nt-verdict", VerdictWidget),
   definition("cost-summary", CostSummaryWidget), definition("publication", PublicationWidget),
   definition("jira-project", JiraProjectWidget, ["input"]), definition("issue-list", IssueListWidget),
   definition("file-picker", FilePickerWidget, ["input"]),

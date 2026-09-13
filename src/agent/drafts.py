@@ -40,7 +40,7 @@
 
 from __future__ import annotations
 
-from agent import jira_plan, jira_writer, outgoing
+from agent import jira_plan, jira_writer, outgoing, publishers
 
 
 def page(
@@ -51,11 +51,19 @@ def page(
     fmt: str,
     where: str,
     preview: dict,
+    diff: dict | None = None,
 ) -> dict:
-    """Черновик страницы: тело после рендерера цели плюс судьба заголовка."""
+    """
+    Черновик страницы: тело после рендерера цели плюс судьба заголовка.
+
+    Для обновления рядом идут различия с тем, что лежит сейчас. «Перезапишет
+    существующую» без них — предупреждение без содержания: перезапись бывает
+    уточнением абзаца и бывает потерей чужой работы, и решают их по-разному.
+    """
     title = outgoing.sanitize(title, "title")
     document = outgoing.sanitize(document, "document")
     return {
+        "diff": diff or {"available": False, "reason": "документ создаётся заново"},
         "id": role or "document",
         "kind": "page",
         "title": title,
@@ -102,6 +110,10 @@ def pages(plan: dict, previews: list[dict] | None = None) -> list[dict]:
             fmt=publisher.renderer.name,
             where=publisher.name,
             preview=preview,
+            diff=publishers.diff_of(
+                publishers.current_text(publisher, item["title"], preview),
+                outgoing.sanitize(item["document"], "document"),
+            ) if preview.get("action") == "update" else None,
         )
         for item, preview in zip(items, previews, strict=True)
     ]

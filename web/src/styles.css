@@ -1306,6 +1306,25 @@ dialog.overlay:not([open]) { display: none; }
   font-size: 0.9em;
 }
 .draft-warnings { margin: 0.3em 0; padding-left: 2.5ch; color: var(--amber); }
+/* Итог прогона: три строки, ради которых открывают экран. */
+.run-summary { display: grid; gap: 0.4em; }
+.run-summary-outcome { margin: 0; }
+.run-summary-problems { margin: 0; padding-left: 2.5ch; color: var(--amber); }
+.run-summary-next { margin: 0; color: var(--fg-dim); }
+
+/* Различия перезаписи: числа видны всегда, строки раскрываются по запросу. */
+.draft-diff { margin: 0.2em 0 0.6em; }
+.draft-diff > summary { cursor: pointer; color: var(--amber); }
+.draft-diff-note { margin: 0.2em 0 0.6em; }
+.draft-diff-body {
+  margin: 0.3em 0;
+  max-height: 18em;
+  overflow: auto;
+  white-space: pre;
+  border-left: 1px solid var(--line);
+  padding-left: 1.5ch;
+  font-size: 0.9em;
+}
 .draft-whole > summary { cursor: pointer; color: var(--fg-dim); }
 .status-created, .status-partial { color: var(--green); }
 .status-rejected, .status-disabled, .status-skipped { color: var(--amber); }

@@ -36,7 +36,7 @@ for key, title, widget in (
     ("precheck_result", "Precheck", "json"),
     ("execution_status", "Выполнение теста", "text"),
     ("analysis_result", "Вердикт SLA", "text"),
-    ("sla_verdict", "Чем измерен вердикт", "json"),
+    ("sla_verdict", "Чем измерен вердикт", "nt-verdict"),
     ("diagnostic_status", "Полнота диагностики", "text"),
     ("diagnostic_gaps", "Пробелы диагностики", "json"),
     ("maximum_stable_rps", "Наблюдаемая устойчивая RPS", "number"),

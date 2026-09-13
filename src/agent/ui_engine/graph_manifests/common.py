@@ -225,6 +225,18 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "empty": "show",
             },
             {
+                # Итог, проблемы и следующее действие — до всего остального.
+                # Подробности никуда не делись, они ниже и раскрываются по
+                # запросу; наверху остаётся решение, ради которого открывали экран.
+                "id": "summary",
+                "path": "summary",
+                "title": "Итог прогона",
+                "widget": "run-summary",
+                "surface": "right",
+                "order": 10,
+                "empty": "hide",
+            },
+            {
                 "id": "cost",
                 "path": "cost",
                 "title": "Стоимость",
@@ -283,7 +295,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "widgets": ["task", "document", "artifacts", "published"],
             },
             {"id": "main", "order": 20, "widgets": ["messages"]},
-            {"id": "right", "order": 30, "widgets": ["cost", "publication"]},
+            {"id": "right", "order": 30, "widgets": ["summary", "cost", "publication"]},
             {"id": "bottom", "order": 40, "widgets": ["timeline"], "collapsible": True},
             {"id": "modal", "order": 50, "widgets": ["interrupt"]},
         ],
