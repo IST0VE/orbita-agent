@@ -41,6 +41,7 @@ from agent import outgoing  # noqa: E402
 ALLOWED: dict[str, str] = {
     "tests/test_outgoing.py": "проверки самой маскировки: синтетические ключи — их предмет",
     "tests/fixtures/planted_secret.txt": "контрольная закладка: на ней проверяется сам сканер",
+    "tests/test_secret_scan.py": "проверки самого сканера: синтетические ключи — их предмет",
     "scripts/scan_secrets.py": "перечень исключений и пояснения к ним",
 }
 

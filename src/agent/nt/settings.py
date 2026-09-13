@@ -61,6 +61,11 @@ class Settings:
     # Значения по умолчанию — прежние 48 000 и 8 000 знаков.
     brief_tokens: int = 12000
     tool_result_tokens: int = 2000
+    # Источники, телеметрия которых симулируется. На стенде исторические ряды
+    # генерирует симулятор и к трафику нагрузки они отношения не имеют: PASSED
+    # по ним доказывает работу симулятора, а не устойчивость цели. Поэтому
+    # вердикт по таким рядам не бывает положительным (см. `assessment`).
+    simulated_sources: tuple[str, ...] = ()
 
     @property
     def brief_chars(self) -> int:
@@ -123,4 +128,14 @@ def load_settings() -> Settings:
         tool_approval=approval,
         brief_tokens=_integer("NT_BRIEF_TOKENS", 12000, 500, 200000),
         tool_result_tokens=_integer("NT_TOOL_RESULT_TOKENS", 2000, 100, 50000),
+        simulated_sources=_sources("NT_SIMULATED_SOURCES"),
     )
+
+
+def _sources(name: str) -> tuple[str, ...]:
+    """Имена источников через запятую: `prometheus`, `influx`."""
+    raw = [item.strip().lower() for item in os.getenv(name, "").split(",") if item.strip()]
+    unknown = sorted(set(raw) - {"prometheus", "influx"})
+    if unknown:
+        raise ValueError(f"{name}: неизвестный источник " + ", ".join(unknown))
+    return tuple(dict.fromkeys(raw))

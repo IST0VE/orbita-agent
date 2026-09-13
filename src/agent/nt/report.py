@@ -123,6 +123,39 @@ def _evidence(state: dict, focus: set) -> list[str]:
     return out
 
 
+def _verdict_provenance(state: dict) -> str:
+    """
+    Чем измерен вердикт: сервис, период, источники, метрики и причины.
+
+    Голый вердикт непроверяем: по слову «PASSED» нельзя сказать, за какой
+    промежуток и по каким рядам оно получено, а по «INCONCLUSIVE» — чего
+    именно не хватило.
+    """
+    verdict = state.get("sla_verdict") or {}
+    if not verdict:
+        return "Происхождение вердикта не сохранено."
+    period = verdict.get("period") or {}
+    rows = [
+        ["сервис", verdict.get("service") or "не указан"],
+        ["окружение", " / ".join(x for x in (verdict.get("environment"), verdict.get("namespace")) if x) or "не указано"],
+        ["период", f"{period.get('from') or '—'} — {period.get('to') or '—'}"
+                   + (f" ({period['seconds']} с)" if period.get("seconds") is not None else "")],
+        ["источники", ", ".join(verdict.get("sources") or []) or "нет"],
+        ["проверено метрик", ", ".join(verdict.get("metrics") or []) or "нет"],
+        ["чем измерен", "максимумы рядов за период целиком, не плато"],
+    ]
+    if verdict.get("simulated_sources"):
+        rows.append(["симулированные источники", ", ".join(verdict["simulated_sources"])])
+    capacity = verdict.get("capacity") or {}
+    rows.append(["устойчивая RPS", str(capacity.get("maximum_stable_rps"))
+                 + f" ({capacity.get('status', 'INCONCLUSIVE')})"])
+    out = [_table(["поле", "значение"], rows)]
+    if verdict.get("reasons"):
+        out.append("Причины:")
+        out.extend(f"- {reason}" for reason in verdict["reasons"])
+    return "\n\n".join(out)
+
+
 def render_report(state: dict) -> str:
     if state.get("precheck_result", {}).get("success") is False:
         lines = ["# NT Report", "## Анализ не выполнен", "INCONCLUSIVE",
@@ -152,9 +185,14 @@ def render_report(state: dict) -> str:
         lines.append(f"- {key}: {value}")
     lines.extend(["## Test profile", _json({k: state.get(k) for k in (
         "target_rps", "duration_seconds", "ramp_up_seconds", "virtual_users", "scenario", "test_type")}),
+        "## Execution", state.get("execution_status", "UNKNOWN"),
+        "Выполнение теста и вердикт SLA — разные вещи: прерванный тест не получает PASSED, "
+        "а завершившийся не обязан в SLA укладываться.",
         "## Result", state.get("analysis_result", "INCONCLUSIVE"),
-        "Вердикт вычислен кодом по доступным SLA. Проверяются максимумы временных рядов "
-        "за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста.",
+        _verdict_provenance(state),
+        "Вердикт вычислен кодом по доступным SLA и не меняется формулировками модели. "
+        "Проверяются максимумы временных рядов за заданный период; p95/p99 ряда не "
+        "являются перцентилями всех запросов теста и не описывают устойчивое плато.",
         "## Diagnostic completeness", state.get("diagnostic_status", "NOT_RUN"),
         _json(state.get("diagnostic_gaps", [])),
         "Полнота диагностики оценивается отдельно: отсутствие baseline или данных зависимости "

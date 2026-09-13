@@ -35,10 +35,15 @@ RUN pip install -r requirements.lock \
 COPY langgraph.json run_demo.py ./
 COPY .env.example ./
 
-# Данные — на том. Пути переопределяют значения по умолчанию из config.py:
-# в контейнере рабочая папка пересоздаётся вместе с ним.
-ENV PUBLISH_DIR=/data/published
-RUN mkdir -p /data
+# Данные — на томах. Пути в образе остаются значением по умолчанию, но решает
+# их не образ: `env_file` в Compose перекрывает ENV, поэтому в docker-compose.yml
+# те же пути заданы через `environment`, где их не перебьёт личный .env.
+ENV PUBLISH_DIR=/data/published \
+    AGENT_INPUT_DIR=/data/input \
+    JIRA_JOURNAL_PATH=/data/jira-operations.sqlite3
+# `.langgraph_api` — собственное хранилище тредов сервера разработки. Каталог
+# создаётся здесь, чтобы том монтировался на готовое место с нужным владельцем.
+RUN mkdir -p /data/published /data/input /app/.langgraph_api
 
 # Даже учебный сервер не должен выполнять разбор пользовательских файлов и
 # HTTP-запросы от root. /app остаётся доступен на запись из-за runtime-файлов

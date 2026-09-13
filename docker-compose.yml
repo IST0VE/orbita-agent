@@ -48,8 +48,24 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       CHECKPOINT_BACKEND: postgres
       POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+      # Пути хранения задаются здесь, а не в образе. `env_file` перекрывает ENV
+      # образа, и строка PUBLISH_DIR=published из личного .env уводила документы
+      # в файловую систему контейнера — туда, где их стирает пересоздание.
+      # Значение из `environment` сильнее `env_file`, поэтому пути однозначны.
+      PUBLISH_DIR: /data/published
+      AGENT_INPUT_DIR: /data/input
+      JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
     volumes:
       - data:/data
+      # Материалы задач — с хоста: их кладёт человек, и терять их вместе с
+      # контейнером незачем. Запись нужна кнопке «новая папка» в интерфейсе;
+      # если папки заводят только на хосте, добавьте `:ro`.
+      - ./input:/data/input
+      # Своё хранилище `langgraph dev`. Postgres рядом его не заменяет: сервер
+      # разработки держит треды сам и в свою папку. Без этого тома пересоздание
+      # контейнера стирает историю тредов, а документы в `data` остаются —
+      # и выглядит это как выборочная потеря.
+      - threads:/app/.langgraph_api
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,8 +87,12 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       CHECKPOINT_BACKEND: postgres
       POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+      PUBLISH_DIR: /data/published
+      AGENT_INPUT_DIR: /data/input
+      JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
     volumes:
       - data:/data
+      - ./input:/data/input
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,3 +100,6 @@ services:
 volumes:
   pgdata:
   data:
+  # Треды сервера разработки. Отдельным томом, а не внутри `data`: у него свой
+  # формат, своя версия и своя судьба при обновлении образа.
+  threads:

@@ -80,7 +80,16 @@ class State(CommonState, total=False):
     previous_comparison: dict
     timeline: list[dict]
     correlations: list[dict]
+    # Три независимых исхода, и ни один не заменяет другой:
+    #   execution_status  выполнился ли тест (COMPLETED / STOPPED / FAILED / UNKNOWN);
+    #   analysis_result   уложился ли он в SLA;
+    #   diagnostic_status хватило ли данных, чтобы это утверждать.
     analysis_result: Literal["PASSED", "FAILED", "INCONCLUSIVE"]
+    execution_status: Literal["COMPLETED", "STOPPED", "FAILED", "UNKNOWN"]
+    # Тот же вердикт с происхождением: сервис, окружение, период, источники,
+    # проверенные метрики, причины и то, чем именно он измерен. Голое слово
+    # «PASSED» непроверяемо — по нему не сказать, за какой промежуток и по чему.
+    sla_verdict: dict
     maximum_stable_rps: float | None
     evidence: dict
     llm_summary: dict

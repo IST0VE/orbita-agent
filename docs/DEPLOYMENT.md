@@ -14,11 +14,15 @@
 | :--- | :--- |
 | `agent` | Порт `127.0.0.1:2024`, внутри работает `langgraph dev` |
 | `postgres` | Внутри Compose-сети; порт 5432 на хост не опубликован |
-| `data` | Именованный том, подключённый к `/data` |
+| `data` | Именованный том на `/data`: документы и журнал операций Jira |
+| `threads` | Именованный том на `/app/.langgraph_api`: треды сервера разработки |
 | `pgdata` | Именованный том данных PostgreSQL |
+| `./input` | Папка репозитория, подключённая к `/data/input` на запись |
 | Frontend | Запускается отдельно на хосте, обычно `localhost:5173` |
 
-Образ содержит код и серверные зависимости, но **не копирует `input/`, `.env.example` и frontend**. `.env` в Compose передаётся как переменные окружения, а не как смонтированный файл. Для работы с папками требуется дополнительное подключение.
+Пути хранения заданы в `environment` штатного `docker-compose.yml`, а не только в образе. Это не косметика: `env_file` перекрывает `ENV` образа, и строка `PUBLISH_DIR=published` из личного `.env` уводила документы в файловую систему контейнера — туда, где их стирает пересоздание. Значение из `environment` сильнее `env_file`, поэтому дополнительный файл для фиксации путей больше не нужен.
+
+Образ содержит код и серверные зависимости, но **не копирует `.env.example` и frontend**. `.env` в Compose передаётся как переменные окружения, а не как смонтированный файл.
 
 <details>
 <summary>Место для схемы вашего стенда</summary>
@@ -33,32 +37,22 @@
 
 Создайте его по [инструкции](GETTING_STARTED.md), укажите модель и ключ. Для этого варианта оставьте `PUBLISH_TARGET=file`, `CONFLUENCE_PUBLISH=1`, `PUBLISH_REQUIRE_APPROVAL=1`, `JIRA_CREATE_ISSUES=0`.
 
-В примере ниже результаты будут в томе `data` по пути `/data/published`. Это значение задано явно, потому что строка `PUBLISH_DIR=published` из `.env` иначе перекрывает значение `/data/published` из Dockerfile.
+Пути хранения в `.env` задавать не нужно и бесполезно: штатный Compose задаёт их сам, и его значения сильнее. Результаты приезжают в том `data` по пути `/data/published`.
 
 ### 2. Подключите входные материалы
 
-Создайте в корне **`compose.local.yaml`** с таким содержимым. Это дополнительный файл, штатный `docker-compose.yml` менять не требуется:
+Отдельный файл для этого больше не требуется: штатный `docker-compose.yml` подключает `./input` репозитория к `/data/input`. Файлы задач кладите в обычный `input/` на хосте — они видны контейнеру, переживают его пересоздание и остаются доступны с хоста.
 
-```yaml
-services:
-  agent:
-    environment:
-      AGENT_INPUT_DIR: /app/input
-      PUBLISH_DIR: /data/published
-    volumes:
-      - ./input:/app/input:ro
-```
+Подключение сделано на запись, чтобы работала кнопка «новая папка» в интерфейсе. Каталоги, созданные контейнером, на Linux получают его владельца (`orbita` внутри образа); если это мешает, заводите папки на хосте и добавьте `:ro` к строке `./input:/data/input` — тогда кнопка создания папки перестанет работать, и это ожидаемо.
 
-Все файлы задач кладите в обычный `input/` на хосте. Они доступны контейнеру только для чтения. В этом варианте папки создавайте на хосте, а не кнопкой интерфейса.
-
-Если нужен локальный bind mount для результатов вместо именованного тома, заранее создайте `published/` на хосте и добавьте в `volumes` строку `- ./published:/data/published`. Пользователь контейнера должен иметь право записи в этот каталог; на Linux проверьте права владельца.
+Если нужен bind mount для результатов вместо именованного тома, заранее создайте `published/` на хосте и добавьте в `volumes` строку `- ./published:/data/published`. Пользователь контейнера должен иметь право записи в этот каталог; на Linux проверьте права владельца.
 
 ### 3. Соберите и запустите
 
 ```text
-docker compose -f docker-compose.yml -f compose.local.yaml up --build -d
-docker compose -f docker-compose.yml -f compose.local.yaml ps
-docker compose -f docker-compose.yml -f compose.local.yaml logs --tail 100 agent
+docker compose up --build -d
+docker compose ps
+docker compose logs --tail 100 agent
 ```
 
 Используйте оба `-f` во всех последующих командах этого варианта. Docker Compose должен поддерживать используемый в штатном файле `env_file.required`; сообщение об неизвестном поле означает несовместимую версию Compose.
@@ -79,7 +73,7 @@ npm.cmd --prefix web run dev -- --host 127.0.0.1
 В этом варианте источником настроек является **`.env` на хосте**. Отредактируйте его и пересоздайте backend:
 
 ```text
-docker compose -f docker-compose.yml -f compose.local.yaml up -d --force-recreate agent
+docker compose up -d --force-recreate agent
 ```
 
 `docker compose restart` не перечитывает переданные через `env_file` переменные. Изменённое значение попадёт в процесс при пересоздании контейнера.
@@ -88,39 +82,70 @@ docker compose -f docker-compose.yml -f compose.local.yaml up -d --force-recreat
 
 ## Что сохраняется после остановки
 
-| Данные | Локальные процессы | Compose из примера |
+| Данные | Локальные процессы | Штатный Compose |
 | :--- | :--- | :--- |
-| Исходные материалы | `input/` или `AGENT_INPUT_DIR` | `input/` хоста, подключённый read-only |
-| Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/` | `/data/published` в томе `data` либо bind mount |
-| Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | Runner отсутствует в штатном Compose; сохраняйте его каталог отдельно |
-| Треды dev-сервера | Локальное runtime-хранилище `.langgraph_api/` | В файловой системе контейнера; штатный Compose его отдельно не сохраняет |
-| Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, если используется собственный рантайм |
+| Исходные материалы | `input/` или `AGENT_INPUT_DIR` | `./input` хоста → `/data/input`, на запись |
+| Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/` | `/data/published` в томе `data` |
+| Журнал операций Jira | `JIRA_JOURNAL_PATH`, обычно `data/jira-operations.sqlite3` | `/data/jira-operations.sqlite3` в томе `data` |
+| Треды dev-сервера | `.langgraph_api/` рядом с рабочей папкой | `/app/.langgraph_api` в томе `threads` |
+| Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata` |
+| Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | Runner в Compose не входит; сохраняйте его каталог отдельно |
 | Настройки | `.env` в корне | `.env` на хосте → окружение контейнера |
 
-**PostgreSQL в Compose не делает треды `langgraph dev` постоянными.** `CHECKPOINT_BACKEND` используется `run_demo.py` и собственными скриптами через `checkpointer.py`. Dev-сервер управляет хранением самостоятельно.
+**PostgreSQL не делает треды `langgraph dev` постоянными.** `CHECKPOINT_BACKEND` используется `run_demo.py` и собственными скриптами через `checkpointer.py`, а dev-сервер держит треды в своей папке. Поэтому она вынесена на отдельный том `threads`: без него пересоздание контейнера стирало историю тредов, оставляя документы на месте, — и выглядело это как выборочная потеря.
 
-Остановка/запуск существующего контейнера и его пересоздание — разные операции. При пересоздании не рассчитывайте восстановить треды dev-сервера без отдельного решения для его runtime-хранилища. Готовые документы сохраняйте в постоянную папку/том.
+Формат этого хранилища принадлежит серверу разработки: копия восстанавливается на той же версии образа, но переносимость между версиями не обещана. Поддерживаемое хранение для собственного рантайма — PostgreSQL.
+
+Остановка/запуск существующего контейнера и его пересоздание — разные операции, но для перечисленных выше данных обе безопасны: всё лежит на томах и на хосте. `docker compose down -v` удаляет тома вместе с данными.
+
+## Резервная копия и восстановление
+
+Копируется три тома и один файл настроек. Контейнер при этом можно не останавливать только для документов; для базы и тредов остановите его, иначе копия окажется снятой на середине записи.
+
+```text
+docker compose stop agent
+docker run --rm -v claude_langgraph_data:/from -v "$PWD/backup":/to alpine tar czf /to/data.tar.gz -C /from .
+docker run --rm -v claude_langgraph_threads:/from -v "$PWD/backup":/to alpine tar czf /to/threads.tar.gz -C /from .
+docker compose exec -T postgres pg_dump -U orbita orbita > backup/orbita.sql
+docker compose start agent
+```
+
+Имена томов Compose составляет из имени проекта: проверьте их `docker volume ls`. Восстановление — в обратном порядке, при остановленном `agent`:
+
+```text
+docker compose stop agent
+docker run --rm -v claude_langgraph_data:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/data.tar.gz -C /to"
+docker run --rm -v claude_langgraph_threads:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/threads.tar.gz -C /to"
+docker compose exec -T postgres psql -U orbita orbita < backup/orbita.sql
+docker compose start agent
+```
+
+**Права доступа.** Внутри образа процесс работает не от root, а от пользователя `orbita`. Распаковка от root в примере выше сохраняет владельцев из архива, поэтому файлы остаются доступными приложению. Если восстанавливаете копию другим способом, проверьте владельца: `docker compose exec agent ls -ln /data`. Каталог, принадлежащий root, приложение не сможет записать, и публикация будет падать с «не записать».
+
+Копия Markdown не является резервной копией PostgreSQL или тредов, а дамп базы не содержит документов: это три независимых набора данных.
+
+Проверка восстановления — единственное доказательство, что копия рабочая. После пересоздания контейнера (`docker compose up -d --force-recreate`) убедитесь, что на месте документы в `/data/published`, история тредов в интерфейсе, настройки из `.env` и данные runner в его каталоге.
 
 ## Забрать результаты и остановить
 
 Если результаты в именованном томе, скопируйте их в локальную папку:
 
 ```text
-docker compose -f docker-compose.yml -f compose.local.yaml cp agent:/data/published ./published-export
+docker compose cp agent:/data/published ./published-export
 ```
 
-Для резервной копии остановленной базы можно использовать `pg_dump` по вашей процедуре администрирования; копия Markdown не является резервной копией PostgreSQL или тредов.
+Это выгрузка результатов, а не резервная копия: процедура копирования и восстановления всех томов — [выше](#резервная-копия-и-восстановление).
 
 Остановка с сохранением контейнеров:
 
 ```text
-docker compose -f docker-compose.yml -f compose.local.yaml stop
+docker compose stop
 ```
 
 Удаление контейнеров с сохранением именованных томов:
 
 ```text
-docker compose -f docker-compose.yml -f compose.local.yaml down
+docker compose down
 ```
 
 Не добавляйте `-v`, если хотите сохранить данные томов. Frontend остановите через `Ctrl+C` в его терминале.

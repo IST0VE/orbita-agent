@@ -34,7 +34,9 @@ MANIFEST["nodes"] = {
 MANIFEST["nodes"]["report"]["output"] = {"path": "artifacts.report", "widget": "markdown"}
 for key, title, widget in (
     ("precheck_result", "Precheck", "json"),
-    ("analysis_result", "Итог НТ", "text"),
+    ("execution_status", "Выполнение теста", "text"),
+    ("analysis_result", "Вердикт SLA", "text"),
+    ("sla_verdict", "Чем измерен вердикт", "json"),
     ("diagnostic_status", "Полнота диагностики", "text"),
     ("diagnostic_gaps", "Пробелы диагностики", "json"),
     ("maximum_stable_rps", "Наблюдаемая устойчивая RPS", "number"),
@@ -49,7 +51,10 @@ for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":
         surface["widgets"] = ["artifacts", "published"]
     elif surface["id"] == "right":
-        surface["widgets"] += ["analysis_result", "diagnostic_status", "diagnostic_gaps",
+        # Три исхода подряд и в этом порядке: выполнился ли тест, уложился ли
+        # он в SLA и хватило ли данных, чтобы это утверждать.
+        surface["widgets"] += ["execution_status", "analysis_result", "sla_verdict",
+                               "diagnostic_status", "diagnostic_gaps",
                                "maximum_stable_rps", "hypothesis_assessment", "precheck_result",
                                "ranked_services", "baseline_metrics", "timeline"]
 MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"] if r["id"] == "publish-approval"]

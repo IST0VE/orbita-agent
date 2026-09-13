@@ -1,0 +1,26 @@
+{
+  "id": "publication-failure",
+  "kind": "сбой публикации",
+  "task": "Опиши выгрузку по задаче REP-104 и опубликуй результат.",
+  "materials": {
+    "требования.md": "# REP-104\n\nВыгрузка отчёта должна возвращать идентификатор задания.\n"
+  },
+  "publish_target": "confluence",
+  "environment": {
+    "CONFLUENCE_BASE_URL": "",
+    "CONFLUENCE_TOKEN": "",
+    "CONFLUENCE_SPACE_KEY": ""
+  },
+  "answers": [
+    "## Требования\n\n- По требования.md: запрос выгрузки должен возвращать идентификатор задания.\n",
+    "## Контракт API\n\n- По требования.md: POST /reports/exports обязан вернуть job_id.\n",
+    "## Данные\n\n- Идентификатор задания должен храниться до получения файла (требования.md).\n",
+    "## Архитектура\n\n- Задание должно переживать перезапуск сервиса (требования.md).\n",
+    "## Ревью\n\n- Замечаний по требования.md нет.\n"
+  ],
+  "expect": {
+    "publication_status": "skipped",
+    "publication_mentions": "не заданы в .env",
+    "max_published_files": 0
+  }
+}

@@ -134,7 +134,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             "gateway_test_id": "", "deadline_at": 0,
             "capacity_assessment": {}, "hypothesis_assessment": {}, "current_inventory": [],
             "analysis_policy": {},
-            "maximum_stable_rps": None, "analysis_result": "INCONCLUSIVE", "precheck_result": {},
+            "maximum_stable_rps": None, "analysis_result": "INCONCLUSIVE",
+            "execution_status": "UNKNOWN", "sla_verdict": {}, "precheck_result": {},
             "artifacts": {"report": "", "investigate": "", "understand_task": ""},
             "stage": "load_context"}
         explicit, input_errors = input_state.request_inputs(state, options(config))
