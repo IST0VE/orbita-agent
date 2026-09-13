@@ -11,7 +11,13 @@ import sys
 import time
 from pathlib import Path
 
-from agent.nt_run.plan import canonical, compile_script, fingerprint, validate_plan
+from agent.nt_run.plan import (
+    canonical,
+    check_commitment,
+    compile_script,
+    fingerprint,
+    validate_plan,
+)
 
 TERMINAL = {"completed", "failed", "stopped"}
 
@@ -44,10 +50,17 @@ class Runner:
                     "url", "target_service", "environment", "namespace"}}
                     for name, target in self.config["targets"].items()}}
 
-    def prepare_test(self, data, key):
-        plan, target = validate_plan(data, self.capabilities())
+    def prepare_test(self, data, key, approved=None):
+        # The approved set is checked here, not only in the graph: the graph's
+        # "target" is a logical key, and the URL behind it is resolved from this
+        # config. Editing the config between the preview and prepare would
+        # otherwise send the approved load to a different address.
+        capabilities = self.capabilities()
+        check_commitment(data, capabilities, approved)
+        plan, target = validate_plan(data, capabilities)
         key = self.valid_key(key)
-        prepared_id = "p-" + fingerprint({"key": key, "plan": plan.model_dump()})[:40]
+        prepared_id = "p-" + fingerprint({"key": key, "plan": plan.model_dump(),
+                                          "approved": approved or {}})[:40]
         directory = self.root / prepared_id
         directory.mkdir(exist_ok=True)
         executable = shutil.which(self.config.get("k6_binary", "k6"))
@@ -55,6 +68,7 @@ class Runner:
             raise ValueError("k6 executable not found; set k6_binary in runner config")
         target_config = self.config["targets"][plan.target]
         payload = {"plan": plan.model_dump(), "target": target,
+                   "approved": approved or {},
                    "auth_env": target_config.get("auth_env", ""), "k6_binary": executable,
                    "lease_seconds": min(60, max(10, int(self.config.get("lease_seconds", 20))))}
         script = compile_script(plan, target)
@@ -80,7 +94,7 @@ class Runner:
             raise ValueError("invalid idempotency key")
         return key
 
-    def start_test(self, prepared_id, key, *, smoke=False):
+    def start_test(self, prepared_id, key, *, smoke=False, approved=None):
         if not isinstance(smoke, bool):
             raise ValueError("smoke must be boolean")
         test_id = "k6-" + fingerprint({"key": self.valid_key(key)})[:40]
@@ -91,7 +105,14 @@ class Runner:
             if not row:
                 raise ValueError("unknown prepared test")
             payload = json.loads(row["payload"])
-            _, current_target = validate_plan(payload["plan"], self.capabilities())
+            capabilities = self.capabilities()
+            # Both the set approved by the operator and the set fixed at prepare
+            # time: config changes after either point must stop the start, not
+            # be resolved again into whatever the config now says.
+            check_commitment(payload["plan"], capabilities, approved or payload.get("approved") or None)
+            if approved is not None and payload.get("approved") and approved != payload["approved"]:
+                raise ValueError("approved run parameters differ from the prepared attempt")
+            _, current_target = validate_plan(payload["plan"], capabilities)
             if current_target != payload["target"]:
                 raise ValueError("target changed after preparation")
             old = db.execute("SELECT * FROM jobs WHERE id=?", (test_id,)).fetchone()

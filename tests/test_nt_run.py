@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import threading
 from copy import deepcopy
 from types import SimpleNamespace
@@ -45,15 +46,20 @@ class FakeRunner:
         self.lost, self.stop_unknown = lost, stop_unknown
         self.prepared, self.starts, self.jobs, self.stops = [], [], {}, []
         self.beats = []
+        self.approved_seen = []
 
     def capabilities(self):
         return deepcopy(CAPS)
 
-    def prepare_test(self, plan, key):
+    def prepare_test(self, plan, key, approved=None):
+        # Одобренный набор едет с каждой записью (R3): runner обязан получить
+        # именно то, на что согласился оператор, и проверить это у себя.
+        self.approved_seen.append(approved)
         self.prepared.append((plan, key))
         return {"prepared_id": key}
 
-    def start_test(self, prepared_id, key, *, smoke=False):
+    def start_test(self, prepared_id, key, *, smoke=False, approved=None):
+        self.approved_seen.append(approved)
         if key not in self.jobs:
             self.starts.append((key, smoke))
             self.jobs[key] = {"test_id": key, "test_status": "failed" if smoke and self.smoke_fail
@@ -405,3 +411,99 @@ def test_more_than_three_tool_calls_still_invalidate_the_previous_plan():
     result = invoke(graph(runner, write(), flood, decision("ready"), decision("finish"),
                           auto_approve=True))
     assert not runner.starts and not result["candidate"]
+
+
+# --------------------------------------------------------------------------
+# R3: одобрена фактическая цель, а не логический ключ
+#
+# В подтверждённом плане стоит `target: "local"` — логическое имя. Адрес за ним
+# runner разрешает заново, и правка его конфигурации между предпросмотром и
+# prepare уводила одобренную нагрузку на другой стенд.
+# --------------------------------------------------------------------------
+def test_the_approved_set_names_the_resolved_target_and_limits():
+    runner = FakeRunner()
+    app = graph(runner, write(), decision("ready"), decision("finish"))
+    payload = invoke(app)["__interrupt__"][0].value
+
+    assert payload["action"] == "nt_launch"
+    # Адрес стенда виден оператору до запуска, а не только ключ цели.
+    assert "http://127.0.0.1:8088" in payload["document"]
+    assert "max_rps" in payload["document"]
+    # Секретов в наборе нет: capabilities отдаёт только адрес и координаты
+    # стенда. Имя переменной окружения остаётся в шаблоне скрипта — это
+    # подстановка, которую делает runner, а не значение.
+    approved = json.loads(payload["document"].split("```json", 1)[1].split("```", 1)[0])
+    assert "auth_env" not in json.dumps(approved)
+    assert "NT_TARGET_TOKEN" not in json.dumps(approved)
+    assert sorted(approved) == ["limits", "plan", "runner", "target"]
+
+
+def test_the_approved_set_travels_to_the_runner():
+    runner = FakeRunner()
+    app = graph(runner, write(), decision("ready"), decision("finish"))
+    invoke(app)
+    invoke(app, Command(resume={"decision": "approved"}))
+
+    assert runner.approved_seen, "runner обязан получить одобренный набор"
+    approved = runner.approved_seen[0]
+    assert approved["target"]["url"] == "http://127.0.0.1:8088"
+    assert approved["limits"] == CAPS["limits"]
+    assert approved["plan"]["target_rps"] == PLAN["target_rps"]
+
+
+def test_a_target_url_changed_after_the_preview_blocks_the_start():
+    """Тот же ключ цели, другой адрес: запуск не должен состояться."""
+    runner = FakeRunner()
+    app = graph(runner, write(), decision("ready"), decision("finish"))
+    invoke(app)
+
+    moved = deepcopy(CAPS)
+    moved["targets"]["local"]["url"] = "http://10.0.0.9:8088"
+    runner.capabilities = lambda: deepcopy(moved)
+
+    result = invoke(app, Command(resume={"decision": "approved"}))
+
+    assert runner.starts == []
+    assert "подтвердите запуск заново" in result["last_error"]
+
+
+def test_relaxed_runner_limits_after_the_preview_block_the_start():
+    runner = FakeRunner()
+    app = graph(runner, write(), decision("ready"), decision("finish"))
+    invoke(app)
+
+    raised = deepcopy(CAPS)
+    raised["limits"]["max_rps"] = 10000
+    runner.capabilities = lambda: deepcopy(raised)
+
+    result = invoke(app, Command(resume={"decision": "approved"}))
+
+    assert runner.starts == []
+    assert "подтвердите запуск заново" in result["last_error"]
+
+
+def test_an_unchanged_scenario_still_runs_smoke_and_load():
+    runner = FakeRunner()
+    app = graph(runner, write(), decision("ready"), decision("finish"))
+    invoke(app)
+    result = invoke(app, Command(resume={"decision": "approved"}))
+
+    assert [smoke for _, smoke in runner.starts] == [True, False]
+    assert result["runs"]
+
+
+def test_the_runner_refuses_a_start_whose_target_moved(tmp_path):
+    """Проверка живёт и в runner: обращение мимо графа получает тот же отказ."""
+    from agent.nt_run.plan import commitment_of
+
+    config = {"k6_binary": sys.executable, "max_rps": 10, "max_vus": 5,
+              "max_duration_seconds": 60,
+              "targets": {"local": {"url": "http://127.0.0.1:8088", "target_service": "demo",
+                                     "environment": "nt", "namespace": "test"}}}
+    runner = Runner(tmp_path, config)
+    approved = commitment_of(PLAN, runner.capabilities())
+
+    config["targets"]["local"]["url"] = "http://10.0.0.9:8088"
+
+    with pytest.raises(ValueError, match="no longer match"):
+        runner.prepare_test(PLAN, "key-1", approved)

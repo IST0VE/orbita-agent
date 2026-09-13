@@ -25,6 +25,7 @@ MANIFEST["nodes"] = {
         ("analyze", "Подграф nt: анализ метрик", "task", "analysis"),
         ("review_run", "Оценка необходимости следующего прогона", "router", "analysis"),
         ("report", "Отчёт о проведении НТ", "task", "analysis"),
+        ("prepare_publish", "Подготовка публикации", "system", "finalization"),
         ("approve", "Подтверждение публикации", "approval", "finalization"),
         ("publish", "Публикация отчёта", "task", "finalization"),
     )

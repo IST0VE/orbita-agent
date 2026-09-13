@@ -26,6 +26,7 @@ from agent.nodes import (
     context_node,
     make_gate_node,
     make_role_node,
+    prepare_node,
     publish_node,
     remember_node,
 )
@@ -135,6 +136,7 @@ def build_graph(
     builder.add_node("over_budget", partial(over_budget_node, pipeline=pipeline))
     builder.add_node("halted", partial(halted_node, pipeline=pipeline))
     builder.add_node("remember", remember_node)
+    builder.add_node("prepare_publish", partial(prepare_node, pipeline=pipeline))
     builder.add_node("approve", partial(approve_node, pipeline=pipeline))
     builder.add_node("publish", partial(publish_node, pipeline=pipeline))
     for role in pipeline.roles:
@@ -226,7 +228,11 @@ def build_graph(
     # полезнее пустой страницы, а причина остановки видна в самом документе.
     builder.add_edge("over_budget", "remember")
     builder.add_edge("halted", "remember")
-    builder.add_edge("remember", "approve")
+    # Подготовка стоит отдельным узлом перед остановкой: состояние фиксируется
+    # только возвращённым из узла, а `interrupt()` узел прерывает. План,
+    # посчитанный внутри остановки, не пережил бы ожидания (см. prepare_node).
+    builder.add_edge("remember", "prepare_publish")
+    builder.add_edge("prepare_publish", "approve")
     builder.add_edge("approve", "publish")
     builder.add_edge("publish", END)
     return builder

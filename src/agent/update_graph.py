@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent import config as cfg
-from agent import drafts, inputs, nodes, publishers, update_plan, update_roles
+from agent import drafts, inputs, nodes, outgoing, publishers, update_plan, update_roles
 from agent.cost import cost_summary, extract_usage
 from agent.routes import budget_gate
 from agent.runtime import options
@@ -144,17 +145,9 @@ def apply_node(state: State) -> dict:
     }
 
 
-def destination(publisher: publishers.Publisher) -> dict:
-    if publisher.name == "file":
-        return {"directory": str(publishers.directory().resolve())}
-    return {
-        "base_url": cfg.confluence_base_url(),
-        "space_key": cfg.confluence_space_key(),
-        "space_id": cfg.confluence_space_id(),
-        "parent_id": cfg.confluence_parent_id(),
-        "api_path": cfg.confluence_api_path(),
-        "version": cfg.confluence_api_version(),
-    }
+#: Назначение считается там же, где для конвейера: правило одно, и расходиться
+#: этим двум описаниям «куда именно» нельзя.
+destination = publishers.destination
 
 
 def prepare_node(state: State) -> dict:
@@ -174,9 +167,19 @@ def prepare_node(state: State) -> dict:
         if publisher.name == "file"
         else publisher.renderer.body(state["document"])
     )
+    # Новая версия документа собирается из готового текста и до этой строки шла
+    # мимо маскирования: оно жило внутри сборки документов конвейера, а сюда
+    # приходит результат `update_plan.apply_plan`. Проверка — та же, что у всех
+    # остальных исходящих, и проверенное тело идёт и в черновик, и в запись.
+    try:
+        title = outgoing.guard(title, "title")
+        document = outgoing.guard(document, "document")
+    except outgoing.OutgoingBlocked as exc:
+        return failed(f"Новая версия не сохранена: {exc}")
     plan = {
         "title": title,
         "document": document,
+        "digest": hashlib.sha256(document.encode("utf-8")).hexdigest(),
         "target": publisher.name,
         "format": publisher.renderer.name,
         "destination": destination(publisher),

@@ -43,9 +43,12 @@ def make_handler(runner, token):
                 if method == "GET" and self.path == "/capabilities":
                     data = runner.capabilities()
                 elif method == "POST" and self.path == "/prepare":
-                    data = runner.prepare_test(payload["plan"], payload["key"])
+                    data = runner.prepare_test(payload["plan"], payload["key"],
+                                               payload.get("approved") or None)
                 elif method == "POST" and self.path == "/start":
-                    data = runner.start_test(payload["prepared_id"], payload["key"], smoke=payload.get("smoke", False))
+                    data = runner.start_test(payload["prepared_id"], payload["key"],
+                                             smoke=payload.get("smoke", False),
+                                             approved=payload.get("approved") or None)
                 elif match:
                     test_id, suffix = match.groups()
                     operation = {("GET", None): runner.get_test_status, ("GET", "/results"): runner.get_test_results,

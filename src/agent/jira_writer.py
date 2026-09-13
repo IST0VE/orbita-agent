@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent import config as cfg
-from agent import jira, jira_fields, jira_plan
+from agent import jira, jira_fields, jira_plan, outgoing
 
 JiraError = jira.JiraError
 
@@ -413,6 +413,15 @@ def create_issue(
             fields[epic_field] = parent_key
         else:
             fields["parent"] = {"key": parent_key}
+
+    # Последняя граница перед трекером. Проверяется весь payload целиком, а не
+    # описание: секрет приезжает и в summary из требований, и в кастомное поле
+    # из плана, и внутрь документа ADF, где текст лежит третьим уровнем.
+    # Отказ здесь — отказ по одной карточке: пачка из-за него не отменяется.
+    try:
+        fields = outgoing.guard(fields, "fields")
+    except outgoing.OutgoingBlocked as exc:
+        raise JiraError(str(exc)) from exc
 
     data = _get("POST", f"{s.api_path}/issue", s, json={"fields": fields})
     key = str(data.get("key") or "")

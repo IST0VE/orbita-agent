@@ -26,11 +26,15 @@ class RunnerHTTP:
     def capabilities(self):
         return self.call("GET", "/capabilities")
 
-    def prepare_test(self, plan, key):
-        return self.call("POST", "/prepare", json={"plan": plan, "key": key})
+    def prepare_test(self, plan, key, approved=None):
+        # The approved set travels with every write: the runner verifies it, and
+        # a caller that goes around the graph gets the same refusal.
+        return self.call("POST", "/prepare",
+                         json={"plan": plan, "key": key, "approved": approved or {}})
 
-    def start_test(self, prepared_id, key, *, smoke=False):
-        return self.call("POST", "/start", json={"prepared_id": prepared_id, "key": key, "smoke": smoke})
+    def start_test(self, prepared_id, key, *, smoke=False, approved=None):
+        return self.call("POST", "/start", json={"prepared_id": prepared_id, "key": key,
+                                                 "smoke": smoke, "approved": approved or {}})
 
     def _path(self, test_id):
         if not isinstance(test_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", test_id):

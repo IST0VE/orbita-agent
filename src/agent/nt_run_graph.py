@@ -20,7 +20,15 @@ from agent import confluence, nodes, tool_compat, tools
 from agent.cost import cost_summary, extract_usage
 from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
-from agent.nt_run.plan import Plan, canonical, compile_script, fingerprint, validate_plan
+from agent.nt_run.plan import (
+    Plan,
+    canonical,
+    check_commitment,
+    commitment_of,
+    compile_script,
+    fingerprint,
+    validate_plan,
+)
 from agent.pipeline import Pipeline, Role
 from agent.routes import budget_gate
 from agent.state import State as CommonState
@@ -62,6 +70,16 @@ class State(CommonState, total=False):
     candidate: dict
     candidate_hash: str
     approved_hash: str
+    # Одобряемый набор целиком: нормализованный сценарий, разрешённый URL,
+    # сервис, окружение, namespace, лимиты и версия существенной конфигурации
+    # runner. Ключ цели — логическое имя, и одобрять его нечего: адрес за ним
+    # меняется правкой конфигурации runner между предпросмотром и prepare.
+    approved_run: dict
+    # Тот же набор, но ещё не одобренный: считается в `validate` и переживает
+    # ожидание оператора. Считать его внутри остановки нельзя — `interrupt()`
+    # прерывает узел, и при возобновлении набор пересчитался бы по настройкам,
+    # которые к тому времени успели поменяться.
+    run_commitment: dict
     prepared_id: str
     active_test_id: str
     active_kind: str
@@ -133,8 +151,9 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         return {"campaign_id": uuid.uuid4().hex, "capabilities": caps,
                 "run_history": [HumanMessage(content=nodes.text_of(state["messages"][-1]))],
                 "runs": [], "execution_log": [], "attempt": 0, "planning_steps": 0,
-                "candidate": {}, "candidate_hash": "", "approved_hash": "", "prepared_id": "",
-                "active_test_id": "", "active_status": {}, "stop_reason": "", "last_error": "",
+                "candidate": {}, "candidate_hash": "", "approved_hash": "", "approved_run": {},
+                "prepared_id": "", "active_test_id": "", "active_status": {},
+                "stop_reason": "", "last_error": "",
                 "run_analysis": {}, "conclusion": "", "decision": {}, "stage": "initialize"}
 
     def plan_next(state: State, config: RunnableConfig):
@@ -231,49 +250,78 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         try:
             if state["attempt"] >= limits()[1]:
                 raise ValueError("Достигнут лимит прогонов")
-            validate_plan(state["candidate"], backend().capabilities())
-            return {"last_error": "", "decision": {"action": "approve"}, "stage": "validate"}
+            # Здесь же фиксируется фактическая цель: план называет логический
+            # ключ стенда, а адрес за ним разрешает runner по своей конфигурации.
+            # Одобрять ключ бессмысленно — одобряется разрешённый адрес.
+            pending = commitment_of(state["candidate"], backend().capabilities())
+            return {"last_error": "", "decision": {"action": "approve"},
+                    "run_commitment": pending, "stage": "validate"}
         except Exception:
             return {"last_error": "План не прошёл проверку актуальных лимитов или исчерпан бюджет прогонов",
-                    "decision": {"action": "finish"}, "stage": "validate"}
+                    "decision": {"action": "finish"}, "run_commitment": {}, "stage": "validate"}
 
     def approve_run(state: State):
         try:
-            # The script shown is compiled from the very plan approved_hash covers, not read back
-            # from artifacts: what the operator approves cannot belong to an earlier candidate.
-            plan, target = validate_plan(state["candidate"], state["capabilities"])
-        except ValueError:
-            return {"approved_hash": "", "last_error": "План не соответствует стенду; запуск не предлагается",
+            # The script shown is compiled from the very set approved_hash covers, not read back
+            # from artifacts and not recomputed here: what the operator approves cannot belong to
+            # an earlier candidate, nor to a runner config edited while they were reading.
+            approved_set = state["run_commitment"]
+            plan, target = Plan.model_validate(approved_set["plan"]), approved_set["target"]
+        except Exception:
+            return {"approved_hash": "", "approved_run": {},
+                    "last_error": "План не соответствует стенду; запуск не предлагается",
                     "execution_log": record(state, "launch_approval", approved=False), "stage": "approve_run"}
         automatic = auto_approve if auto_approve is not None else os.getenv("NT_RUN_AUTO_APPROVE") == "1"
         if automatic:
             answer = {"decision": "approved"}
         else:
             answer = interrupt({"action": "nt_launch", "title": "Запуск НТ: пробный и основной прогон",
-                "document": "```json\n" + json.dumps(state["candidate"], ensure_ascii=False, indent=2)
+                "document": "```json\n" + json.dumps(approved_set, ensure_ascii=False, indent=2)
                 + "\n```\n\n```javascript\n" + compile_script(plan, target) + "\n```",
-                "hint": "Подтверждение относится к этому сценарию, тестовым данным и лимитам нагрузки."})
+                "hint": "Подтверждение относится к этому сценарию, адресу стенда, тестовым данным и лимитам нагрузки."})
         approved = isinstance(answer, dict) and answer.get("decision") == "approved"
-        return {"approved_hash": state["candidate_hash"] if approved else "",
+        return {"approved_hash": fingerprint(approved_set) if approved else "",
+                "approved_run": approved_set if approved else {},
                 "last_error": "" if approved else "Запуск отклонён оператором",
                 "execution_log": record(state, "launch_approval", approved=approved), "stage": "approve_run"}
 
+    def approved_of(state: State) -> dict:
+        """
+        Одобренный набор, если он относится к текущему кандидату.
+
+        Проверяется и здесь, и на стороне runner. Здесь — чтобы не ходить в сеть
+        с заведомо чужим согласием; там — чтобы обращение мимо графа получало
+        тот же отказ.
+        """
+        approved = state.get("approved_run") or {}
+        if not approved or state["approved_hash"] != fingerprint(approved):
+            raise ValueError("plan changed after approval")
+        if approved.get("plan") != json.loads(canonical(state["candidate"])):
+            raise ValueError("plan changed after approval")
+        # Набор сверяется с тем, что получается сейчас: адрес за ключом цели,
+        # лимиты и существенная конфигурация runner могли поменяться после
+        # предпросмотра. Отказать здесь дешевле, чем начать нагрузку и понять
+        # это по чужому стенду в графиках.
+        check_commitment(state["candidate"], backend().capabilities(), approved)
+        return approved
+
     def prepare(state: State):
         try:
-            if state["approved_hash"] != fingerprint(state["candidate"]):
-                raise ValueError("plan changed after approval")
+            approved = approved_of(state)
             key = f"{state['campaign_id']}-{state['attempt']}"
-            result = backend().prepare_test(state["candidate"], key)
+            result = backend().prepare_test(state["candidate"], key, approved)
             return {"prepared_id": result["prepared_id"], "last_error": "", "stage": "prepare"}
         except Exception:
-            return {"prepared_id": "", "last_error": "Runner не смог подготовить сценарий", "stage": "prepare"}
+            return {"prepared_id": "",
+                    "last_error": "Runner не смог подготовить сценарий по одобренным параметрам. "
+                                  "Если стенд или лимиты изменились, подтвердите запуск заново.",
+                    "stage": "prepare"}
 
     def start(state, smoke):
         key = f"{state['campaign_id']}-{state['attempt']}-{'smoke' if smoke else 'load'}"
         try:
-            if state["approved_hash"] != fingerprint(state["candidate"]):
-                raise ValueError("plan changed after approval")
-            result = backend().start_test(state["prepared_id"], key, smoke=smoke)
+            approved = approved_of(state)
+            result = backend().start_test(state["prepared_id"], key, smoke=smoke, approved=approved)
             test_id = result["test_id"]
             return {"active_test_id": test_id, "active_kind": "smoke" if smoke else "load",
                     "active_status": result, "monitor_ticks": 0,
@@ -395,7 +443,10 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
     def review_run(state: State):
         info = {"result": state["active_status"], "analysis": state.get("run_analysis", {}),
                 "remaining_runs": limits()[1] - state["attempt"]}
-        return {"candidate": {}, "candidate_hash": "", "approved_hash": "", "prepared_id": "",
+        # Согласие снимается вместе с кандидатом: следующий эксперимент — это
+        # другой сценарий, и старое «запускайте» к нему не относится.
+        return {"candidate": {}, "candidate_hash": "", "approved_hash": "", "approved_run": {},
+                "prepared_id": "",
                 "run_history": feedback(state, "Фактический результат прогона:\n" + canonical(info)),
                 "stage": "review_run"}
 
@@ -426,6 +477,7 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         "collect_results": collect_results, "analyze": analyze, "review_run": review_run, "report": report}
     for key, function in stages.items():
         builder.add_node(key, function)
+    builder.add_node("prepare_publish", partial(nodes.prepare_node, pipeline=PIPELINE))
     builder.add_node("approve", partial(nodes.approve_node, pipeline=PIPELINE))
     builder.add_node("publish", partial(nodes.publish_node, pipeline=PIPELINE))
     builder.add_edge(START, "context")
@@ -444,7 +496,8 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
     builder.add_conditional_edges("stop_test", lambda s: "report" if s["last_error"] else "collect_results", ["report", "collect_results"])
     builder.add_conditional_edges("collect_results", collected_route, ["report", "start_load", "review_run", "analyze"])
     builder.add_edge("analyze", "review_run")
-    builder.add_edge("report", "approve")
+    builder.add_edge("report", "prepare_publish")
+    builder.add_edge("prepare_publish", "approve")
     builder.add_edge("approve", "publish")
     builder.add_edge("publish", END)
     return builder

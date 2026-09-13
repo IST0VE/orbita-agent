@@ -26,6 +26,7 @@ MANIFEST["nodes"] = {
         ("compare_baseline", "Сравнение с предыдущим НТ", "system"),
         ("report", "Итоговый отчёт", "task"),
         ("remember", "Память", "system"),
+        ("prepare_publish", "Подготовка публикации", "system"),
         ("approve", "Подтверждение публикации", "approval"),
         ("publish", "Публикация", "task"),
     )

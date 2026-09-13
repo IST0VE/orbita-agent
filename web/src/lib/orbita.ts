@@ -155,6 +155,8 @@ const PUBLICATION_LABELS: Record<string, { text: string; tone: Tone }> = {
   postponed: { text: "публикация отложена", tone: "muted" },
   skipped: { text: "не хватает настроек", tone: "warn" },
   rejected: { text: "оператор отклонил", tone: "warn" },
+  stale: { text: "план изменился — подтвердите заново", tone: "warn" },
+  drafts: { text: "черновики в Confluence", tone: "ok" },
   failed: { text: "ошибка публикации", tone: "bad" },
 };
 

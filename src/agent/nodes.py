@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
@@ -456,6 +457,10 @@ def publish_plan(
         "pages": pages,
         "document": whole,
         "digest": digest,
+        # Коллизии считаются по всему плану и до записи: страницы уезжают по
+        # одной, и цель, не различившая два заголовка, оставит вместо двух
+        # документов один — с содержимым того, который писался вторым.
+        "collisions": publishers.collisions(publisher, [page["title"] for page in pages]),
         "skip": _publish_skip(state, config, digest, publisher),
     }
 
@@ -489,6 +494,99 @@ def _publish_skip(
     if absent:
         return ("skipped", "не заданы в .env: " + ", ".join(absent))
     return None
+
+
+def publish_commitment(plan: dict, previews: list[dict] | None = None) -> dict:
+    """
+    Одобряемый набор: что именно, куда именно и поверх чего именно.
+
+    Обычная публикация пересчитывает план после подтверждения — и это верно
+    само по себе: между остановкой и записью проходит время, за которое
+    страница на той стороне могла измениться. Неверно другое: пересчитанный
+    план исполнялся с прежним `approved`. Смены `PUBLISH_DIR` хватало, чтобы
+    одобренный документ уехал в другую папку.
+
+    Поэтому одобряется не «опубликовать», а набор: цель, точное назначение,
+    идентичность каждого документа, хеш проверенного содержимого, create или
+    update и версия существующей страницы. Набор сравним и сравнивается перед
+    самой записью.
+
+    `previews` — уже собранные ответы цели: остановка спрашивает их ради
+    черновиков, и спрашивать второй раз значит удвоить запросы к wiki.
+    """
+    publisher = plan["publisher"]
+    pages = plan["pages"]
+    if previews is None:
+        # Цель без `preview` ничего не рассказывает о том, что там уже лежит.
+        # Это не повод не фиксировать всё остальное: назначение, содержимое
+        # и идентичность документов от её словоохотливости не зависят.
+        ask = getattr(publisher, "preview", None) or (lambda title: {"action": "unknown"})
+        previews = [ask(page["title"]) for page in pages]
+
+    return {
+        "target": publisher.name,
+        "format": publisher.renderer.name,
+        "destination": publishers.destination(publisher),
+        "digest": plan["digest"],
+        "pages": [
+            {
+                "role": page.get("role", ""),
+                "title": page["title"],
+                # Идентичность документа отдельно от заголовка: у файловой цели
+                # это путь, у wiki — сам заголовок (см. `location_key`).
+                "where": _location_of(publisher, page["title"]),
+                "digest": page["digest"],
+                "action": str(preview.get("action") or "unknown"),
+                # Версия страницы на момент предпросмотра. Чужая правка между
+                # показом и записью поднимает её, и обновление затёрло бы
+                # то, чего оператор не видел.
+                "version": preview.get("version"),
+            }
+            for page, preview in zip(pages, previews, strict=True)
+        ],
+    }
+
+
+def _location_of(publisher: publishers.Publisher, title: str) -> str:
+    where = getattr(publisher, "location_key", None)
+    return where(title) if where else title
+
+
+def commitment_digest(commitment: dict) -> str:
+    """Отпечаток набора: по нему решение оператора привязано к своему плану."""
+    canonical = json.dumps(commitment, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def commitment_changes(approved: dict, fresh: dict) -> list[str]:
+    """Чем пересчитанный набор отличается от одобренного, человеческими словами."""
+    if not approved:
+        return ["подготовленный план не сохранён"]
+
+    changes: list[str] = []
+    if approved.get("target") != fresh.get("target"):
+        changes.append(f"цель публикации: {approved.get('target')} → {fresh.get('target')}")
+    if approved.get("destination") != fresh.get("destination"):
+        changes.append("назначение публикации")
+    if approved.get("digest") != fresh.get("digest"):
+        changes.append("содержимое документов")
+
+    before = {page.get("where"): page for page in approved.get("pages") or []}
+    after = {page.get("where"): page for page in fresh.get("pages") or []}
+    if set(before) != set(after):
+        changes.append("состав документов")
+    for where, page in after.items():
+        was = before.get(where)
+        if was is None:
+            continue
+        if was.get("action") != page.get("action"):
+            changes.append(f"{page.get('title')}: {was.get('action')} → {page.get('action')}")
+        if was.get("version") != page.get("version"):
+            changes.append(
+                f"{page.get('title')}: страница изменилась после предпросмотра "
+                f"(версия {was.get('version')} → {page.get('version')})"
+            )
+    return changes
 
 
 def approval_of(answer: Any) -> dict:
@@ -569,6 +667,38 @@ def make_gate_node(role: roles.Role, pipeline: Pipeline = roles.PIPELINE):
     return gate_node
 
 
+def prepare_node(
+    state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE
+) -> dict:
+    """
+    Собрать и сохранить план публикации до остановки.
+
+    Отдельный узел, а не первые строки `approve_node`, и это не косметика.
+    `interrupt()` прерывает узел, а состояние LangGraph фиксирует только
+    возвращённое: план, посчитанный внутри остановки, не переживает ожидания
+    и пересчитывается заново при возобновлении — уже по настройкам, которые
+    к тому времени успели поменяться. Тогда сверять было бы не с чем: новый
+    план совпадал бы сам с собой.
+
+    Поэтому подготовка заканчивается записью в состояние, а остановка
+    показывает сохранённое и ничего не считает.
+    """
+    if not cfg.publish_require_approval():
+        return {}
+
+    plan = publish_plan(state, config, pipeline)
+    if plan["skip"] or plan["collisions"]:
+        return {"publication_plan": {}}
+
+    # Один опрос цели на остановку: он же рисует черновики, он же фиксирует
+    # create/update и версию страницы в одобряемом наборе.
+    ask = getattr(plan["publisher"], "preview", None) or (lambda title: {"action": "unknown"})
+    previews = [ask(page["title"]) for page in plan["pages"]]
+    commitment = publish_commitment(plan, previews)
+    commitment["drafts"] = drafts.pages(plan, previews)
+    return {"publication_plan": commitment}
+
+
 def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
     """
     Остановка на подтверждение оператором перед публикацией.
@@ -583,8 +713,11 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
     if not cfg.publish_require_approval():
         return {}
 
+    prepared = state.get("publication_plan") or {}
     plan = publish_plan(state, config, pipeline)
-    if plan["skip"]:
+    if plan["skip"] or plan["collisions"] or not prepared:
+        # Нечего подтверждать: публикация не состоится, план невыполним или
+        # подготовка его не сохранила.
         return {}
 
     payload = {
@@ -600,7 +733,7 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
         # судьба заголовка — создастся страница или перезапишет чужую.
         # Склеенный документ рядом остаётся: по нему конвейер читают
         # целиком, а решение принимают по страницам (см. drafts.py).
-        "drafts": drafts.pages(plan),
+        "drafts": prepared["drafts"],
         "document": plan["document"],
         "hint": 'ответьте true/false или {"decision": "rejected", "reason": ...}',
     }
@@ -618,6 +751,8 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
     decision = approval_of(answer)
     if isinstance(answer, dict) and answer.get("decision") == "drafts":
         decision["decision"] = "drafts"
+    # Решение относится к показанному набору, а не к слову «опубликовать».
+    decision["plan_digest"] = commitment_digest(prepared)
     return {"approval": decision}
 
 
@@ -672,6 +807,33 @@ def _publish_fallback(
     }
 
 
+def _stale_approval(state: State, plan: dict, decision: dict) -> str:
+    """
+    Почему прежнее согласие к этому плану неприменимо. Пусто — применимо.
+
+    Отказ проверять нечего: он и так не публикует. Проверяются согласие и
+    выбор черновиков — то есть те решения, после которых что-то пишется.
+    """
+    if decision.get("decision") not in {"approved", "drafts"}:
+        return ""
+
+    approved = state.get("publication_plan") or {}
+    if not approved or not decision.get("plan_digest"):
+        # Чекпоинт, сделанный до появления одобряемого набора. Исполнять
+        # согласие, о содержании которого ничего не известно, нельзя.
+        return (
+            "подготовленный план не сохранён в этом треде (старый checkpoint): "
+            "подтвердите публикацию заново"
+        )
+    if decision["plan_digest"] != commitment_digest(approved):
+        return "сохранённый план не совпадает с решением оператора: подтвердите заново"
+
+    changes = commitment_changes(approved, publish_commitment(plan))
+    if changes:
+        return "план изменился после подтверждения (" + "; ".join(changes) + "): подтвердите заново"
+    return ""
+
+
 def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
     """
     Финальный этап: разложить документы конвейера по страницам цели публикации.
@@ -693,6 +855,14 @@ def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
             "publication": {"status": status, "title": title, "reason": reason},
         }
 
+    if plan["collisions"]:
+        # До первой записи: половина документов, перезаписанная второй
+        # половиной, выглядит как успешная публикация.
+        return skip(
+            "failed",
+            "цель публикации не различает документы плана: " + "; ".join(plan["collisions"]),
+        )
+
     if plan["skip"]:
         status, reason = plan["skip"]
         if (status == "skipped" and pipeline.rejection_fallback
@@ -708,6 +878,12 @@ def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
         return skip(status, reason)
 
     decision = state.get("approval") or {}
+    stale = _stale_approval(state, plan, decision) if cfg.publish_require_approval() else ""
+    if stale:
+        # Прежнее согласие к этому плану не относится. Публиковать нечего до
+        # нового подтверждения; документы при этом остаются в состоянии треда.
+        return skip("stale", stale)
+
     if cfg.publish_require_approval() and decision.get("decision") == "drafts":
         if plan["publisher"].name != "confluence":
             return skip("failed", "внешние черновики доступны только для Confluence")

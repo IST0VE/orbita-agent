@@ -40,7 +40,7 @@
 
 from __future__ import annotations
 
-from agent import jira_plan, jira_writer
+from agent import jira_plan, jira_writer, outgoing
 
 
 def page(
@@ -53,6 +53,8 @@ def page(
     preview: dict,
 ) -> dict:
     """Черновик страницы: тело после рендерера цели плюс судьба заголовка."""
+    title = outgoing.sanitize(title, "title")
+    document = outgoing.sanitize(document, "document")
     return {
         "id": role or "document",
         "kind": "page",
@@ -76,15 +78,22 @@ def page(
     }
 
 
-def pages(plan: dict) -> list[dict]:
+def pages(plan: dict, previews: list[dict] | None = None) -> list[dict]:
     """
     Черновики страниц по плану публикации из `graph.publish_plan`.
 
     Судьба заголовка спрашивается у цели по одной странице: их столько,
     сколько состоялось этапов, — пять запросов в худшем случае, и делаются
     они один раз за прогон, на остановке, а не на каждом ходе.
+
+    Готовые ответы цели можно передать: тот же опрос нужен одобряемому набору
+    (`nodes.publish_commitment`), и спрашивать wiki дважды за одну остановку —
+    это те же пять запросов ещё раз и риск показать одно, а зафиксировать другое.
     """
     publisher = plan["publisher"]
+    items = plan["pages"]
+    if previews is None:
+        previews = [publisher.preview(item["title"]) for item in items]
     return [
         page(
             role=item.get("role", ""),
@@ -92,9 +101,9 @@ def pages(plan: dict) -> list[dict]:
             document=item["document"],
             fmt=publisher.renderer.name,
             where=publisher.name,
-            preview=publisher.preview(item["title"]),
+            preview=preview,
         )
-        for item in plan["pages"]
+        for item, preview in zip(items, previews, strict=True)
     ]
 
 
@@ -123,12 +132,15 @@ def issues(plan: jira_plan.Plan, project: str, *, source: str = "") -> tuple[lis
     drafts = []
     for item in plan.items:
         kind = types.get(item.type, item.type)
-        body = item.body(source=source)
+        # Ровно то, что уедет: та же проверка исходящего текста, что и в
+        # `jira_writer.create_issue`. Показывать оператору непроверенное тело,
+        # а отправлять проверенное — значит спрашивать согласие не на то.
+        body = outgoing.sanitize(item.body(source=source), "description")
         drafts.append(
             {
                 "id": item.local,
                 "kind": "issue",
-                "title": item.summary,
+                "title": outgoing.sanitize(item.summary, "summary"),
                 "action": "create",
                 "where": project or "проект не выбран",
                 "format": "text",
@@ -151,4 +163,8 @@ def _issue_fields(item: jira_plan.Item, kind: str) -> list[dict]:
     pairs.append(("Область", where))
     pairs.append(("Метки", ", ".join(item.labels)))
     pairs.append(("Зависит от", ", ".join(item.depends_on)))
-    return [{"label": label, "value": value} for label, value in pairs if value]
+    return [
+        {"label": label, "value": outgoing.sanitize(value, label)}
+        for label, value in pairs
+        if value
+    ]

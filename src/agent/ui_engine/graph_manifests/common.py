@@ -75,6 +75,15 @@ def pipeline_nodes(pipeline: Pipeline) -> dict:
                 "kind": "system",
                 "group": "finalization",
             },
+            "prepare_publish": {
+                "title": "Подготовка публикации",
+                "description": (
+                    "Собирает план: документы, их содержимое и точное назначение. "
+                    "Решение оператора относится именно к нему."
+                ),
+                "kind": "system",
+                "group": "finalization",
+            },
             "approve": {
                 "title": "Подтверждение публикации",
                 "description": "Ожидает решения оператора перед внешним side effect.",

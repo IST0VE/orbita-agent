@@ -24,12 +24,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Protocol
 
 from agent import config as cfg
-from agent import confluence, render
+from agent import confluence, outgoing, render
 
 
 class PublishError(RuntimeError):
@@ -47,6 +50,15 @@ class Publisher(Protocol):
 
     def publish(self, title: str, document: str) -> dict:
         """Upsert по заголовку. Ошибку отдаёт как PublishError."""
+
+    def location_key(self, title: str) -> str:
+        """
+        Куда именно ляжет этот заголовок — в сравнимом виде.
+
+        По нему план проверяется на коллизии до первой записи: цель, которая
+        не различает два заголовка, перезапишет один документ другим, и узнать
+        об этом по четырём файлам вместо пяти уже поздно.
+        """
 
     def preview(self, title: str) -> dict:
         """
@@ -69,10 +81,15 @@ class ConfluencePublisher:
         return confluence.missing_vars()
 
     def publish(self, title: str, document: str) -> dict:
+        title, document = checked(title, document)
         try:
             return confluence.publish_page(title, document)
         except confluence.ConfluenceError as exc:
             raise PublishError(str(exc)) from exc
+
+    def location_key(self, title: str) -> str:
+        """Confluence различает страницы заголовком — он же и ключ upsert."""
+        return title
 
     def preview(self, title: str) -> dict:
         try:
@@ -109,16 +126,39 @@ class FilePublisher:
         return directory()
 
     def path_for(self, title: str) -> Path:
-        return self.directory() / (slug(title) + self.renderer.extension)
+        """
+        Файл этого заголовка. Имя с отпечатком — кроме случая, когда на диске
+        уже лежит документ со старым именем и тем же заголовком в первой
+        строке: такой обновляется на своём месте. Чужой файл, случайно занявший
+        старое имя, не трогается — он остаётся со своим заголовком.
+        """
+        base = self.directory()
+        fresh = base / (slug(title) + self.renderer.extension)
+        if fresh.exists():
+            return fresh
+        old = base / (legacy_slug(title) + self.renderer.extension)
+        if old != fresh and old.is_file() and not old.is_symlink():
+            if _document_title(old) == title:
+                return old
+        return fresh
+
+    def location_key(self, title: str) -> str:
+        """
+        Чем цель различает документы. Регистр сложен намеренно: NTFS и APFS
+        считают `Тема.md` и `тема.md` одним файлом, и коллизию надо увидеть
+        до записи, а не по одному оставшемуся документу из двух.
+        """
+        return str(self.path_for(title)).casefold()
 
     def publish(self, title: str, document: str) -> dict:
+        title, document = checked(title, document)
         path = self.path_for(title)
         existed = path.exists()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # Заголовок в теле файла: на wiki он часть страницы, а в файле
             # без него остался бы только текст без имени.
-            path.write_text(f"# {title}\n\n{document}\n", encoding="utf-8")
+            _write_atomic(path, f"# {title}\n\n{document}\n")
         except OSError as exc:
             raise PublishError(f"не записать {path}: {exc}") from exc
 
@@ -151,6 +191,9 @@ class NullPublisher:
     def missing(self) -> list[str]:
         return []
 
+    def location_key(self, title: str) -> str:
+        return title
+
     def publish(self, title: str, document: str) -> dict:
         raise PublishError("PUBLISH_TARGET=none: публиковать некуда")
 
@@ -166,11 +209,60 @@ _PUBLISHERS: dict[str, Publisher] = {
 
 _UNSAFE = re.compile(r"[^\w.-]+")
 
+#: Длина отпечатка заголовка в имени файла. Он не для красоты: имя усекается,
+#: а различать документы одного треда обязано именно усечённое.
+DIGEST_LEN = 10
+
+#: Сколько знаков хвоста сохраняется при усечении. Заголовок этапа выглядит как
+#: «Orbita: тема [thread] — 3 Данные», и человеку в папке нужен как раз хвост.
+TAIL_ROOM = 28
+
+
+def digest_of(title: str) -> str:
+    """Отпечаток заголовка: им имя файла остаётся уникальным после усечения."""
+    return hashlib.sha256((title or "").encode("utf-8")).hexdigest()[:DIGEST_LEN]
+
+
+def _shorten(flat: str, limit: int) -> str:
+    """
+    Усечение, сохраняющее хвост.
+
+    Простое `flat[:limit]` отрезало именно то, чем документы одного треда
+    различаются: тема в восемьдесят знаков плюс UUID треда съедают имя целиком,
+    и суффикс этапа до него не доезжает. Поэтому голова и хвост остаются оба.
+    """
+    if len(flat) <= limit:
+        return flat
+    tail = min(TAIL_ROOM, max(0, limit // 3))
+    head = limit - tail - 1
+    if head <= 0:
+        return flat[:limit]
+    return flat[:head] + "_" + flat[len(flat) - tail:]
+
 
 def slug(title: str, limit: int = 120) -> str:
     """
     Заголовок страницы — в имя файла. Кириллица остаётся как есть: имя должно
     читаться человеком, который откроет папку.
+
+    К читаемой части всегда добавляется отпечаток полного заголовка. Без него
+    имя файла — это усечённый и очищенный от знаков заголовок, то есть
+    отображение с потерями: «Orbita: тема [t] — 1 Требования» и «… — 2 API»
+    после усечения совпадают, и пять документов конвейера превращаются в один.
+    Отпечаток считается по заголовку целиком, поэтому различает и то, что
+    в читаемую часть не поместилось, и то, что стёрла очистка знаков.
+    """
+    flat = _UNSAFE.sub("_", " ".join((title or "").split())).strip("_.") or "document"
+    return f"{_shorten(flat, limit - DIGEST_LEN - 1)}_{digest_of(title)}"
+
+
+def legacy_slug(title: str, limit: int = 120) -> str:
+    """
+    Как имя файла считалось до отпечатка.
+
+    Нужно ровно для одного: не бросить уже опубликованные документы. Файл со
+    старым именем обновляется на своём месте, если его заголовок совпадает
+    с нашим, — и не трогается, если заголовок чужой.
     """
     flat = _UNSAFE.sub("_", " ".join((title or "").split())).strip("_.")
     return flat[:limit] or "document"
@@ -184,6 +276,29 @@ def directory() -> Path:
     """
     path = Path(cfg.publish_dir()).expanduser()
     return path if path.is_absolute() else Path.cwd() / path
+
+
+def destination(publisher: Publisher) -> dict:
+    """
+    Куда именно пишет цель прямо сейчас — в сравнимом виде.
+
+    Не «в файл» и не «в Confluence», а папка, адрес, пространство и версия API.
+    Одобрение относится к назначению, а не к имени цели: `PUBLISH_DIR`
+    и адрес wiki меняются между предпросмотром и записью одинаково легко,
+    и с прежним `approved` документ уезжает в другое место.
+    """
+    if publisher.name == "file":
+        return {"directory": str(directory().resolve())}
+    if publisher.name == "confluence":
+        return {
+            "base_url": cfg.confluence_base_url(),
+            "space_key": cfg.confluence_space_key(),
+            "space_id": cfg.confluence_space_id(),
+            "parent_id": cfg.confluence_parent_id(),
+            "api_path": cfg.confluence_api_path(),
+            "version": cfg.confluence_api_version(),
+        }
+    return {}
 
 
 def is_enabled() -> bool:
@@ -207,6 +322,71 @@ def resolve() -> str:
 def current() -> Publisher:
     """Цель публикации на этот ход."""
     return _PUBLISHERS[resolve()]
+
+
+def checked(title: str, document: str) -> tuple[str, str]:
+    """
+    Заголовок и тело, подготовленные к отправке.
+
+    Последняя граница перед сетью и диском: план собирается проверенным
+    (`nodes.publish_plan`), но `publish()` вызывают и мимо плана — из резервного
+    сохранения, из графа обновления, из чужого кода. Проверка идемпотентна,
+    поэтому второй раз она ничего не меняет и ничего не стоит.
+    """
+    try:
+        return outgoing.guard(title, "title"), outgoing.guard(document, "document")
+    except outgoing.OutgoingBlocked as exc:
+        raise PublishError(str(exc)) from exc
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """
+    Запись через временный файл рядом и `os.replace`.
+
+    Прямой `write_text` открывает документ на усечение и только потом пишет:
+    отказ диска посередине оставляет на месте готового документа половину,
+    и следующий прогон в режиме `changed` считает эту половину опубликованной.
+    `os.replace` в пределах одной папки атомарен и на POSIX, и на Windows.
+    """
+    handle, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.stem}."[:40], suffix=".part"
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def collisions(publisher: Publisher, titles: list[str]) -> list[str]:
+    """
+    Заголовки плана, которые цель не различит между собой.
+
+    Проверяется до первой записи и по всему плану сразу. Пять документов
+    конвейера пишутся по одному, и коллизия обнаруживается иначе только постфактум
+    — по четырём файлам вместо пяти, причём с содержимым последнего.
+    """
+    # Цель без `location_key` различает документы заголовком: так ведут себя
+    # и Confluence, и подделки в тестах, и чужая цель, написанная до этой
+    # проверки. Отсутствие метода — не повод пропустить проверку целиком.
+    where = getattr(publisher, "location_key", None) or (lambda title: title)
+    seen: dict[str, str] = {}
+    clashes: list[str] = []
+    for title in titles:
+        key = where(title)
+        first = seen.get(key)
+        if first is None:
+            seen[key] = title
+            continue
+        clashes.append(f"{first!r} и {title!r}")
+    return clashes
 
 
 def named(name: str) -> Publisher:

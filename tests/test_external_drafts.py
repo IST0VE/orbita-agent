@@ -92,14 +92,19 @@ def test_publish_node_hands_off_drafts_and_keeps_partial_results(monkeypatch):
         return {"status": "draft", "title": title, "url": "https://wiki.example.com/draft"}
 
     monkeypatch.setattr(confluence, "create_draft", create)
-    result = nodes.publish_node(
-        {
-            "messages": [],
-            "approval": {"decision": "drafts"},
-            "artifacts": {key: f"Full content {key}" for key in roles.KEYS},
-        },
-        {},
-    )
+    state = {
+        "messages": [],
+        "artifacts": {key: f"Full content {key}" for key in roles.KEYS},
+    }
+    # Решение оператора привязано к показанному плану (R4): без сохранённого
+    # набора нода потребует подтвердить заново, и это её правильное поведение.
+    commitment = nodes.publish_commitment(nodes.publish_plan(state, {}))
+    state["publication_plan"] = commitment
+    state["approval"] = {
+        "decision": "drafts",
+        "plan_digest": nodes.commitment_digest(commitment),
+    }
+    result = nodes.publish_node(state, {})
     assert result["publication"]["status"] == "partial"
     assert len(calls) == len(roles.KEYS)
     assert result["publication"]["pages"][1]["reason"] == "wiki unavailable"

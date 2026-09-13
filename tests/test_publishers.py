@@ -181,15 +181,127 @@ def test_the_switch_is_stronger_than_the_target(monkeypatch: pytest.MonkeyPatch)
 # Имя файла
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    ("title", "expected"),
+    ("title", "readable"),
     [
         ("Orbita: экспорт [t-1]", "Orbita_экспорт_t-1"),
         ("   ", "document"),
-        ("a" * 200, "a" * 120),
     ],
 )
-def test_title_becomes_a_readable_file_name(title: str, expected: str):
-    assert publishers.slug(title) == expected
+def test_title_becomes_a_readable_file_name(title: str, readable: str):
+    """Читаемая часть осталась прежней; за ней — отпечаток полного заголовка."""
+    name = publishers.slug(title)
+    assert name == f"{readable}_{publishers.digest_of(title)}"
+    assert len(publishers.digest_of(title)) == publishers.DIGEST_LEN
+
+
+def test_a_long_name_stays_inside_the_limit():
+    assert len(publishers.slug("a" * 200)) == 120
+
+
+# --------------------------------------------------------------------------
+# R1: разные документы — разные файлы
+#
+# Тема в восемьдесят знаков и UUID треда съедали имя целиком, и суффикс этапа
+# до него не доезжал: пять страниц конвейера получали один путь, на диске
+# оставалась последняя. Проверяется именно этот случай, а не имя вообще.
+# --------------------------------------------------------------------------
+LONG_TOPIC = "Разработать сервис выгрузки аналитических отчётов для маркетплейса и партнёров"
+UUID_THREAD = {"configurable": {"thread_id": "0b5f2a1c-9d3e-4f7a-8b21-6c5d4e3f2a10"}}
+
+
+def test_five_stages_with_a_long_topic_give_five_files():
+    from agent.documents import page_title
+
+    thread = {"messages": [HumanMessage(LONG_TOPIC)]}
+    titles = [page_title(thread, UUID_THREAD, role) for role in roles.PIPELINE.roles]
+
+    target = publishers.current()
+    for number, title in enumerate(titles):
+        target.publish(title, f"документ этапа {number}")
+
+    written = files()
+    assert len(written) == len(titles)
+    assert publishers.collisions(target, titles) == []
+    # Содержимое на месте у каждого, а не только у последнего записанного.
+    bodies = {path.read_text(encoding="utf-8") for path in written}
+    assert all(any(f"документ этапа {n}" in body for body in bodies) for n in range(len(titles)))
+
+
+def test_a_shared_prefix_and_cyrillic_do_not_collide():
+    target = publishers.current()
+    titles = [
+        "Orbita: отчёт по выгрузке [t-1] — 1 Системные требования",
+        "Orbita: отчёт по выгрузке [t-1] — 2 Контракт API",
+        # Очистка знаков стирает разницу между «/» и пробелом, регистр стирает
+        # файловая система: и то и другое раньше означало один файл на двоих.
+        "Orbita: отчёт/по/выгрузке [t-1] — 2 Контракт API",
+        "orbita: ОТЧЁТ ПО ВЫГРУЗКЕ [t-1] — 2 Контракт API",
+    ]
+    assert publishers.collisions(target, titles) == []
+    for title in titles:
+        target.publish(title, title)
+    assert len(files()) == len(titles)
+
+
+def test_the_same_document_keeps_its_file_on_a_repeat():
+    target = publishers.current()
+    target.publish("Orbita: тема [t-1] — 1 Требования", "первый прогон")
+    target.publish("Orbita: тема [t-1] — 2 API", "сосед")
+    second = target.publish("Orbita: тема [t-1] — 1 Требования", "второй прогон")
+
+    assert second["status"] == "updated"
+    assert len(files()) == 2
+    assert "второй прогон" in Path(second["path"]).read_text(encoding="utf-8")
+
+
+def test_a_document_published_under_the_old_name_is_updated_in_place():
+    """Совместимость: файл прежнего имени с тем же заголовком — свой, а не чужой."""
+    title = "Orbita: тема [t-1] — 1 Требования"
+    directory = publishers.directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    legacy = directory / (publishers.legacy_slug(title) + ".md")
+    legacy.write_text(f"# {title}\n\nстарый прогон\n", encoding="utf-8")
+
+    result = publishers.current().publish(title, "новый прогон")
+
+    assert result["path"] == str(legacy)
+    assert files() == [legacy]
+    assert "новый прогон" in legacy.read_text(encoding="utf-8")
+
+
+def test_a_stranger_file_under_the_old_name_is_left_alone():
+    """Тот же старый путь, но чужой заголовок: документ уезжает в своё имя."""
+    title = "Orbita: тема [t-1] — 1 Требования"
+    directory = publishers.directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    legacy = directory / (publishers.legacy_slug(title) + ".md")
+    legacy.write_text("# Чужая заметка\n\nне трогать\n", encoding="utf-8")
+
+    result = publishers.current().publish(title, "новый прогон")
+
+    assert result["path"] != str(legacy)
+    assert legacy.read_text(encoding="utf-8") == "# Чужая заметка\n\nне трогать\n"
+
+
+def test_a_failed_write_leaves_no_half_document(monkeypatch: pytest.MonkeyPatch):
+    """Сбой записи не должен оставить на месте документа его половину."""
+    target = publishers.current()
+    target.publish("Orbita: тема [t-1]", "целый документ")
+    path = target.path_for("Orbita: тема [t-1]")
+
+    # Падает подстановка готового файла на место: временный уже записан
+    # целиком, а документ на месте ещё прежний — именно этот момент и
+    # отличает атомарную запись от `write_text`, который к этому времени
+    # уже усёк документ до нуля.
+    monkeypatch.setattr(
+        publishers.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("диск кончился"))
+    )
+
+    with pytest.raises(publishers.PublishError):
+        target.publish("Orbita: тема [t-1]", "новый документ")
+
+    assert path.read_text(encoding="utf-8").endswith("целый документ\n")
+    assert [item for item in publishers.directory().iterdir() if item.suffix == ".part"] == []
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +326,9 @@ def test_a_stranger_file_in_the_folder_is_not_a_document():
     publishers.current().publish("Orbita: тема [t-1]", "текст")
     (publishers.directory() / "заметка.txt").write_text("не документ", encoding="utf-8")
 
-    assert [item["name"] for item in publishers.documents()] == ["Orbita_тема_t-1.md"]
+    assert [item["name"] for item in publishers.documents()] == [
+        publishers.slug("Orbita: тема [t-1]") + ".md"
+    ]
 
 
 def test_documents_are_listed_from_the_freshest():
@@ -224,7 +338,7 @@ def test_documents_are_listed_from_the_freshest():
     # проставляется явно: проверяется порядок, а не разрешение таймера.
     now = time.time()
     for number, age in ((0, 300), (1, 200), (2, 100)):
-        path = publishers.directory() / f"Orbita_тема_t-{number}.md"
+        path = publishers.current().path_for(f"Orbita: тема [t-{number}]")
         os.utime(path, (now - age, now - age))
 
     titles = [item["title"] for item in publishers.documents()]

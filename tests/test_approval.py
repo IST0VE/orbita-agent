@@ -260,3 +260,108 @@ def test_operator_answers_are_understood(answer, decision: str):
 
 def test_reason_survives_the_parsing():
     assert approval_of({"decision": False, "reason": "нельзя"})["reason"] == "нельзя"
+
+
+# --------------------------------------------------------------------------
+# R4: одобрено содержимое и назначение, а не слово «опубликовать»
+#
+# Обычная публикация пересчитывает план после подтверждения, и это правильно:
+# между остановкой и записью страница на той стороне могла измениться. Неверно
+# было другое — пересчитанный план исполнялся с прежним approved. Смены
+# PUBLISH_DIR хватало, чтобы одобренный документ уехал в другую папку.
+# --------------------------------------------------------------------------
+def test_the_approved_plan_runs_after_an_ordinary_resume(app):
+    start(app)
+
+    result = app.invoke(Command(resume=True), config=CONFIG)
+
+    assert result["publication"]["status"] == "created"
+    assert len(published_files()) == len(roles.KEYS)
+
+
+def test_changing_the_publish_folder_voids_the_approval(app, monkeypatch, tmp_path):
+    start(app)
+    moved = tmp_path / "другая-папка"
+    monkeypatch.setenv("PUBLISH_DIR", str(moved))
+
+    result = app.invoke(Command(resume=True), config=CONFIG)
+
+    assert result["publication"]["status"] == "stale"
+    assert "назначение публикации" in result["publication"]["reason"]
+    assert list(moved.glob("*.md")) == [] if moved.exists() else True
+    assert published_files() == []
+
+
+def test_changing_the_documents_voids_the_approval(app, monkeypatch):
+    start(app)
+    # Между остановкой и записью документы пересобрались из другого состояния:
+    # одобряли не это.
+    monkeypatch.setattr(
+        "agent.documents.render_stage_body",
+        lambda role, state, renderer=None: "совсем другой документ",
+    )
+
+    result = app.invoke(Command(resume=True), config=CONFIG)
+
+    assert result["publication"]["status"] == "stale"
+    assert published_files() == []
+
+
+def test_a_page_changed_after_the_preview_voids_the_approval(app, monkeypatch):
+    """Чужая правка между показом и записью не должна быть затёрта молча."""
+    start(app)
+    stored = app.get_state(CONFIG).values["publication_plan"]
+    assert stored["pages"], "набор обязан перечислять документы поимённо"
+
+    from agent import publishers
+
+    monkeypatch.setattr(
+        publishers.FilePublisher,
+        "preview",
+        lambda self, title: {"action": "update", "version": 7},
+    )
+
+    result = app.invoke(Command(resume=True), config=CONFIG)
+
+    assert result["publication"]["status"] == "stale"
+    assert "create → update" in result["publication"]["reason"]
+
+
+def test_an_old_checkpoint_without_a_plan_asks_again(monkeypatch):
+    """Чекпоинт, сделанный до появления одобряемого набора."""
+    from agent import nodes
+
+    monkeypatch.setenv("PUBLISH_REQUIRE_APPROVAL", "1")
+    result = nodes.publish_node(
+        {"messages": [HumanMessage(QUESTION), ANSWER], "approval": {"decision": "approved"}},
+        CONFIG,
+    )
+
+    assert result["publication"]["status"] == "stale"
+    assert "старый checkpoint" in result["publication"]["reason"]
+    assert published_files() == []
+
+
+def test_a_decision_from_another_plan_is_not_accepted(monkeypatch):
+    from agent import nodes
+
+    monkeypatch.setenv("PUBLISH_REQUIRE_APPROVAL", "1")
+    state = {"messages": [HumanMessage(QUESTION), ANSWER]}
+    commitment = nodes.publish_commitment(nodes.publish_plan(state, CONFIG))
+    state["publication_plan"] = commitment
+    state["approval"] = {"decision": "approved", "plan_digest": "от другого плана"}
+
+    result = nodes.publish_node(state, CONFIG)
+
+    assert result["publication"]["status"] == "stale"
+    assert published_files() == []
+
+
+def test_a_rejection_still_behaves_as_before(app):
+    start(app)
+
+    result = app.invoke(Command(resume={"decision": "rejected", "reason": "рано"}), config=CONFIG)
+
+    assert result["publication"]["status"] == "rejected"
+    assert result["publication"]["reason"] == "рано"
+    assert published_files() == []

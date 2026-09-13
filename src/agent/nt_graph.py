@@ -615,6 +615,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     for name, function in stages.items():
         builder.add_node(name, audited(name, function))
     builder.add_node("remember", nodes.remember_node)
+    builder.add_node("prepare_publish", partial(nodes.prepare_node, pipeline=PIPELINE))
     builder.add_node("approve", partial(nodes.approve_node, pipeline=PIPELINE))
     builder.add_node("publish", partial(nodes.publish_node, pipeline=PIPELINE))
     prefix = [START, "context", "load_context", "understand_task", "discover_scope", "precheck"]
@@ -635,7 +636,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                                   {"approve_tools": "approve_tools", "final_analysis": "final_analysis"})
     builder.add_edge("approve_tools", "additional_tools")
     builder.add_edge("additional_tools", "investigate")
-    tail = ["final_analysis", "report", "remember", "approve", "publish", END]
+    tail = ["final_analysis", "report", "remember", "prepare_publish", "approve", "publish", END]
     for left, right in zip(tail, tail[1:], strict=False):
         builder.add_edge(left, right)
     return builder

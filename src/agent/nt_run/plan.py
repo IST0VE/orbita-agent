@@ -107,6 +107,58 @@ def validate_plan(data: dict, capabilities: dict) -> tuple[Plan, dict]:
     return plan, target
 
 
+#: Что входит в одобряемый набор помимо самого сценария. Ключ цели («checkout»)
+#: — это логическое имя, и одобрять его бессмысленно: адрес за ним меняется
+#: правкой конфигурации runner, а нагрузка уезжает по новому.
+COMMITTED_TARGET_FIELDS = ("url", "target_service", "environment", "namespace")
+COMMITTED_LIMIT_FIELDS = ("max_rps", "max_vus", "max_duration_seconds")
+
+
+def commitment(plan: Plan | dict, target: dict, capabilities: dict) -> dict:
+    """
+    Одобряемый набор: нормализованный сценарий, разрешённая цель и лимиты.
+
+    Секретов здесь нет и быть не может: `target` приходит из `capabilities`,
+    где остаются только адрес и координаты стенда, а имя переменной с токеном
+    и тем более её значение туда не попадают.
+    """
+    data = plan.model_dump() if isinstance(plan, Plan) else dict(plan)
+    limits = capabilities.get("limits") or {}
+    return {
+        "plan": json.loads(canonical(data)),
+        "target": {field: target.get(field) for field in COMMITTED_TARGET_FIELDS},
+        "limits": {field: limits.get(field) for field in COMMITTED_LIMIT_FIELDS},
+        # Версия существенной конфигурации runner: engine и обещания вроде lease
+        # и watchdog меняют смысл того, на что оператор согласился.
+        "runner": {
+            field: capabilities.get(field)
+            for field in ("engine", "idempotent_start", "watchdog", "lease")
+        },
+    }
+
+
+def commitment_of(data: dict, capabilities: dict) -> dict:
+    """Набор по плану и текущим возможностям runner — одной проверкой."""
+    plan, target = validate_plan(data, capabilities)
+    return commitment(plan, target, capabilities)
+
+
+def check_commitment(data: dict, capabilities: dict, approved: dict | None) -> dict:
+    """
+    Сверить одобренный набор с тем, что получается сейчас.
+
+    Вызывается и в графе, и в runner: между предпросмотром и prepare меняется
+    конфигурация runner, а между prepare и start — что угодно ещё. Проверка
+    только в графе означала бы, что достаточно обратиться к runner мимо графа.
+    """
+    fresh = commitment_of(data, capabilities)
+    if approved is None:
+        return fresh
+    if not isinstance(approved, dict) or fingerprint(approved) != fingerprint(fresh):
+        raise ValueError("approved run parameters no longer match the runner configuration")
+    return fresh
+
+
 def compile_script(plan: Plan, target: dict) -> str:
     """Only JSON data is interpolated. Hosts, redirects, timeouts and code are controlled."""
     spec = js_literal(canonical(plan.model_dump()))

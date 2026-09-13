@@ -48,7 +48,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from agent import config as cfg
-from agent import request_pacing
+from agent import outgoing, request_pacing
 
 REQUIRED_VARS = cfg.CONFLUENCE_REQUIRED_VARS
 
@@ -422,6 +422,9 @@ def create_draft(title: str, storage_html: str, settings: Settings | None = None
     after a lost POST response. Existing published pages are never updated here.
     """
     s = settings or load_settings()
+    # Черновик уезжает в ту же Confluence и тем же телом. Проверка та же, что
+    # у публикации: «это ведь ещё не страница» — не свойство сети.
+    title, storage_html = _checked(title, storage_html)
     marker = hashlib.sha256((title + "\n" + (draft_key or storage_html)).encode()).hexdigest()[:12]
     suffix = f" [Orbita {marker}]"
     draft_title = title[:255 - len(suffix)] + suffix
@@ -652,6 +655,17 @@ def format_page(page: dict) -> str:
     return f"{page['title']}\nСсылка: {page['url']}\n\n{page['text']}{tail}"
 
 
+def _checked(title: str, storage_html: str) -> tuple[str, str]:
+    """
+    Проверенные заголовок и тело. Отказ приходит как ConfluenceError: для
+    вызывающих это отказ публикации, а не исключение неизвестного рода.
+    """
+    try:
+        return outgoing.guard(title, "title"), outgoing.guard(storage_html, "document")
+    except outgoing.OutgoingBlocked as exc:
+        raise ConfluenceError(str(exc)) from exc
+
+
 def publish_page(title: str, storage_html: str, settings: Settings | None = None) -> dict:
     """
     Upsert по заголовку: страница с таким заголовком есть — обновляем с
@@ -661,6 +675,7 @@ def publish_page(title: str, storage_html: str, settings: Settings | None = None
     обновления одной страницы получится россыпь новых.
     """
     s = settings or load_settings()
+    title, storage_html = _checked(title, storage_html)
     api = backend(s)
     status = ""
 
@@ -692,17 +707,9 @@ _ORDERED = re.compile(r"^\s*\d+[.)]\s+(.*)$")
 _BULLET = re.compile(r"^\s*[-*•]\s+(.*)$")
 _HEADING = re.compile(r"^\s*(#{1,6})\s+(.*)$")
 _FENCE = re.compile(r"^\s*```")
-_BUILTIN_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b"),
-    re.compile(
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?"
-        r"-----END [A-Z0-9 ]*PRIVATE KEY-----",
-        re.DOTALL,
-    ),
-)
+#: Оставлено ради читателей и старых ссылок: сами шаблоны теперь в `outgoing.py`,
+#: вместе с теми, которые маскировать нельзя, и с проверкой готового payload.
+_BUILTIN_SECRET_PATTERNS = tuple(pattern for _, pattern in outgoing.MASKED)
 
 
 def _inline(text: str) -> str:
@@ -720,26 +727,11 @@ def mask_text(text: str) -> str:
     Применяется к тексту до конвертации в storage format — то есть маска видит
     исходные символы, а не экранированные сущности.
 
-    Нерабочее регулярное выражение — это ошибка конфигурации, а не повод
-    пропустить шаблон: пропущенная маска означает, что данные уедут на wiki
-    открытым текстом. Поэтому падаем сразу и на первом же ходе.
+    Само правило живёт в `outgoing.py` и одно на всех, кто пишет наружу: пока
+    оно лежало здесь, публикация файла и заведение задачи в Jira ходили мимо.
+    Имя оставлено прежним — на него ссылается половина модулей и документация.
     """
-    patterns = cfg.confluence_mask_patterns()
-    if not text:
-        return text or ""
-
-    replacement = cfg.confluence_mask_replacement()
-    out = text
-    for pattern in _BUILTIN_SECRET_PATTERNS:
-        out = pattern.sub(replacement, out)
-    for pattern in patterns:
-        try:
-            out = re.sub(pattern, replacement, out)
-        except re.error as exc:
-            raise cfg.ConfigError(
-                f"CONFLUENCE_MASK_PATTERNS: не компилируется {pattern!r} ({exc})"
-            ) from exc
-    return out
+    return outgoing.mask_text(text)
 
 
 def expand_macro(title: str, body_html: str) -> str:
