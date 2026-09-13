@@ -1306,6 +1306,14 @@ dialog.overlay:not([open]) { display: none; }
   font-size: 0.9em;
 }
 .draft-warnings { margin: 0.3em 0; padding-left: 2.5ch; color: var(--amber); }
+/* Применённые настройки: что читает процесс, а не что лежит в файле. */
+.set-applied { margin: 0.4em 0 0.8em; }
+.set-applied > summary { cursor: pointer; color: var(--fg-dim); }
+.set-applied-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.set-applied-table th { text-align: left; color: var(--fg-dim); font-weight: normal; }
+.set-applied-table td { overflow-wrap: anywhere; padding-right: 1.5ch; }
+.set-applied-table tr.warn td { color: var(--amber); }
+
 /* Итог прогона: три строки, ради которых открывают экран. */
 .run-summary { display: grid; gap: 0.4em; }
 .run-summary-outcome { margin: 0; }

@@ -153,6 +153,19 @@ class Handler(smoke.Handler):
             return self.reply(
                 {
                     "path": "fixture.env",
+                    # Что применено сейчас: файл и процесс — разные вещи, и
+                    # разница между ними объясняет «я же поменял, а работает
+                    # по-старому».
+                    "applied": [
+                        {"name": "AGENT_NAME", "value": "Орбита", "secret": False,
+                         "source": "файл", "restart_required": False},
+                        {"name": "LLM_MODEL", "value": "из окружения", "secret": False,
+                         "source": "окружение", "restart_required": True},
+                        {"name": "LLM_API_KEY", "value": "********", "secret": True,
+                         "source": "окружение", "restart_required": False},
+                    ],
+                    "restart_required": True,
+                    "note": "Файл читается при старте процесса.",
                     "sections": [
                         {
                             "title": "Test",
@@ -400,6 +413,20 @@ def regressions(call, js, until, click):
     until("document.querySelector('.status').textContent.includes('нет сервера')")
     js("window.dispatchEvent(new Event('online'))")
     until("document.querySelector('.status').textContent.includes('на связи')")
+    # Применённые настройки: значение, источник и «нужен перезапуск».
+    # Секрет остаётся маской и здесь.
+    click("настройки")
+    until("document.querySelector('.set-applied') !== null")
+    assert js("document.querySelector('.set-applied').open === true"), (
+        "расхождение файла и процесса должно быть видно сразу"
+    )
+    assert js("document.querySelector('.set-applied-table').textContent.includes('окружение')")
+    assert js("document.querySelector('.set-applied-table tr.warn').textContent.includes('LLM_MODEL')")
+    assert js("document.querySelector('.set-applied-table').textContent.includes('********')")
+    assert not js("document.querySelector('.set-applied-table').textContent.includes('sk-')")
+    key("Escape", 27)
+    until("document.querySelector('.set-applied') === null")
+
     # Итог прогона: три строки вместо четырёх блоков JSON. Проблема названа,
     # следующее действие сказано.
     until("document.querySelector('.run-summary') !== null")
@@ -447,6 +474,7 @@ def regressions(call, js, until, click):
         "secret draft dropped on close",
         "publication failure/retry",
         "server disconnect/recovery and expired token",
+        "applied settings: value, source and restart",
         "run summary: outcome, problems, next action",
         "publish approval: destination, create/update and diff",
     ]

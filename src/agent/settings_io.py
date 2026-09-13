@@ -292,6 +292,50 @@ def described_names() -> frozenset[str]:
     return frozenset(field["name"] for field in _parse_example())
 
 
+def applied() -> dict:
+    """
+    Что применено прямо сейчас — в отличие от того, что лежит в файле.
+
+    Это разные вещи, и разница дорого стоит. `.env` читается один раз при
+    старте процесса, поэтому сохранённая через интерфейс настройка начинает
+    действовать только после перезапуска. Переменная, заданная в окружении
+    процесса (docker compose, systemd, терминал), вообще сильнее файла и не
+    меняется правкой файла никогда.
+
+    Пока интерфейс показывал только файл, оба случая выглядели одинаково:
+    «я же поменял, а оно работает по-старому».
+
+    Значения секретов наружу не отдаются: только маска и признак «задано».
+    """
+    file_values = _read_env_file()
+    rows = []
+    for name in sorted(known_names()):
+        process = (os.environ.get(name) or "").strip()
+        stored = (file_values.get(name) or "").strip()
+        if not process and not stored:
+            continue
+        secret = is_secret(name)
+        rows.append({
+            "name": name,
+            "value": mask(process) if secret else process,
+            "secret": secret,
+            # Откуда взялось применённое значение: окружение процесса сильнее
+            # файла, и правка файла его не отменит.
+            "source": "окружение" if process and process != stored else "файл" if stored else "умолчание",
+            # Файл разошёлся с процессом: нужен перезапуск, а для значения
+            # из окружения — правка там, где оно задано.
+            "restart_required": process != stored and bool(stored),
+        })
+    return {
+        "applied": rows,
+        "restart_required": any(row["restart_required"] for row in rows),
+        "note": (
+            "Файл читается при старте процесса. Значения из окружения сильнее файла "
+            "и правкой файла не меняются."
+        ),
+    }
+
+
 def describe() -> dict:
     """
     Что показать в интерфейсе: разделы, поля, текущие значения.
@@ -345,6 +389,9 @@ def describe() -> dict:
         "sections": [{"title": title, "fields": fields} for title, fields in sections.items()],
         # Куда попадёт переменная, заведённая из интерфейса.
         "new_section": _MANUAL_SECTION,
+        # Что применено прямо сейчас: файл и процесс — разные вещи, и разница
+        # между ними и есть ответ на «я же поменял, а оно работает по-старому».
+        **applied(),
     }
 
 

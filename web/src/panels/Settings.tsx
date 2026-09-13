@@ -334,6 +334,36 @@ export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () 
 
         {!doc && !error ? <div className="hint">читаю .env…</div> : null}
 
+        {/*
+          Что применено прямо сейчас — не то же самое, что лежит в файле.
+          Файл читается при старте процесса, а переменная из окружения сильнее
+          файла и правкой файла не меняется. Пока показывали только файл, оба
+          случая выглядели одинаково: «я же поменял, а оно работает по-старому».
+        */}
+        {doc?.applied?.length ? (
+          <details className="set-applied" open={doc.restart_required}>
+            <summary>
+              Применено сейчас: {doc.applied.length}
+              {doc.restart_required ? " · файл отличается, нужен перезапуск" : ""}
+            </summary>
+            {doc.note ? <p className="hint">{doc.note}</p> : null}
+            <table className="set-applied-table">
+              <thead>
+                <tr><th>переменная</th><th>значение</th><th>откуда</th></tr>
+              </thead>
+              <tbody>
+                {doc.applied.map((item) => (
+                  <tr key={item.name} className={item.restart_required ? "warn" : undefined}>
+                    <td>{item.name}</td>
+                    <td>{item.value || "—"}</td>
+                    <td>{item.source}{item.restart_required ? " · нужен перезапуск" : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        ) : null}
+
         {sections.map((section) => (
           <div className="set-section" key={section.title}>
             <h3>── {section.title} ──</h3>

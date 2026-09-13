@@ -52,11 +52,28 @@ export type Setting = {
 };
 
 export type SettingsSection = { title: string; fields: Setting[] };
+
+/** Одна применённая настройка: значение процесса, а не файла. */
+export type AppliedSetting = {
+  name: string;
+  /** Для секрета — фиксированная маска. */
+  value: string;
+  secret: boolean;
+  /** `окружение` сильнее файла, `файл` читается при старте, `умолчание` — из кода. */
+  source: string;
+  /** Файл разошёлся с процессом: нужен перезапуск. */
+  restart_required: boolean;
+};
 export type SettingsDoc = {
   path: string;
   sections: SettingsSection[];
   /** Раздел, в который попадёт переменная, заведённая из интерфейса. */
   new_section: string;
+  /** Что применено прямо сейчас; значения секретов замаскированы. */
+  applied?: AppliedSetting[];
+  /** Хоть одна настройка в файле отличается от применённой. */
+  restart_required?: boolean;
+  note?: string;
 };
 
 export const loadSettings = () => json<SettingsDoc>("/api/settings");
