@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 
-import { API_URL, checkServer, loadAssistants, type Assistant, type ServerStatus } from "./api";
+import { API_URL, loadAssistants, type Assistant } from "./api";
 import { authorizedFetch } from "./auth";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
@@ -27,6 +27,8 @@ import type {
 } from "./engine/manifest/types";
 import { localized } from "./engine/manifest/validate";
 import { createRuntimeSnapshot, runtimeReducer } from "./engine/runtime/reducer";
+import { useColumnWidth } from "./hooks/useColumnWidth";
+import { useServerStatus } from "./hooks/useServerStatus";
 import { SafeMarkdown } from "./engine/security/safeMarkdown";
 import { InterruptSurface, SurfaceRenderer } from "./engine/surfaces/SurfaceRenderer";
 import { Timeline } from "./engine/timeline/Timeline";
@@ -38,10 +40,7 @@ import { Orbit, Panel, Spinner } from "./ui";
 type StateType = { messages: Message[] } & OrbitaState & Record<string, unknown>;
 
 const GRAPH_KEY = "orbita.graph";
-const LEFT_WIDTH_KEY = "orbita.leftWidth";
 /** Границы ширины левой колонки: уже — список нечитаем, шире — незачем. */
-const LEFT_MIN = 180;
-const LEFT_MAX = 640;
 const TASK_KEY = "orbita.task";
 const DEFAULT_GRAPH = "agent";
 const RUN_LABELS = { idle: "готов к работе", queued: "в очереди", running: "выполняется", interrupted: "ждёт решения", completed: "завершён", failed: "ошибка", cancelled: "остановлен" };
@@ -73,16 +72,14 @@ export function App() {
   const [inputs, setInputs] = useState<Record<string, unknown>>(() => ({
     task: localStorage.getItem(TASK_KEY) || "",
   }));
-  const [online, setOnline] = useState<ServerStatus | null>(null);
+  const online = useServerStatus();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [animated, setAnimated] = useState(() => localStorage.getItem("orbita.animation") === "1");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   /** Открытый документ занимает главный экран вместо схемы. */
   const [openDoc, setOpenDoc] = useState<{ title: string; text: string } | null>(null);
-  const [leftWidth, setLeftWidth] = useState(
-    () => Number(localStorage.getItem(LEFT_WIDTH_KEY)) || 0,
-  );
+  const { width: leftWidth, startResize, reset: resetLeftWidth } = useColumnWidth();
   const [actionError, setActionError] = useState<string | null>(null);
   const [runtime, dispatch] = useReducer(
     runtimeReducer,
@@ -228,36 +225,6 @@ export function App() {
     return () => { live = false; };
     // Initial graph preference is intentionally read only once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    let live = true;
-    let checking = false;
-    const controller = new AbortController();
-    const check = async () => {
-      if (checking || document.visibilityState === "hidden") return;
-      checking = true;
-      try {
-        const value = await checkServer(controller.signal);
-        if (live) setOnline(value);
-      } finally { checking = false; }
-    };
-    const offline = () => setOnline("offline");
-    void check();
-    const timer = window.setInterval(check, 15_000);
-    window.addEventListener("online", check);
-    window.addEventListener("offline", offline);
-    window.addEventListener("focus", check);
-    document.addEventListener("visibilitychange", check);
-    return () => {
-      live = false;
-      controller.abort();
-      window.clearInterval(timer);
-      window.removeEventListener("online", check);
-      window.removeEventListener("offline", offline);
-      window.removeEventListener("focus", check);
-      document.removeEventListener("visibilitychange", check);
-    };
   }, []);
 
   useEffect(() => {
@@ -502,27 +469,6 @@ export function App() {
     eventFactory.current = null;
   };
 
-  // Ширину колонки тянет мышь, а не медиазапрос: длина имён документов у
-  // каждого своя, и угадать её за оператора нельзя.
-  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const origin = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
-    const move = (moving: PointerEvent) => {
-      const next = Math.round(Math.min(LEFT_MAX, Math.max(LEFT_MIN, moving.clientX - origin)));
-      setLeftWidth(next);
-    };
-    const stop = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-  };
-
-  useEffect(() => {
-    if (leftWidth) localStorage.setItem(LEFT_WIDTH_KEY, String(leftWidth));
-  }, [leftWidth]);
-
   const label = graphInfo(current, graphId, manifestInfo);
   const fatalError = assistantsError || bundleError || actionError;
 
@@ -594,10 +540,7 @@ export function App() {
             aria-label="ширина левой колонки"
             title="тянуть — ширина колонки"
             onPointerDown={startResize}
-            onDoubleClick={() => {
-              setLeftWidth(0);
-              localStorage.removeItem(LEFT_WIDTH_KEY);
-            }}
+            onDoubleClick={resetLeftWidth}
           />
           <Panel title="ВХОД И РЕЗУЛЬТАТЫ">
             <SurfaceRenderer

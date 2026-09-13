@@ -42,6 +42,13 @@ export type Setting = {
   /** Для секрета — фиксированная маска `********`. */
   value: string;
   choices?: string[];
+  /**
+   * Ограничения из объявления настройки (`agent/settings_schema.py`).
+   * Показываются подсказкой: отказ сервера «значение должно быть не меньше 0»
+   * приходит после сохранения, а знать об этом нужно до.
+   */
+  minimum?: number;
+  maximum?: number;
 };
 
 export type SettingsSection = { title: string; fields: Setting[] };

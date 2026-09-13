@@ -111,7 +111,7 @@ def test_changed_ignores_the_header(published, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CONFLUENCE_PUBLISH_MODE", "changed")
     headers = iter(["<p>шапка 10:00:00</p>", "<p>шапка 10:00:07</p>"])
     monkeypatch.setattr(
-        "agent.nodes.document_header",
+        "agent.publish_nodes.document_header",
         lambda config=None, renderer=None, pipeline=None: next(headers),
     )
 

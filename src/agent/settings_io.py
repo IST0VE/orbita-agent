@@ -27,7 +27,6 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import re
 import tempfile
@@ -36,8 +35,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values, find_dotenv
 
-from agent import config as cfg
-from costmeter import prices
+from agent import settings_schema
 
 # Переменные, значение которых никогда не покидает сервер.
 #
@@ -48,17 +46,6 @@ _SECRET_NAMES = frozenset({"POSTGRES_URI"})
 # Имя выглядит как секрет, но им не является: ключ пространства Confluence —
 # это `DOCS`, его видно в любой ссылке на wiki.
 _PUBLIC_NAMES = frozenset({"CONFLUENCE_SPACE_KEY"})
-
-# Значения из фиксированных наборов: списки лежат в config.py, здесь только
-# привязка к имени переменной.
-_CHOICES: dict[str, tuple[str, ...]] = {
-    "LLM_PROVIDER": cfg.LLM_PROVIDERS,
-    "LLM_TOOL_MODE": cfg.LLM_TOOL_MODES,
-    "PUBLISH_TARGET": cfg.PUBLISH_TARGETS,
-    "CHECKPOINT_BACKEND": cfg.CHECKPOINT_BACKENDS,
-    "CONFLUENCE_PUBLISH_MODE": cfg.PUBLISH_MODES,
-    "CONFLUENCE_API_VERSION": cfg.API_VERSIONS,
-}
 
 # Имена, которые интерфейс не запишет никогда.
 #
@@ -104,8 +91,7 @@ def is_reserved(name: str) -> bool:
 
 def can_edit(name: str) -> bool:
     """Only documented application settings may be persisted over HTTP."""
-    allowed = described_names() | _kinds_from_config_source().keys()
-    return bool(_NAME.fullmatch(name)) and name in allowed and not is_reserved(name)
+    return bool(_NAME.fullmatch(name)) and name in known_names() and not is_reserved(name)
 
 
 def is_secret(name: str) -> bool:
@@ -114,7 +100,9 @@ def is_secret(name: str) -> bool:
     return (
         name in _SECRET_NAMES
         or bool(_SECRET_WORDS & set(name.split("_")))
-        or name not in (described_names() | _kinds_from_config_source().keys())
+        or settings_schema.BY_NAME[name].secret
+        if name in settings_schema.BY_NAME
+        else name not in known_names()
     )
 
 
@@ -123,25 +111,9 @@ def mask(value: str) -> str:
     return "********" if value else ""
 
 
-def _kinds_from_config_source() -> dict[str, str]:
-    """
-    Тип переменной — по функции, которой её читает `config.py`.
-
-    Разбор исходника, а не таблица в этом файле: таблица разъезжается с
-    кодом молча, а здесь достаточно завести переменную в `config.py`.
-    """
-    source = inspect.getsource(cfg)
-    kinds: dict[str, str] = {}
-    pattern = r"env_(bool|int|float|str|opt)\(\s*\"([A-Z0-9_]+)\""
-    for reader, name in re.findall(pattern, source):
-        kinds[name] = {"bool": "bool", "int": "int", "float": "float"}.get(reader, "text")
-
-    # Тарифы читает не config.py, а costmeter: `price_per_mtok()` только
-    # спрашивает у него готовый ответ. Имена берём у него же, чтобы список
-    # не разъехался при переименовании статьи расхода.
-    for name in prices.ENV_BY_ARTICLE.values():
-        kinds[name] = "float"
-    return kinds
+def known_names() -> frozenset[str]:
+    """Настройки, о которых проект знает: схема плюс описанные в `.env.example`."""
+    return frozenset(settings_schema.NAMES) | described_names()
 
 
 # --------------------------------------------------------------------------
@@ -332,7 +304,6 @@ def describe() -> dict:
     в `.env.example` и принадлежит проекту; второй лежит в `.env` рядом со
     значением, принадлежит этой машине и правится из интерфейса.
     """
-    kinds = _kinds_from_config_source()
     current = _read_env_file()
     described = _parse_example()
     known = {f["name"] for f in described}
@@ -353,16 +324,19 @@ def describe() -> dict:
             "name": name,
             "description": field["description"],
             "default": field["default"],
-            "kind": "enum" if name in _CHOICES else kinds.get(name, "text"),
+            # Тип и ограничения объявлены, а не выведены разбором исходника:
+            # см. `settings_schema`. «enum» — историческое имя виджета, схема
+            # называет тот же тип «choice».
+            "kind": "enum" if settings_schema.kind_of(name) == "choice"
+                    else settings_schema.kind_of(name),
             "secret": secret,
             "editable": can_edit(name),
             "comment": written.get(name, ""),
             "filled": bool(value),
             # Секрет наружу не отдаётся никогда: только маска.
             "value": mask(value) if secret else value,
+            **settings_schema.limits_of(name),
         }
-        if name in _CHOICES:
-            item["choices"] = list(_CHOICES[name])
         sections.setdefault(field["section"], []).append(item)
 
     return {

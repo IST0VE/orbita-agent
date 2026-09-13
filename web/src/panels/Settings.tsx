@@ -140,6 +140,12 @@ function Field({
   }
 
   // ---- строка, целое, дробное ----
+  // Границы объявлены в схеме настроек и показываются здесь: иначе про них
+  // узнают из отказа сервера уже после сохранения.
+  const bounds = [
+    field.minimum !== undefined ? `от ${field.minimum}` : "",
+    field.maximum !== undefined ? `до ${field.maximum}` : "",
+  ].filter(Boolean).join(" ");
   return (
     <div className="set-field">
       {label}
@@ -148,8 +154,10 @@ function Field({
         inputMode={field.kind === "int" || field.kind === "float" ? "decimal" : "text"}
         value={value}
         placeholder={field.default ? `по умолчанию ${field.default}` : "не задано"}
+        aria-describedby={bounds ? `${field.name}-bounds` : undefined}
         onChange={(e) => set(e.target.value)}
       />
+      {bounds ? <span className="hint" id={`${field.name}-bounds`}>{bounds}</span> : null}
     </div>
   );
 }
