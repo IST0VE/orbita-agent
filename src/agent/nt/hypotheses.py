@@ -52,7 +52,7 @@ def _supports(observation: dict, mechanism: str) -> bool:
 
 
 def validate(data: object, state: dict) -> tuple[list[dict], list[str], dict]:
-    accepted, rejected = [], []
+    accepted, rejected, unknown = [], [], set()
     if not isinstance(data, dict) or not isinstance(data.get("hypotheses", []), list):
         return [], [], {"status": "INVALID_RESPONSE", "rejected": ["ожидался объект с hypotheses"]}
     evidence = state.get("evidence", {})
@@ -71,8 +71,20 @@ def validate(data: object, state: dict) -> tuple[list[dict], list[str], dict]:
             reason = "description and next_check are required"
         elif (not isinstance(refs, list) or not refs or len(refs) > 10
               or not isinstance(counters, list) or len(counters) > 10
-              or any(not isinstance(r, str) or r not in evidence for r in refs + counters)):
+              or any(not isinstance(r, str) for r in refs + counters)):
             reason = "invalid evidence references"
+        else:
+            # Модель ссылается и на улики, и на разделы брифа: `correlations`,
+            # `baseline_comparison`, `timeline`. На живых прогонах так выходило
+            # в каждой гипотезе, и отказ по одной такой ссылке выбрасывал
+            # вместе с ней восемь настоящих — вместе со всей оплаченной работой.
+            # Несуществующие ссылки снимаются и показываются оператору; право
+            # подтверждать механизм осталось только у наблюдений.
+            unknown.update(r for r in refs + counters if r not in evidence)
+            refs = [r for r in refs if r in evidence]
+            counters = [r for r in counters if r in evidence]
+            if not refs:
+                reason = "invalid evidence references"
         if reason:
             rejected.append({"index": index, "reason": reason})
             continue
@@ -97,4 +109,5 @@ def validate(data: object, state: dict) -> tuple[list[dict], list[str], dict]:
     recommendations = [confluence.mask_text(r[:1000]) for r in recommendations[:10] if isinstance(r, str)] if isinstance(recommendations, list) else []
     return accepted, recommendations, {"status": "HYPOTHESES" if accepted else "UNKNOWN",
         "accepted": len(accepted), "rejected": rejected,
+        "ignored_references": sorted(unknown),
         "note": "проверены наблюдения; причинная связь требует независимой проверки"}

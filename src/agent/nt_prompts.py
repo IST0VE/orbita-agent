@@ -40,7 +40,7 @@ namespace прогона, диапазон в селекторе огранич�
 Верни только JSON:
 {"hypotheses": [{"service": "имя", "mechanism": "cpu_saturation|memory_pressure|connection_pool|queue_backlog|latency_regression|error_increase|restarts|unknown",
 "description": "предполагаемый механизм, без новых численных фактов",
-"evidence_ids": ["идентификаторы из evidence"], "counter_evidence_ids": [],
+"evidence_ids": ["только ключи объекта evidence, например metric:svc:cpu или finding:0; названия разделов брифа (correlations, timeline, baseline_comparison) ссылками не являются"], "counter_evidence_ids": [],
 "next_check": "конкретная независимая проверка причинной связи"}],
 "recommendations": ["проверка или действие"]}.
 Каждой гипотезе нужны ссылки на факты. Не утверждай confirmed без независимой проверки.

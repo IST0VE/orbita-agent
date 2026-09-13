@@ -21,6 +21,7 @@ from functools import partial
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -68,6 +69,20 @@ def _json(data) -> str:
 
 def _error(state, kind, message):
     return [*state.get("source_errors", []), failure(kind, message)]
+
+
+def _reason(exc: Exception, what: str) -> str:
+    """
+    Отказ модели словами провайдера, а не нашим пересказом.
+
+    «Модель недоступна» одинаково выглядит у просроченного ключа, таймаута и
+    превышенного окна контекста — а лечится по-разному. Текст провайдера
+    («maximum context length is 7000 tokens, however you requested 13396»)
+    единственный называет причину. Он проходит ту же маску, что и весь отчёт,
+    и обрезается: в исключении может оказаться кусок запроса.
+    """
+    text = confluence.mask_text(f"{type(exc).__name__}: {exc}").replace("\n", " ")
+    return f"{what}: {text[:300]}"
 
 
 # Инструмент, текст которого составила модель, а не администратор сервера.
@@ -229,9 +244,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     update["context_sources"] = [*state.get("context_sources", []),
                         {"kind": "load_testing", "id": resolved["test_id"], "text": _json(card)}]
             return update
-        except Exception:
+        except Exception as exc:
+            log.warning("nt_llm_failed node=understand_task run_id=%s test_id=%s",
+                        state.get("run_id"), state.get("test_id"), exc_info=True)
             return {"stage": "understand_task", "source_errors": _error(state, "LLM_UNAVAILABLE",
-                                                                           "context extraction unavailable")}
+                        _reason(exc, "context extraction unavailable"))}
 
     def discover_scope(state: State) -> dict:
         services = state.get("services") or []
@@ -365,7 +382,7 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         settings = settings_for()
         update = {**assessment.assess(state, settings), "stage": "evaluate_test"}
         evidence, summary = metrics_analyzer.make_evidence({**state, **update}, settings.top_n)
-        summary = metrics_analyzer.compact_summary(summary)
+        summary = metrics_analyzer.compact_summary(summary, settings.brief_chars)
         # Этот узел — последний потребитель сырых точек: дальше идут агрегаты,
         # улики и отчёт. Мегабайты рядов после вердикта только переливаются
         # в каждый кадр потока состояния и в каждый чекпоинт.
@@ -390,12 +407,20 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     "stop_reason": "investigation_limit",
                     "source_errors": _error(state, "INVESTIGATION_SKIPPED", "no evidence, budget or iteration/time limit")}
         history = history or [HumanMessage(content=_json(state["llm_summary"]))]
+        # Отказ провайдера по размеру запроса нечем проверить, если неизвестно,
+        # что именно ушло. Счёт приближённый — тот же, которым считает подрезка
+        # истории, — но окно модели сравнивают именно с ним.
+        log.info("nt_investigate run_id=%s test_id=%s iteration=%s messages=%d history_tokens=%d",
+                 state.get("run_id"), state.get("test_id"), state.get("iteration", 0),
+                 len(history), count_tokens_approximately(history))
         try:
             final_turn = state.get("iteration", 0) + 1 >= state.get("max_iterations", 4)
             if final_turn:
                 # The final call has no tools and uses the complete bounded evidence
                 # ledger, including results collected after the initial brief.
-                final_input = metrics_analyzer.compact_summary({**state["llm_summary"], "evidence": state.get("evidence", {})})
+                final_input = metrics_analyzer.compact_summary(
+                    {**state["llm_summary"], "evidence": state.get("evidence", {})},
+                    settings_for().brief_chars)
                 result = finish_investigation({**state, "task": _json(final_input), "messages": history}, config)
             else:
                 result = investigate_role({**state, "messages": history}, config)
@@ -412,10 +437,14 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     "stop_reason": "investigation_limit" if final_empty else "",
                     "source_errors": _error(state, "INVESTIGATION_SKIPPED", "last turn must return a final response") if final_empty else state.get("source_errors", []),
                     "investigation_history": [*history, response], "iteration": state.get("iteration", 0) + 1}
-        except Exception:
+        except Exception as exc:
+            log.warning("nt_llm_failed node=investigate run_id=%s test_id=%s iteration=%s",
+                        state.get("run_id"), state.get("test_id"), state.get("iteration", 0),
+                        exc_info=True)
             return {"investigation_history": settled(history), "stop_reason": "investigation_error",
-                    "source_errors": _error(state, "LLM_UNAVAILABLE",
-                    "investigation unavailable; deterministic report retained"), "stage": "investigate"}
+                    "source_errors": _error(state, "LLM_UNAVAILABLE", _reason(
+                        exc, "investigation unavailable; deterministic report retained")),
+                    "stage": "investigate"}
 
     def approve_tools(state: State, config: RunnableConfig) -> dict:
         """

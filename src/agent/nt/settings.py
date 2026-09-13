@@ -11,6 +11,11 @@ from agent.nt.metric_profiles import PROFILES, unit_for
 
 TOOL_APPROVAL_MODES = ("off", "generated", "all")
 
+# Тем же приближением считает токены подрезка истории (`count_tokens_approximately`
+# из langchain_core): четыре знака на токен. Настоящий счёт зависит от токенизатора
+# провайдера, поэтому бюджет задают с запасом, а не впритык к окну модели.
+CHARS_PER_TOKEN = 4
+
 
 def _flag(name: str, default: bool) -> bool:
     value = os.getenv(name, "1" if default else "0").strip().lower()
@@ -50,6 +55,20 @@ class Settings:
     # Что показывать оператору до выполнения: ничего, только составленные
     # моделью запросы или каждый вызов инструмента.
     tool_approval: str = "generated"
+    # Бриф и результат инструмента уходят в историю одним сообщением: подрезка
+    # истории (LLM_MAX_HISTORY_TOKENS) умеет выбросить сообщение целиком, но не
+    # умеет сделать его короче. Поэтому их размер задаётся здесь, до отправки.
+    # Значения по умолчанию — прежние 48 000 и 8 000 знаков.
+    brief_tokens: int = 12000
+    tool_result_tokens: int = 2000
+
+    @property
+    def brief_chars(self) -> int:
+        return self.brief_tokens * CHARS_PER_TOKEN
+
+    @property
+    def tool_result_chars(self) -> int:
+        return self.tool_result_tokens * CHARS_PER_TOKEN
 
 
 def load_settings() -> Settings:
@@ -102,4 +121,6 @@ def load_settings() -> Settings:
         query_range_seconds=_integer("NT_QUERY_RANGE_SECONDS", 900, 60, 3600),
         discovery_limit=_integer("NT_DISCOVERY_LIMIT", 40, 5, 200),
         tool_approval=approval,
+        brief_tokens=_integer("NT_BRIEF_TOKENS", 12000, 500, 200000),
+        tool_result_tokens=_integer("NT_TOOL_RESULT_TOKENS", 2000, 100, 50000),
     )

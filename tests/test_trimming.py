@@ -86,6 +86,33 @@ def test_trimmed_history_starts_with_a_question(monkeypatch: pytest.MonkeyPatch)
     assert ids <= called
 
 
+def test_single_question_history_keeps_the_task_instead_of_emptying(monkeypatch: pytest.MonkeyPatch):
+    """
+    В расследовании НТ человеческое сообщение одно и стоит первым: окно, которое
+    обязано начинаться с него, либо вмещает всю переписку, либо не вмещает ничего.
+    Пустая история — вызов модели без задачи и без прочитанного, оплаченный как
+    обычный. Режется середина, задача и последние ответы инструментов остаются.
+    """
+    monkeypatch.setenv("LLM_MAX_HISTORY_TOKENS", "4000")
+
+    messages = [HumanMessage("Бриф расследования. " + "факт " * 1600)]
+    for i in range(4):
+        messages += [
+            AIMessage(content="", tool_calls=[{"name": "prometheus_range_query",
+                                               "args": {"metric": "cpu"}, "id": f"c{i}"}]),
+            ToolMessage(content=f"ряд {i} " + "точка " * 400, tool_call_id=f"c{i}", name="t"),
+        ]
+
+    trimmed = trim_history(messages)
+
+    assert count_tokens_approximately(trimmed) <= 4000
+    assert trimmed[0] is messages[0]
+    assert "ряд 3" in trimmed[-1].content
+    ids = {m.tool_call_id for m in trimmed if isinstance(m, ToolMessage)}
+    called = {call["id"] for m in trimmed if isinstance(m, AIMessage) for call in (m.tool_calls or [])}
+    assert ids <= called
+
+
 def test_input_stops_growing_with_the_thread(monkeypatch: pytest.MonkeyPatch):
     """
     Смысл задачи в одной проверке: без лимита вход растёт вместе с тредом,

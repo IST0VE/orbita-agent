@@ -22,6 +22,12 @@ from agent.nt.settings import load_settings
 log = logging.getLogger(__name__)
 
 
+# Ответ инструмента целиком всегда просторнее текстового поля внутри него: в
+# конверт JSON, кроме текста, попадают метрики, ошибки и пометки. Прежние
+# значения — 8 000 знаков на текст и 12 000 на весь ответ — дают эти полтора.
+ENVELOPE_RATIO = 1.5
+
+
 def bounded(result: dict, limit: int = 12000) -> dict:
     text = confluence.mask_text(json.dumps(result, ensure_ascii=False, allow_nan=False))
     if len(text) > limit:
@@ -45,7 +51,7 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
         try:
             if not allowed(name) or time.time() >= state.get("deadline_at", float("inf")):
                 return failure("POLICY_DENIED", "operation denied or analysis timed out")
-            result = bounded(function())
+            result = bounded(function(), int(get_settings().tool_result_chars * ENVELOPE_RATIO))
             return result
         except Exception:
             return result
@@ -191,7 +197,8 @@ def build_tools(sources: Sources | None = None, *, settings=None) -> list:
                 or "не прочитана:" in text or "поиск в Jira не выполнен:" in text
                 or "поиск в Confluence не выполнен:" in text):
             return failure("CONTEXT_UNAVAILABLE", "context source read failed")
-        return {"success": True, "text": text[:8000], "truncated": len(text) > 8000,
+        limit = get_settings().tool_result_chars
+        return {"success": True, "text": text[:limit], "truncated": len(text) > limit,
                 "note": "context text is not verified metric evidence"}
 
     @tool

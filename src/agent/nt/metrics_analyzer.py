@@ -91,8 +91,29 @@ def make_evidence(state: dict, top_n: int) -> tuple[dict, dict]:
     return evidence, summary
 
 
+def rounded(value):
+    """
+    Хвост float в брифе — это оплаченные токены без единицы смысла.
+
+    `0.6555555555555554` стоит вчетверо дороже, чем `0.6556`, и ничего к нему не
+    добавляет: шум измерения начинается задолго до четвёртой значащей цифры.
+    Журнал улик в состоянии остаётся точным — округление живёт только во входе
+    модели, и заодно совпадает с тем, что человек видит в отчёте.
+    """
+    if isinstance(value, bool) or isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if not math.isfinite(value) else float(f"{value:.4g}")
+    if isinstance(value, dict):
+        return {key: rounded(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rounded(item) for item in value]
+    return value
+
+
 def compact_summary(summary: dict, limit: int = 48000) -> dict:
     """Bound the model input without deleting the durable evidence ledger."""
+    summary = rounded(summary)
     result = {**summary, "evidence": dict(summary.get("evidence", {}))}
     def size():
         return len(json.dumps(result, ensure_ascii=False, allow_nan=False))

@@ -18,6 +18,7 @@ from langgraph.types import interrupt
 
 from agent import confluence, nodes, tool_compat, tools
 from agent.cost import cost_summary, extract_usage
+from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
 from agent.nt_run.plan import Plan, canonical, compile_script, fingerprint, validate_plan
 from agent.pipeline import Pipeline, Role
@@ -203,7 +204,10 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
                             result = {"success": True, "sha256": fingerprint(data),
                                       "files": ["scenario.json", "test.js"], "location": "artifacts; runner saves on prepare"}
                     else:
-                        result = {"success": True, "content": str(value)[:16000]}
+                        # Ответ инструмента уходит в историю целиком: его размер
+                        # задаёт то же окно модели, что и в графе nt.
+                        cap = load_settings().tool_result_chars
+                        result = {"success": True, "content": str(value)[:cap]}
                 except Exception as exc:
                     result = {"success": False, "error": type(exc).__name__ + ": validation or tool operation failed"}
             messages.append(ToolMessage(content=confluence.mask_text(canonical(result)),

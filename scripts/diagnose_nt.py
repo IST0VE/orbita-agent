@@ -42,16 +42,24 @@ def metadata_shape(value, key="", depth=0):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--test-id", required=True)
+    parser.add_argument("--test-id")
     parser.add_argument("--check-metrics", action="store_true",
                         help="check normalized test data and configured historical metric queries")
     parser.add_argument("--details", action="store_true",
                         help="read actual SLA expressions and HTTP counter label names/values")
+    parser.add_argument("--model-input", action="store_true",
+                        help="estimate the model input of one investigation call; reads no test data")
+    parser.add_argument("--window", type=int, default=0,
+                        help="context window of the model in tokens; with --model-input suggests limits")
     args = parser.parse_args()
+    load_dotenv(ROOT / ".env")
+    if args.model_input:
+        return model_input(args.window)
     import re
+    if not args.test_id:
+        parser.error("--test-id is required unless --model-input is given")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.test_id):
         parser.error("invalid test ID")
-    load_dotenv(ROOT / ".env")
     if args.details:
         return inspect_contract(args.test_id)
     if args.check_metrics:
@@ -121,6 +129,53 @@ def inspect_contract(test_id):
         print(json.dumps({"error": str(exc) if isinstance(exc, AdapterError)
                           else "invalid metadata or series response"}), flush=True)
         return 1
+
+
+def model_input(window_tokens):
+    """
+    Что уходит в модель и помещается ли это в её окно.
+
+    Провайдеры отказывают по-разному, а иногда молча обрезают; сравнивать размер
+    запроса с окном приходится руками. Постоянная часть вызова считается по
+    самому коду — промпт роли и схемы включённых сейчас инструментов, — поэтому
+    NT_GENERATED_QUERIES и прочие настройки уже учтены. Счёт приближённый: тот
+    же, которым подрезается история.
+    """
+    from langchain_core.messages import HumanMessage
+    from langchain_core.messages.utils import count_tokens_approximately
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    from agent import nt_prompts
+    from agent.nt_tools import build_tools
+
+    def tokens(text):
+        return count_tokens_approximately([HumanMessage(text)])
+
+    settings = load_settings()
+    schemas = json.dumps([convert_to_openai_tool(t) for t in build_tools(settings=settings)],
+                         ensure_ascii=False)
+    fixed = tokens(nt_prompts.prompt_for("investigate")) + tokens(schemas)
+    history_limit = int(os.getenv("LLM_MAX_HISTORY_TOKENS", "0") or 0)
+    growth = settings.max_iterations * 3 * settings.tool_result_tokens
+    worst = fixed + (history_limit if history_limit else settings.brief_tokens + growth)
+    report = {"fixed_tokens": fixed, "first_call_tokens": fixed + settings.brief_tokens,
+              "worst_call_tokens": worst, "settings": {
+                  "NT_BRIEF_TOKENS": settings.brief_tokens,
+                  "NT_TOOL_RESULT_TOKENS": settings.tool_result_tokens,
+                  "LLM_MAX_HISTORY_TOKENS": history_limit}}
+    if window_tokens:
+        # Запас на служебные поля запроса: имена ролей, идентификаторы вызовов.
+        available = window_tokens - fixed - 200
+        report["window"] = window_tokens
+        report["fits"] = worst <= window_tokens
+        if available <= 0:
+            report["suggest"] = "окно меньше постоянной части вызова: нужна модель с большим окном"
+        elif not report["fits"]:
+            report["suggest"] = {"NT_BRIEF_TOKENS": int(available * .6),
+                                 "NT_TOOL_RESULT_TOKENS": max(100, int(available * .12)),
+                                 "LLM_MAX_HISTORY_TOKENS": available}
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("fits", True) else 1
 
 
 def check_metrics(test_id):

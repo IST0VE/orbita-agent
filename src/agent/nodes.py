@@ -117,12 +117,29 @@ def trim_history(messages: list) -> list:
     limit = cfg.max_history_tokens()
     if not limit:
         return messages
-    return trim_messages(
+    kept = trim_messages(
         messages,
         max_tokens=limit,
         token_counter=count_tokens_approximately,
         strategy="last",
         start_on="human",
+        include_system=False,
+        allow_partial=False,
+    )
+    if kept or not messages:
+        return kept
+    # Ни одно окно не начинается с человеческого сообщения — значит, оно в
+    # истории одно и стоит первым. Так выглядит расследование НТ: бриф, а за ним
+    # только ходы модели и ответы инструментов. Пустая история здесь — это вызов
+    # модели без задачи и без прочитанного: она отвечает наугад, а платит за это
+    # оператор. Поэтому задача остаётся, а режется середина переписки.
+    head, rest = messages[:1], messages[1:]
+    return head + trim_messages(
+        rest,
+        max_tokens=max(limit - count_tokens_approximately(head), 0),
+        token_counter=count_tokens_approximately,
+        strategy="last",
+        start_on=("human", "ai"),
         include_system=False,
         allow_partial=False,
     )

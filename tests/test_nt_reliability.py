@@ -1,5 +1,6 @@
 """Regression and scenario checks for repeatable historical NT analysis."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -7,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from test_nt_graph import INPUT, START, model, run, setup_source
 
-from agent import nt_graph
+from agent import nt_graph, nt_tools
 from agent.nt import comparison, hypotheses, phases
 from agent.nt.anomaly_detector import detect
 from agent.nt.metrics_analyzer import compact_summary, make_evidence
@@ -228,6 +229,30 @@ def hypothesis(mechanism="cpu_saturation", refs=None):
     return {"hypotheses": [{"service": "svc-0", "mechanism": mechanism,
         "description": "Предполагаемый механизм", "next_check": "Снять профиль за период",
         "confidence": "confirmed", "evidence_ids": refs or ["cpu"]}]}
+
+
+def test_section_name_among_references_does_not_discard_the_whole_hypothesis():
+    """
+    На живых прогонах модель ссылается и на улики, и на разделы брифа. Отказ по
+    одной такой ссылке выбрасывал вместе с ней настоящие — и всю оплаченную
+    работу расследования. Ссылки в никуда снимаются и показываются оператору.
+    """
+    state = {"services": ["svc-0"], "evidence": {"cpu": {"service": "svc-0", "metric": "cpu", "max": .95}}}
+    accepted, _, result = hypotheses.validate(
+        hypothesis(refs=["cpu", "correlations", "baseline_comparison"]), state)
+
+    assert accepted[0]["evidence_ids"] == ["cpu"]
+    assert accepted[0]["observations"][0]["max"] == .95
+    assert result["ignored_references"] == ["baseline_comparison", "correlations"]
+
+
+def test_hypothesis_built_only_on_invented_references_is_still_rejected():
+    state = {"services": ["svc-0"], "evidence": {"cpu": {"service": "svc-0", "metric": "cpu", "max": .95}}}
+    accepted, _, result = hypotheses.validate(hypothesis(refs=["timeline", "выдумка"]), state)
+
+    assert not accepted
+    assert result["rejected"][0]["reason"] == "invalid evidence references"
+    assert result["ignored_references"] == ["timeline", "выдумка"]
 
 
 def test_confidence_is_not_taken_from_model_and_causality_is_not_certified():
@@ -501,6 +526,95 @@ def test_counter_totals_are_not_compared_as_levels_between_runs():
                             "deadlocks": {"baseline": 2., "current": 6., "absolute": 4., "percent": 200.},
                             "p95": {"baseline": 100., "current": 200., "absolute": 100., "percent": 100.}}}]
     assert [r["metric"] for r in comparison.regressions(matched)] == ["p95"]
+
+
+def test_model_input_budget_follows_the_window_of_the_configured_model(monkeypatch):
+    """Окно модели — не константа проекта: у 7000-токенной бриф в 48 000 знаков не помещается."""
+    from agent.nt.settings import load_settings
+
+    monkeypatch.setenv("NT_METRIC_QUERIES", "{}")
+    monkeypatch.setenv("NT_ANOMALY_WEIGHTS", "{}")
+    assert load_settings().brief_chars == 48000
+    assert load_settings().tool_result_chars == 8000
+
+    monkeypatch.setenv("NT_BRIEF_TOKENS", "2500")
+    monkeypatch.setenv("NT_TOOL_RESULT_TOKENS", "500")
+    settings = load_settings()
+    assert (settings.brief_chars, settings.tool_result_chars) == (10000, 2000)
+
+    evidence = {f"metric:t:m{i}": {"service": "t", "metric": f"m{i}", "blob": "z" * 900}
+                for i in range(60)}
+    brief = compact_summary({"task": {"target_service": "t"}, "evidence": evidence},
+                            settings.brief_chars)
+    assert len(json.dumps(brief, ensure_ascii=False)) <= settings.brief_chars
+    assert brief["omitted_evidence"] > 0
+
+    monkeypatch.setenv("NT_BRIEF_TOKENS", "400")
+    with pytest.raises(ValueError, match="NT_BRIEF_TOKENS"):
+        load_settings()
+
+
+def test_refusal_of_the_model_reaches_the_report_in_the_words_of_the_provider(monkeypatch):
+    """«Модель недоступна» одинаково у ключа, таймаута и окна контекста, а лечится по-разному."""
+    from agent import tool_compat
+
+    sources, _ = setup_source()
+    message = "maximum context length is 7000 tokens, however you requested 13396"
+
+    def refuse(model_for, messages, config, tools, *, allow_tools):
+        raise ValueError(message)
+
+    monkeypatch.setattr(tool_compat, "invoke", refuse)
+    state = nt_graph.build_graph(sources=sources).compile().invoke(
+        {**INPUT, "messages": [HumanMessage("Проверь троттлинг CPU")]},
+        {"configurable": {"publish": False}})
+
+    assert state["stop_reason"] == "investigation_error"
+    assert any(message in error["message"] for error in state["source_errors"])
+    assert message in state["artifacts"]["report"]
+    assert state["analysis_result"] == "FAILED"
+
+
+def test_provider_refusal_is_masked_and_bounded_before_it_is_shown(monkeypatch):
+    from agent import nt_graph as graph_module
+
+    monkeypatch.setenv("CONFLUENCE_MASK_PATTERNS", r"sk-[a-z0-9]+")
+    reason = graph_module._reason(ValueError("key sk-secret123 rejected; " + "x" * 400), "отказ")
+
+    assert "sk-secret123" not in reason
+    assert len(reason) <= 320
+
+
+def test_tiny_model_window_shrinks_the_brief_but_not_the_analysis():
+    """Маленькое окно — меньше улик у модели. Вердикт, улики и отчёт считает код."""
+    sources, _ = setup_source()
+    sources.settings = replace(sources.settings, brief_tokens=500)
+    state = run(sources, AIMessage(content='{"hypotheses": [], "recommendations": []}'))
+    brief = state["llm_summary"]
+
+    assert len(json.dumps(brief, ensure_ascii=False)) <= 2000
+    assert brief["omitted_evidence"] > 0
+    assert len(brief["evidence"]) < len(state["evidence"])
+    assert state["analysis_result"] == "FAILED"
+    assert "## Evidence" in state["artifacts"]["report"]
+
+
+def test_tool_output_limits_scale_with_the_same_budget():
+    """Иначе текст помещается в поле, а ответ целиком уже нет — и чтение всегда падает."""
+    settings = Settings(tool_result_tokens=500)
+    huge = {"success": True, "text": "щ" * settings.tool_result_chars}
+    assert nt_tools.bounded(huge, int(settings.tool_result_chars * nt_tools.ENVELOPE_RATIO))["success"]
+    assert nt_tools.bounded(huge, settings.tool_result_chars)["error_type"] == "OUTPUT_LIMIT"
+
+
+def test_rounding_shrinks_the_brief_but_not_the_stored_evidence():
+    evidence = {"metric:t:cpu": {"service": "t", "metric": "cpu", "median": 0.6555555555555554,
+                                 "p95": 0.7999999999999999, "count": 42, "partial": False}}
+    brief = compact_summary({"task": {"target_service": "t"}, "evidence": dict(evidence)})
+
+    assert brief["evidence"]["metric:t:cpu"] == {"service": "t", "metric": "cpu", "median": 0.6556,
+                                                 "p95": 0.8, "count": 42, "partial": False}
+    assert evidence["metric:t:cpu"]["median"] == 0.6555555555555554
 
 
 def test_measured_regression_survives_context_pressure_with_target_findings():
