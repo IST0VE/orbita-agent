@@ -94,6 +94,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Общие правила импортируют конфигурацию приложения и требуют её зависимостей.
+      - run: python -m pip install -r requirements.txt
+
       # Самопроверка: сканер обязан находить контрольную закладку. Без неё
       # «ничего не найдено» означает только то, что ничего не искали.
       - run: python scripts/scan_secrets.py --self-test --mode tree

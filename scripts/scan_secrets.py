@@ -78,6 +78,8 @@ DOC_HOSTS = re.compile(
 BEARER_FIXTURES = {
     "tests/test_api_security.py": {
         "test-only-correct-horse-battery-staple", "test-only-auth-token-with-32-characters",
+        # Прежнее имя синтетической фикстуры; осталось в истории до переименования.
+        "correct-horse-battery-staple",
     },
     "tests/test_ui_engine.py": {
         "test-only-auth-token-with-32-characters", "test-only-ui-secret-with-32-characters",
@@ -116,15 +118,17 @@ def _real(kind: str, value: str, line: str) -> bool:
     return True
 
 
-def scan_text(text: str, where: str) -> list[Finding]:
-    """Находки в одном тексте, с номерами строк и без значений."""
+def scan_text(text: str, path: str, *, object_id: str | None = None) -> list[Finding]:
+    """Исключения проверяются по пути; Git-объект добавляется только к месту находки."""
+    where = f"{path}@{object_id[:10]}" if object_id is not None else path
+    bearer_fixtures = BEARER_FIXTURES.get(path, set())
     found: list[Finding] = []
     rules = _rules()
     for number, line in enumerate(text.splitlines(), start=1):
         for kind, pattern in rules:
             for match in pattern.finditer(line):
                 if (kind == "bearer-token"
-                        and match.group(0).split(None, 1)[-1] in BEARER_FIXTURES.get(where, set())):
+                        and match.group(0).split(None, 1)[-1] in bearer_fixtures):
                     continue
                 if _real(kind, match.group(0), line):
                     found.append(Finding(where, number, kind))
@@ -215,7 +219,7 @@ def scan_history() -> list[Finding]:
         if blob.returncode or len(blob.stdout) > MAX_BYTES:
             continue
         text = blob.stdout.decode("utf-8", "replace")
-        found += scan_text(text, f"{name}@{object_id[:10]}")
+        found += scan_text(text, name, object_id=object_id)
     return found
 
 
@@ -260,7 +264,8 @@ def main() -> int:
         print("  " + item)
     print(
         "\nЗначения не выводятся намеренно. Если находка — намеренная тестовая "
-        "фикстура, добавьте её путь и причину в ALLOWED в scripts/scan_secrets.py."
+        "фикстура Bearer, добавьте точные путь и значение в BEARER_FIXTURES "
+        "в scripts/scan_secrets.py. ALLOWED исключает файл целиком и требует причины."
     )
     return 1
 

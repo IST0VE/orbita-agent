@@ -14,6 +14,7 @@ D2: проверка секретов сама должна быть прове�
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -96,6 +97,110 @@ def test_a_fixture_is_allowed_only_in_its_named_file():
 
     assert scan.scan_text(line, "tests/test_api_security.py") == []
     assert scan.scan_text(line, "tests/где-то.py")
+
+
+@pytest.mark.parametrize("object_id", [None, "0123456789abcdef0123456789abcdef01234567"])
+@pytest.mark.parametrize(
+    ("path", "token"),
+    [
+        ("tests/test_api_security.py", "correct-horse-battery-staple"),
+        ("tests/test_api_security.py", "test-only-correct-horse-battery-staple"),
+        ("tests/test_api_security.py", "test-only-auth-token-with-32-characters"),
+        ("tests/test_ui_engine.py", "test-only-auth-token-with-32-characters"),
+        ("tests/test_ui_engine.py", "test-only-ui-secret-with-32-characters"),
+        ("tests/test_server_security_integration.py", "test-only-integration-token-32-characters"),
+    ],
+)
+def test_bearer_fixtures_require_an_exact_path_and_value(path, token, object_id):
+    line = f"Authorization: Bearer {token}"
+
+    assert scan.scan_text(line, path, object_id=object_id) == []
+    assert scan.scan_text(line, "tests/other.py", object_id=object_id)
+    assert scan.scan_text(line, f"{path}@archive", object_id=object_id)
+    assert scan.scan_text(f"{line}-unexpected", path, object_id=object_id)
+
+
+@pytest.fixture
+def history_repo(tmp_path, monkeypatch):
+    """Настоящие Git-объекты: подмена scan_text скрыла бы ошибку передачи пути."""
+    monkeypatch.setattr(scan, "ROOT", tmp_path)
+
+    def git(*args):
+        return subprocess.run(
+            [
+                "git", "-c", "user.name=Secret scan tests",
+                "-c", "user.email=secret-scan@example.invalid",
+                "-c", "commit.gpgsign=false",
+                "-c", f"core.hooksPath={tmp_path / 'empty-hooks'}", *args,
+            ],
+            cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+
+    git("init", "--quiet")
+    return tmp_path, git
+
+
+def test_history_accepts_current_and_retired_fixtures(history_repo, monkeypatch, capsys):
+    root, git = history_repo
+    fixtures = {
+        "tests/test_api_security.py": [
+            "correct-horse-battery-staple",
+            "test-only-correct-horse-battery-staple",
+            "test-only-auth-token-with-32-characters",
+        ],
+        "tests/test_ui_engine.py": [
+            "test-only-auth-token-with-32-characters", "test-only-ui-secret-with-32-characters",
+        ],
+        "tests/test_server_security_integration.py": ["test-only-integration-token-32-characters"],
+    }
+    for name, tokens in fixtures.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(f"Authorization: Bearer {token}" for token in tokens),
+                        encoding="utf-8")
+    git("add", ".")
+    git("commit", "--quiet", "-m", "Synthetic authentication fixtures")
+    for name in fixtures:
+        (root / name).unlink()
+    git("add", "-u")
+    git("commit", "--quiet", "-m", "Remove fixtures from the tree")
+
+    monkeypatch.setattr(sys, "argv", ["scan_secrets.py", "--mode", "history"])
+    assert scan.main() == 0
+    assert capsys.readouterr().out == "секретов не найдено (history)\n"
+
+
+def test_history_reports_unlisted_tokens_after_deletion(history_repo, monkeypatch, capsys):
+    root, git = history_repo
+    files = {
+        "tests/test_api_security.py": "test-only-unlisted-token-with-32-characters",
+        "tests/test_ui_engine.py": "9f2b7c1de4a8069135bbaf27cd3e05",
+        "tests/copied_fixture.py": "test-only-auth-token-with-32-characters",
+        "tests/test_api_security.py@archive": "correct-horse-battery-staple",
+    }
+    expected = []
+    for name, token in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# Synthetic control\nAuthorization: Bearer {token}\n", encoding="utf-8")
+        object_id = git("hash-object", name)
+        expected.append(f"{name}@{object_id[:10]}:2: bearer-token")
+    git("add", ".")
+    git("commit", "--quiet", "-m", "Plant synthetic controls")
+    for name in files:
+        (root / name).unlink()
+    git("add", "-u")
+    git("commit", "--quiet", "-m", "Remove controls from the tree")
+
+    assert scan.scan_paths(scan.tracked_files()) == []
+    assert sorted(str(item) for item in scan.scan_history()) == sorted(expected)
+    monkeypatch.setattr(sys, "argv", ["scan_secrets.py", "--mode", "history"])
+    assert scan.main() == 1
+    output = capsys.readouterr().out
+    for location in expected:
+        assert location in output
+    for token in files.values():
+        assert token not in output
 
 
 def test_a_real_looking_bearer_token_is_a_finding():
