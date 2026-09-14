@@ -17,7 +17,7 @@ from langgraph.types import Command, interrupt
 
 from agent.nt_run import worker
 from agent.nt_run.client import RunnerHTTP
-from agent.nt_run.plan import compile_script, validate_plan
+from agent.nt_run.plan import commitment_of, compile_script, validate_plan
 from agent.nt_run.runner import Runner
 from agent.nt_run_graph import build_graph
 
@@ -267,29 +267,29 @@ def local_runner(tmp_path, monkeypatch):
 
 def test_runner_idempotency_survives_restart_and_rejects_conflicts(tmp_path, monkeypatch):
     runner, spawned = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
-    first = runner.start_test(prepared, "unique", smoke=True)
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
+    first = runner.start_test(prepared, "unique", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))
     restarted = Runner(tmp_path, runner.config)
-    assert restarted.start_test(prepared, "unique", smoke=True)["test_id"] == first["test_id"]
+    assert restarted.start_test(prepared, "unique", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"] == first["test_id"]
     assert len(spawned) == 1
     with pytest.raises(ValueError, match="different"):
-        restarted.start_test(prepared, "unique", smoke=False)
+        restarted.start_test(prepared, "unique", smoke=False, approved=commitment_of(PLAN, runner.capabilities()))
     with pytest.raises(ValueError, match="active"):
-        restarted.start_test(prepared, "second", smoke=True)
+        restarted.start_test(prepared, "second", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))
 
 
 def test_runner_requires_successful_smoke_even_if_graph_is_bypassed(tmp_path, monkeypatch):
     runner, spawned = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
     with pytest.raises(ValueError, match="smoke"):
-        runner.start_test(prepared, "load", smoke=False)
+        runner.start_test(prepared, "load", smoke=False, approved=commitment_of(PLAN, runner.capabilities()))
     assert not spawned
 
 
 def test_old_worker_state_is_unknown_not_completed(tmp_path, monkeypatch):
     runner, _ = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
-    test_id = runner.start_test(prepared, "smoke", smoke=True)["test_id"]
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
+    test_id = runner.start_test(prepared, "smoke", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"]
     with runner.connect() as db:
         db.execute("UPDATE jobs SET updated=0 WHERE id=?", (test_id,))
     assert runner.get_test_status(test_id)["test_status"] == "unknown"
@@ -303,8 +303,8 @@ def test_worker_never_blocks_on_a_pipe_its_reader_still_holds(tmp_path, monkeypa
     before it would guard nothing.
     """
     runner, _ = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
-    test_id = runner.start_test(prepared, "smoke", smoke=True)["test_id"]
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
+    test_id = runner.start_test(prepared, "smoke", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"]
     read_fd, write_fd = os.pipe()
 
     class Silent:
@@ -343,8 +343,8 @@ def test_error_counters_are_named_by_meaning_not_by_k6_rate_semantics(tmp_path, 
     0.001, и читатель — человек или модель — принимает это за дефект измерения.
     """
     runner, _ = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
-    test_id = runner.start_test(prepared, "smoke", smoke=True)["test_id"]
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
+    test_id = runner.start_test(prepared, "smoke", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"]
     directory = runner.root / test_id
     directory.mkdir(exist_ok=True)
     (directory / "summary.json").write_text(json.dumps({"metrics": {
@@ -378,17 +378,17 @@ def test_error_counters_are_named_by_meaning_not_by_k6_rate_semantics(tmp_path, 
 def test_vanished_worker_is_released_only_by_an_operator_and_then_unblocks_the_runner(
         tmp_path, monkeypatch):
     runner, _ = local_runner(tmp_path, monkeypatch)
-    prepared = runner.prepare_test(PLAN, "prepare")["prepared_id"]
-    test_id = runner.start_test(prepared, "smoke", smoke=True)["test_id"]
+    prepared = runner.prepare_test(PLAN, "prepare", commitment_of(PLAN, runner.capabilities()))["prepared_id"]
+    test_id = runner.start_test(prepared, "smoke", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"]
     with pytest.raises(ValueError, match="still reporting"):
         runner.release_lost_job(test_id)
     with runner.connect() as db:
         db.execute("UPDATE jobs SET updated=0 WHERE id=?", (test_id,))
     with pytest.raises(ValueError, match="active"):
-        runner.start_test(prepared, "blocked", smoke=True)
+        runner.start_test(prepared, "blocked", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))
     released = runner.release_lost_job(test_id)
     assert released["test_status"] == "failed" and released["stop_reason"] == "worker_lost"
-    assert runner.start_test(prepared, "after-release", smoke=True)["test_id"] != test_id
+    assert runner.start_test(prepared, "after-release", smoke=True, approved=commitment_of(PLAN, runner.capabilities()))["test_id"] != test_id
 
 
 def test_script_escapes_javascript_line_terminators_smuggled_through_plan_text():

@@ -109,8 +109,8 @@ class Runner:
             # Both the set approved by the operator and the set fixed at prepare
             # time: config changes after either point must stop the start, not
             # be resolved again into whatever the config now says.
-            check_commitment(payload["plan"], capabilities, approved or payload.get("approved") or None)
-            if approved is not None and payload.get("approved") and approved != payload["approved"]:
+            check_commitment(payload["plan"], capabilities, approved)
+            if approved != payload.get("approved"):
                 raise ValueError("approved run parameters differ from the prepared attempt")
             _, current_target = validate_plan(payload["plan"], capabilities)
             if current_target != payload["target"]:

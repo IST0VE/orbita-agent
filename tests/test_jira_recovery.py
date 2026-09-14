@@ -149,8 +149,8 @@ def test_an_accepted_post_is_never_repeated_blindly(journal):
 
 
 @responses.activate
-def test_a_lost_post_that_never_landed_is_sent_once(journal):
-    """Сверка прошла и ничего не нашла: значит, POST до трекера не доехал."""
+def test_an_empty_search_does_not_prove_that_the_post_never_landed(journal):
+    """Пустой индекс не доказывает отказ записи; слепой повтор запрещён."""
     register_types()
     journal.begin(RUN, "issue", "T-1")
     responses.add(responses.GET, f"{BASE}{API}/search/jql", json={"issues": []}, status=200)
@@ -160,8 +160,9 @@ def test_a_lost_post_that_never_landed_is_sent_once(journal):
         plan_of("T-1"), "ORB", settings=CLOUD, run=RUN, journal=journal
     )
 
-    assert len(posts()) == 1
-    assert [issue["key"] for issue in result["created"]] == ["ORB-1"]
+    assert posts() == []
+    assert result["created"] == []
+    assert result["status"] == "unknown"
 
 
 @responses.activate
@@ -212,7 +213,7 @@ def test_an_explicit_refusal_may_be_retried(journal):
 def test_a_repeat_finishes_the_batch_without_duplicating_its_start(journal):
     register_types()
     responses.add(responses.POST, f"{BASE}{API}/issue", json={"key": "ORB-1"}, status=201)
-    responses.add(responses.POST, f"{BASE}{API}/issue", status=503, json={"message": "down"})
+    responses.add(responses.POST, f"{BASE}{API}/issue", status=400, json={"message": "invalid field"})
 
     plan = plan_of("T-1", "T-2")
     first = jira_writer.create_issues(plan, "ORB", settings=CLOUD, run=RUN, journal=journal)

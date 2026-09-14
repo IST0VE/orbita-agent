@@ -22,8 +22,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -104,16 +106,20 @@ PREFIXES = ("LLM_", "PRICE_", "CONFLUENCE_", "AGENT_", "BUDGET_", "KNOWLEDGE_", 
             "PUBLISH_", "CHECKPOINT_", "JIRA_", "ATLASSIAN_", "NT_", "DIAGRAM_")
 
 
-def _isolate(case: dict, workdir: Path) -> None:
+def _isolate(case: dict, workdir: Path, *, live: bool = False) -> None:
     """Окружение прогона: только то, что задал набор и сам случай."""
-    import os
-
+    # Tracing is another external write and must not inherit personal settings.
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
     for name in list(os.environ):
+        if live and name.startswith(("LLM_", "PRICE_")):
+            continue
         if name.startswith(PREFIXES):
             os.environ.pop(name, None)
-    os.environ.update(REFERENCE_PRICE)
-    os.environ["LLM_PROVIDER"] = "deepseek"
-    os.environ["LLM_MODEL"] = "eval-reference-model"
+    if not live:
+        os.environ.update(REFERENCE_PRICE)
+        os.environ["LLM_PROVIDER"] = "deepseek"
+        os.environ["LLM_MODEL"] = "eval-reference-model"
     os.environ["AGENT_INPUT_DIR"] = str(workdir / "input")
     os.environ["PUBLISH_DIR"] = str(workdir / "published" / case["id"])
     os.environ["MEMORY_ENABLED"] = "0"
@@ -121,16 +127,37 @@ def _isolate(case: dict, workdir: Path) -> None:
     os.environ["PUBLISH_TARGET"] = case.get("publish_target", "file")
     os.environ["JIRA_JOURNAL_PATH"] = str(workdir / "jira.sqlite3")
     for name, value in (case.get("environment") or {}).items():
+        if live and name.startswith(("LLM_", "PRICE_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_")):
+            continue
         os.environ[name] = value
+
+
+@contextmanager
+def isolated(case: dict, workdir: Path, *, live: bool):
+    # Import configuration before the snapshot: its one-time .env loading must
+    # not undo isolation on the first case or remove settings on later cases.
+    from agent import config  # noqa: F401
+
+    previous = dict(os.environ)
+    try:
+        _isolate(case, workdir, live=live)
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def run_case(case: dict, workdir: Path, *, live: bool = False) -> dict:
     """Один случай: прогон, показатели и то, что от него ожидалось."""
+    with isolated(case, workdir, live=live):
+        return _run_case(case, workdir, live=live)
+
+
+def _run_case(case: dict, workdir: Path, *, live: bool) -> dict:
     from agent import publishers
     from agent.builder import build_graph
     from agent.pipeline import Pipeline
 
-    _isolate(case, workdir)
     folder = _materials(case, workdir / "input")
     model = None if live else ScriptedModel(case.get("answers") or [])
 
@@ -149,7 +176,9 @@ def run_case(case: dict, workdir: Path, *, live: bool = False) -> dict:
     seconds = round(time.time() - started, 3)
 
     documents = dict(state.get("artifacts") or {})
-    measured = checks.measure(documents)
+    measured = checks.measure(documents, materials=case.get("materials"),
+                              versions=case.get("material_versions"),
+                              facts=case.get("facts"), contradictions=case.get("contradictions"))
     publication = state.get("publication") or {}
     cost = state.get("cost") or {}
     published = publishers.documents() if not failure else []
@@ -157,6 +186,8 @@ def run_case(case: dict, workdir: Path, *, live: bool = False) -> dict:
     return {
         "id": case["id"],
         "kind": case["kind"],
+        "mode": "live" if live else "scripted",
+        "material_versions": checks.material_versions(case.get("materials") or {}),
         "failed_to_run": failure,
         "stages_done": len(documents),
         "publication_status": publication.get("status", ""),

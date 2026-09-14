@@ -119,7 +119,7 @@ def make_propose_node(llm: Any = None):
             ]
         )
         usage = extract_usage(answer)
-        money = charge(usage)
+        money = charge(usage, state=state)
         return {
             "proposal": nodes.text_of(answer),
             "usage": usage,
@@ -188,13 +188,14 @@ def prepare_node(state: State) -> dict:
         "format": publisher.renderer.name,
         "destination": destination(publisher),
     }
+    plan["expected"] = publisher.preview(title)
     plan["draft"] = drafts.page(
         role="updated",
         title=title,
         document=document,
         fmt=plan["format"],
         where=publisher.name,
-        preview=publisher.preview(title),
+        preview=plan["expected"],
     )
     return {"publication_plan": plan, "stage": "prepare"}
 
@@ -231,7 +232,8 @@ def publish_node(state: State) -> dict:
             "Настройки публикации изменились после подготовки. Запустите обновление заново."
         )
     try:
-        result = dict(publisher.publish(plan["title"], plan["document"]))
+        kwargs = {"expected": plan.get("expected", {})} if publisher.name == "confluence" else {}
+        result = dict(publisher.publish(plan["title"], plan["document"], **kwargs))
     except publishers.PublishError as exc:
         return failed(f"Новая версия не сохранена: {exc}")
     result["role"] = "updated"

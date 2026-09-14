@@ -17,6 +17,20 @@ permissions:
   contents: read
 
 jobs:
+  costmeter:
+    name: standalone costmeter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Library compatibility is checked separately from the application lock.
+      - run: pip install "./packages/costmeter[dev]"
+      - run: pip check
+      - run: pytest
+        working-directory: packages/costmeter
+
   check:
     name: python ${{ matrix.python }}
     runs-on: ubuntu-latest
@@ -32,12 +46,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements.lock
 
       # Та же команда, что в README: если установка сломается, это увидит CI,
       # а не человек, впервые клонировавший репозиторий. costmeter ставится
       # первым — он отдельный пакет, которого пока нет на PyPI.
-      - run: pip install -e ./packages/costmeter -e ".[dev]"
+      - run: pip install -r requirements.txt
 
       - run: ruff check .
 
@@ -56,9 +70,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements.lock
 
-      - run: pip install -e ./packages/costmeter -e ".[dev]"
+      - run: pip install -r requirements.txt
 
       # Модель подделана и отвечает по сценарию случая: прогон детерминирован
       # и ничего не стоит. Живой прогон (--live) запускается руками.
@@ -142,9 +156,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements.lock
 
-      - run: pip install -e ./packages/costmeter -e ".[uitest]"
+      - run: pip install -c requirements.lock -e ./packages/costmeter -e ".[uitest]"
 
       - run: python -m playwright install --with-deps chromium
 
@@ -170,10 +184,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements.lock
 
       - run: python -m pip install --upgrade pip pip-audit
-      - run: pip install -e ./packages/costmeter -e ".[dev]"
+      - run: pip install -r requirements.txt
       - run: pip-audit --local --skip-editable
 
   lock:

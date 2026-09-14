@@ -73,13 +73,18 @@ DOC_HOSTS = re.compile(
     r"(?![a-z0-9.-])"
 )
 
-#: Значение, которое само объявляет себя тестовым. Применяется только к самому
-#: широкому правилу — `bearer-token`: оно срабатывает на любой длинной строке
-#: после слова Bearer, и без этого фильтра проверка тонет в собственных тестах.
-#: Узкие правила (ключи с опознаваемым префиксом, блок приватного ключа) этот
-#: фильтр не проходят никогда: у них ложных срабатываний и так нет.
-SYNTHETIC = re.compile(r"(?i)(?:test|example|placeholder|dummy|changeme|sample|fake)|-")
-BROAD_KINDS = {"bearer-token"}
+#: Только точные значения в конкретных фикстурах. Дефис или слово test в
+#: произвольном токене не доказывают, что это фикстура.
+BEARER_FIXTURES = {
+    "tests/test_api_security.py": {
+        "test-only-correct-horse-battery-staple", "test-only-auth-token-with-32-characters",
+    },
+    "tests/test_ui_engine.py": {
+        "test-only-auth-token-with-32-characters", "test-only-ui-secret-with-32-characters",
+    },
+    "tests/test_server_security_integration.py": {"test-only-integration-token-32-characters"},
+}
+
 
 MAX_BYTES = 2_000_000
 
@@ -108,8 +113,6 @@ def _real(kind: str, value: str, line: str) -> bool:
     """
     if kind == "url-credentials":
         return not DOC_HOSTS.search(line)
-    if kind in BROAD_KINDS:
-        return not SYNTHETIC.search(value.split(None, 1)[-1])
     return True
 
 
@@ -119,9 +122,12 @@ def scan_text(text: str, where: str) -> list[Finding]:
     rules = _rules()
     for number, line in enumerate(text.splitlines(), start=1):
         for kind, pattern in rules:
-            match = pattern.search(line)
-            if match and _real(kind, match.group(0), line):
-                found.append(Finding(where, number, kind))
+            for match in pattern.finditer(line):
+                if (kind == "bearer-token"
+                        and match.group(0).split(None, 1)[-1] in BEARER_FIXTURES.get(where, set())):
+                    continue
+                if _real(kind, match.group(0), line):
+                    found.append(Finding(where, number, kind))
     # Блок приватного ключа занимает много строк и по одной не находится.
     for kind, pattern in rules:
         if pattern.flags & re.DOTALL and pattern.search(text):

@@ -173,6 +173,7 @@ def publish_commitment(plan: dict, previews: list[dict] | None = None) -> dict:
                 # показом и записью поднимает её, и обновление затёрло бы
                 # то, чего оператор не видел.
                 "version": preview.get("version"),
+                "page_id": str(preview.get("page_id") or ""),
             }
             for page, preview in zip(pages, previews, strict=True)
         ],
@@ -218,6 +219,8 @@ def commitment_changes(approved: dict, fresh: dict) -> list[str]:
                 f"{page.get('title')}: страница изменилась после предпросмотра "
                 f"(версия {was.get('version')} → {page.get('version')})"
             )
+        if was.get("page_id") != page.get("page_id"):
+            changes.append(f"{page.get('title')}: идентификатор страницы изменился")
     return changes
 
 
@@ -518,9 +521,13 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
             return skip("rejected", reason)
 
     results = []
+    approved_pages = {p["title"]: p for p in (state.get("publication_plan") or {}).get("pages", [])}
     for page in plan["pages"]:
         try:
-            result = dict(plan["publisher"].publish(page["title"], page["document"]))
+            kwargs = {}
+            if cfg.publish_require_approval() and plan["publisher"].name == "confluence":
+                kwargs["expected"] = approved_pages.get(page["title"], {})
+            result = dict(plan["publisher"].publish(page["title"], page["document"], **kwargs))
         except publishers.PublishError as exc:
             result = {"status": "failed", "title": page["title"], "reason": str(exc)}
         result["role"] = page["role"]

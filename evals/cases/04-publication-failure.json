@@ -21,6 +21,19 @@
   "expect": {
     "publication_status": "skipped",
     "publication_mentions": "не заданы в .env",
-    "max_published_files": 0
-  }
+    "max_published_files": 0,
+    "min_grounded_claims": 1,
+    "max_unsupported_claims": 3
+  },
+  "material_versions": {
+    "требования.md": "11c86554a6cedfd933ceccd1f5e0ba359dbff1ba9d0d9dde83c3e96264d38db0"
+  },
+  "facts": [
+    {
+      "pattern": "По\\ требования\\.md:\\ запрос\\ выгрузки\\ должен\\ возвращать\\ идентификатор\\ задания\\.",
+      "sources": {
+        "требования.md": "Выгрузка отчёта должна возвращать идентификатор задания."
+      }
+    }
+  ]
 }

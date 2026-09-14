@@ -47,7 +47,7 @@ npm --prefix web ci
 Для Anthropic после основной установки добавьте адаптер:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[anthropic]"
+.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[anthropic]"
 ```
 
 На Linux/macOS замените путь к Python на `.venv/bin/python`.

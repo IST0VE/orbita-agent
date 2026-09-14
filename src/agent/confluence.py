@@ -680,7 +680,8 @@ def _checked(title: str, storage_html: str) -> tuple[str, str]:
         raise ConfluenceError(str(exc)) from exc
 
 
-def publish_page(title: str, storage_html: str, settings: Settings | None = None) -> dict:
+def publish_page(title: str, storage_html: str, settings: Settings | None = None,
+                 *, expected: dict | None = None) -> dict:
     """
     Upsert по заголовку: страница с таким заголовком есть — обновляем с
     инкрементом версии; нет — создаём (под CONFLUENCE_PARENT_PAGE_ID, если задан).
@@ -694,9 +695,21 @@ def publish_page(title: str, storage_html: str, settings: Settings | None = None
     status = ""
 
     def save(existing: dict | None) -> dict:
-        # Заново найденная версия важна и при повторе после блокировки:
-        # обновление уходит с тем номером, который сейчас на сервере.
         nonlocal status
+        if expected is not None:
+            action = expected.get("action")
+            if action == "create" and existing:
+                raise ConfluenceError("страница появилась после подтверждения: подтвердите заново")
+            if action == "update" and (
+                not existing or not expected.get("page_id") or not expected.get("version")
+                or str(existing.get("id")) != expected["page_id"]
+                or (existing.get("version") or {}).get("number") != expected["version"]
+            ):
+                raise ConfluenceError("страница изменилась после подтверждения: подтвердите заново")
+            if action not in {"create", "update"}:
+                raise ConfluenceError("состояние страницы неизвестно: повторите предпросмотр и подтверждение")
+        # PUT использует ровно эту версию + 1. Конкурирующая запись после GET
+        # будет отклонена сервером; повтор не вправе принять следующую версию.
         if existing:
             status = "updated"
             return api.update(existing, title, storage_html, s)

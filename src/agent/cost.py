@@ -75,7 +75,7 @@ def price_state() -> dict:
     }
 
 
-def charge(usage: dict) -> dict:
+def charge(usage: dict, *, state: dict | None = None) -> dict:
     """
     Деньги за один вызов по тарифу, действующему в момент вызова.
 
@@ -91,13 +91,24 @@ def charge(usage: dict) -> dict:
     """
     price = cfg.price_info()
     if not price.complete:
-        return {"usd": 0.0, "naive_usd": 0.0, "priced_calls": 0, "unpriced_calls": 1}
-    return {
-        "usd": estimate_cost(usage),
-        "naive_usd": naive_cost(usage),
-        "priced_calls": 1,
-        "unpriced_calls": 0,
-    }
+        money = {"usd": 0.0, "naive_usd": 0.0, "priced_calls": 0, "unpriced_calls": 1}
+    else:
+        money = {"usd": estimate_cost(usage), "naive_usd": naive_cost(usage),
+                 "priced_calls": 1, "unpriced_calls": 0}
+    # Старый checkpoint содержит только токены. Фиксируем прежнюю оценку один
+    # раз, вместе с первым новым начислением. Нулевой словарь reducer тоже
+    # означает отсутствие истории; priced/unpriced_calls отличают бесплатный
+    # уже учтённый вызов от ещё не мигрированной истории.
+    old = (state or {}).get("usage") or {}
+    if old and not any(((state or {}).get("spend") or {}).values()):
+        calls = int(old.get("calls", 0))
+        if price.complete:
+            money["usd"] += estimate_cost(old)
+            money["naive_usd"] += naive_cost(old)
+            money["estimated_calls"] = calls
+        else:
+            money["unpriced_calls"] += calls
+    return money
 
 
 def spent_usd(state: dict) -> float:
@@ -109,7 +120,7 @@ def spent_usd(state: dict) -> float:
     доступным ответом.
     """
     spend = state.get("spend") or {}
-    if spend:
+    if any(spend.values()):
         return float(spend.get("usd", 0.0))
     return estimate_cost(state.get("usage") or {})
 
@@ -147,7 +158,7 @@ def cost_summary(usage: dict, spend: dict | None = None) -> dict:
     хранения, которое рано или поздно разъедется с тем, по которому считает
     граф. Поэтому перевод делается здесь, а интерфейсы показывают готовое.
     """
-    spend = spend or {}
+    spend = spend if spend and any(spend.values()) else {}
     return {
         # Накопленное по вызовам, если оно есть: тариф мог меняться по дороге,
         # и пересчёт истории текущей ценой — это другая история, не эта.
@@ -157,6 +168,7 @@ def cost_summary(usage: dict, spend: dict | None = None) -> dict:
         # стоимость в интерфейсе читается как «бесплатно».
         "price": price_state(),
         "unpriced_calls": int(spend.get("unpriced_calls", 0)),
+        "estimated_calls": int(spend.get("estimated_calls", 0)),
         "hit_rate": hit_rate(usage),
         # Лимит треда: по нему интерфейс рисует, сколько бюджета уже съедено.
         # 0 означает «без лимита» — ровно как в BUDGET_USD_PER_THREAD.

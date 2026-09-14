@@ -20,5 +20,8 @@
     "min_gaps_marked": 4,
     "max_unsupported_claims": 1,
     "publication_status": "created"
+  },
+  "material_versions": {
+    "заметка.md": "abb049dc16b27e1cc52f1bddd612da06109c1379329e4c233709d3e24eca1055"
   }
 }

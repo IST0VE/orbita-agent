@@ -86,6 +86,9 @@ def sla_verdict(state: dict, settings, *, result: str, missing: list[str]) -> di
         )
 
     capacity = state.get("capacity_assessment") or {}
+    if simulated:
+        capacity = {**capacity, "status": "INCONCLUSIVE", "maximum_stable_rps": None,
+                    "reason": "симулированная телеметрия не подтверждает устойчивую RPS"}
     return {
         "result": result,
         "reasons": list(dict.fromkeys(reasons)),
@@ -161,7 +164,8 @@ def assess(state: dict, settings) -> dict:
                 completed=state.get("test_status") == "completed", has_sla=bool(limits))
     verdict = sla_verdict(state, settings, result=result, missing=missing)
 
-    capacity = state.get("capacity_assessment", {})
+    capacity = {**state.get("capacity_assessment", {}),
+                **{key: verdict["capacity"][key] for key in ("status", "maximum_stable_rps", "reason")}}
     # Наблюдаемая устойчивая RPS — утверждение о плато. Симулированные ряды
     # его не подтверждают, поэтому число не показывается: пустое значение
     # честнее числа, которое нечем обосновать.
@@ -170,6 +174,7 @@ def assess(state: dict, settings) -> dict:
     return {"analysis_result": verdict["result"], "missing_parameters": missing,
             "execution_status": execution_status(state),
             "sla_verdict": verdict,
+            "capacity_assessment": capacity,
             "diagnostic_status": "PARTIAL" if diagnostics or missing else "COMPLETE",
             "diagnostic_gaps": list(dict.fromkeys(diagnostics)),
             "maximum_stable_rps": maximum}

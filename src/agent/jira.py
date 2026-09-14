@@ -50,6 +50,10 @@ class JiraError(RuntimeError):
     """Задача не прочитана: сеть, авторизация или отказ API."""
 
 
+class JiraUnknown(JiraError):
+    """Запись могла состояться: повтор допустим только после сверки."""
+
+
 class JiraBlocked(JiraError):
     """Запрос отбил шлюз перед Jira: сам трекер его не видел.
 
@@ -178,6 +182,7 @@ def call(method: str, path: str, s: Settings, **kwargs) -> dict:
     """
     url = s.base_url + path
     headers, auth = _auth(s)
+    writing = method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
     try:
         response = request_pacing.send(
             method, url, headers=headers, auth=auth, timeout=s.timeout_s,
@@ -186,7 +191,7 @@ def call(method: str, path: str, s: Settings, **kwargs) -> dict:
     except requests.RequestException as exc:
         # Разорванное соединение — та же блокировка, только до HTTP-ответа.
         blocked = request_pacing.transport_block(exc)
-        error = JiraBlocked if blocked else JiraError
+        error = JiraUnknown if writing else JiraBlocked if blocked else JiraError
         advice = "; повторите позже или увеличьте паузу ATLASSIAN_REQUEST_INTERVAL_S" if blocked else ""
         raise error(
             f"{method} {path}: сеть недоступна — {request_pacing.transport_reason(exc)}"
@@ -194,17 +199,22 @@ def call(method: str, path: str, s: Settings, **kwargs) -> dict:
         ) from exc
 
     if 300 <= response.status_code < 400:
-        raise JiraError(f"{method} {path}: HTTP redirect запрещён")
+        error = JiraUnknown if writing else JiraError
+        raise error(f"{method} {path}: HTTP redirect запрещён")
     if response.status_code == 404:
         raise JiraError(f"{method} {path}: объект не найден (HTTP 404)")
     if response.status_code >= 400:
         # Отказ шлюза отделён типом, а не текстом: по нему решают, повторять ли.
-        error = JiraBlocked if request_pacing.block_reason(response) else JiraError
+        error = (JiraUnknown if writing and (response.status_code >= 500 or response.status_code == 408) else
+                 JiraBlocked if request_pacing.block_reason(response) else JiraError)
         raise error(f"{method} {path}: HTTP {response.status_code} — {_reason(response, s)}")
+    if response.status_code == 204 or (writing and not response.content):
+        return {}
     try:
         return response.json()
     except ValueError as exc:
-        raise JiraError(f"{method} {path}: ответ не является JSON") from exc
+        error = JiraUnknown if writing else JiraError
+        raise error(f"{method} {path}: ответ не является JSON") from exc
 
 
 # --------------------------------------------------------------------------

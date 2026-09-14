@@ -267,7 +267,7 @@ def make_role_node(
         # тарифом этого вызова, и дальше только складываются: пересчёт итоговых
         # счётчиков текущей ценой переоценил бы историю при смене модели.
         turn = extract_usage(response)
-        money = charge(turn)
+        money = charge(turn, state=state)
         update = {
             "messages": [response],
             "usage": turn,

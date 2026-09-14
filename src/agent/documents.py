@@ -29,7 +29,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent import config as cfg
 from agent import confluence, jira, render, roles
-from agent.cost import estimate_cost, hit_rate
+from agent.cost import hit_rate, spent_usd
 from agent.pipeline import Pipeline
 from agent.state import State
 
@@ -99,7 +99,7 @@ def page_title(state: State, config: RunnableConfig, role: roles.Role | None = N
     return f"{cfg.agent_name()}: {topic or 'задача без описания'} [{thread_id}]{stage}"
 
 
-def _usage_table(usage: dict, renderer: render.Renderer | None = None) -> str:
+def _usage_table(usage: dict, renderer: render.Renderer | None = None, spend: dict | None = None) -> str:
     rows = [
         ("Вызовов LLM", usage.get("calls", 0)),
         ("Вход из кеша, токенов", usage.get("cache_hit", 0)),
@@ -112,7 +112,7 @@ def _usage_table(usage: dict, renderer: render.Renderer | None = None) -> str:
     rows += [
         ("Выход, токенов", usage.get("output", 0)),
         ("Cache hit rate", f"{hit_rate(usage):.1f}%"),
-        ("Стоимость", f"${estimate_cost(usage):.6f}"),
+        ("Стоимость", f"${spent_usd({'usage': usage, 'spend': spend}):.6f}"),
     ]
     return (renderer or render.STORAGE).table(rows)
 
@@ -234,7 +234,7 @@ def render_body(state: State, renderer: render.Renderer | None = None) -> str:
         parts += _render_turn(turn, renderer)
 
     parts.append(renderer.heading("Расход токенов по треду"))
-    parts.append(_usage_table(state.get("usage") or {}, renderer))
+    parts.append(_usage_table(state.get("usage") or {}, renderer, state.get("spend")))
     return renderer.join(parts)
 
 
@@ -293,7 +293,7 @@ def render_stage_body(
         _markup(task_of(state), renderer),
         *_stage_section(role, state, renderer),
         renderer.heading("Расход токенов по треду"),
-        _usage_table(state.get("usage") or {}, renderer),
+        _usage_table(state.get("usage") or {}, renderer, state.get("spend")),
     ]
     return renderer.join(parts)
 
@@ -316,7 +316,7 @@ def render_pipeline_body(
     for role in pipeline.done(state.get("artifacts")):
         parts += _stage_section(role, state, renderer)
     parts.append(renderer.heading("Расход токенов по треду"))
-    parts.append(_usage_table(state.get("usage") or {}, renderer))
+    parts.append(_usage_table(state.get("usage") or {}, renderer, state.get("spend")))
     return renderer.join(parts)
 
 

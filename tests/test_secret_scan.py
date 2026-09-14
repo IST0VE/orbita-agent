@@ -91,11 +91,11 @@ def test_credentials_to_a_real_host_are_findings(line: str):
     assert {item.kind for item in scan.scan_text(line, "где-то")} == {"url-credentials"}
 
 
-def test_a_test_bearer_token_is_not_a_finding():
-    """Самое широкое правило не должно топить проверку в собственных тестах."""
+def test_a_fixture_is_allowed_only_in_its_named_file():
     line = 'headers={"authorization": "Bearer test-only-correct-horse-battery-staple"}'
 
-    assert scan.scan_text(line, "tests/где-то.py") == []
+    assert scan.scan_text(line, "tests/test_api_security.py") == []
+    assert scan.scan_text(line, "tests/где-то.py")
 
 
 def test_a_real_looking_bearer_token_is_a_finding():

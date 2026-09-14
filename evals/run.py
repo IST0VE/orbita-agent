@@ -35,7 +35,7 @@ BASELINE = HERE / "baseline.json"
 #: Показатели, которые должны расти, и те, которые должны падать, перечислены
 #: отдельно: «отклонение на 10%» без направления разрешило бы вдвое меньше
 #: найденных противоречий.
-HIGHER_IS_BETTER = ("source_accuracy", "contradictions_mentioned", "gaps_marked", "stages_done")
+HIGHER_IS_BETTER = ("source_accuracy", "grounded_claims", "verified_contradictions", "gaps_marked", "stages_done")
 LOWER_IS_BETTER = ("unsupported_claims",)
 #: Ресурсы: рост дороже и дольше — тоже ухудшение, но с запасом на дрожание.
 BUDGETS = {"usd": 1.5, "seconds": 3.0}
@@ -48,8 +48,12 @@ def expectations(case: dict, result: dict) -> list[str]:
     expect = case.get("expect") or {}
     if result["failed_to_run"]:
         return [f"{result['id']}: прогон не состоялся ({result['failed_to_run']})"]
+    if result.get("source_version_errors"):
+        problems.append(f"{result['id']}: версии материалов не совпадают с разметкой случая")
     checks = {
         "min_source_accuracy": ("source_accuracy", lambda a, b: a >= b, "ниже"),
+        "min_grounded_claims": ("grounded_claims", lambda a, b: a >= b, "меньше"),
+        "min_verified_contradictions": ("verified_contradictions", lambda a, b: a >= b, "меньше"),
         "min_gaps_marked": ("gaps_marked", lambda a, b: a >= b, "меньше"),
         "min_contradictions_mentioned": ("contradictions_mentioned", lambda a, b: a >= b, "меньше"),
         "max_unsupported_claims": ("unsupported_claims", lambda a, b: a <= b, "больше"),
@@ -93,12 +97,12 @@ def regressions(base: dict, now: dict) -> list[str]:
 
 
 def report(now: dict) -> str:
-    rows = ["| случай | этапов | ссылки | без опоры | противоречия | пробелы | $ | с |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    rows = ["| случай | этапов | ссылки | с опорой | без опоры | проверенные противоречия | пробелы | $ | с |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case_id, item in now["cases"].items():
         rows.append(
             f"| {case_id} | {item['stages_done']} | {item['source_accuracy']} | "
-            f"{item['unsupported_claims']} | {item['contradictions_mentioned']} | "
+            f"{item['grounded_claims']} | {item['unsupported_claims']} | {item['verified_contradictions']} | "
             f"{item['gaps_marked']} | {item['usd']} | {item['seconds']} |"
         )
     return "\n".join(rows)
@@ -111,6 +115,8 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="записать результат как базовый")
     parser.add_argument("--json", action="store_true", help="вывести результат как JSON")
     args = parser.parse_args()
+    if args.live and args.update:
+        parser.error("--live не перезаписывает scripted baseline; сохраните результат через --json")
 
     now = harness.run(args.case, live=args.live)
     if args.json:
@@ -124,15 +130,15 @@ def main() -> int:
         problems += expectations(cases[case_id], result)
 
     if args.update:
-        BASELINE.write_text(json.dumps(now, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(f"\nбазовый прогон записан: {BASELINE.name}")
         if problems:
-            print("но ожидания случаев не выполнены:")
+            print("базовый прогон не записан: ожидания случаев не выполнены:")
             print("\n".join("  " + item for item in problems))
             return 1
+        BASELINE.write_text(json.dumps(now, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"\nбазовый прогон записан: {BASELINE.name}")
         return 0
 
-    if BASELINE.is_file() and not args.case:
+    if BASELINE.is_file() and not args.case and not args.live:
         problems += regressions(json.loads(BASELINE.read_text(encoding="utf-8")), now)
     elif not BASELINE.is_file():
         print("\nбазового прогона нет: запустите с --update")

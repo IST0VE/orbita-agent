@@ -5,7 +5,8 @@
 задают. Тесты проверяют, что код делает то, что написано; здесь проверяется,
 что получившийся документ пригоден для работы.
 
-    source_accuracy       доля существенных выводов со ссылкой на источник.
+    source_accuracy       доля существенных выводов со ссылкой на материал
+                          закреплённой версии конкретного случая.
                           Вывод без источника нельзя проверить, а проверять
                           его будет человек, которому его отдали;
     contradictions        найдено ли заложенное противоречие материалов.
@@ -28,11 +29,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 #: Ссылка на источник: имя файла материалов, ключ Jira или адрес страницы.
 SOURCE = re.compile(
-    r"(?:\b[\w-]+\.(?:md|txt|json|csv|yaml|yml)\b)|(?:\b[A-Z][A-Z0-9]+-\d+\b)|(?:https?://\S+)"
+    r"https?://[^\s)\]>]+|\b[\w./-]+\.(?:md|txt|json|csv|yaml|yml)\b"
+    r"(?:@sha256:[a-fA-F0-9]+)?|\b[A-Z][A-Z0-9]+-\d+\b"
 )
 
 #: Явное предположение: утверждение, поданное как допущение, а не как факт.
@@ -70,18 +73,60 @@ def statements(text: str) -> list[str]:
     return found
 
 
-def measure(documents: dict[str, str]) -> dict:
+def material_versions(materials: dict[str, str]) -> dict[str, str]:
+    return {name: hashlib.sha256(body.encode("utf-8")).hexdigest() for name, body in materials.items()}
+
+
+def _references(line: str) -> list[str]:
+    return [match.group(0).rstrip(".,;:") for match in SOURCE.finditer(line)]
+
+
+def _annotations_match(line: str, annotations: list[dict], materials: dict, valid: set[str]) -> bool:
+    for annotation in annotations:
+        sources = annotation.get("sources") or {}
+        # Annotation is tied to both the source version and a verbatim evidence
+        # span. Editing a fixture requires reviewing its facts, not just a hash.
+        if (not sources or not set(sources) <= valid
+                or any(not quote or quote not in materials[name] for name, quote in sources.items())):
+            continue
+        refs = {ref.split("@sha256:", 1)[0] for ref in _references(line)}
+        if set(sources) <= refs and re.fullmatch(annotation["pattern"], line, re.IGNORECASE):
+            return True
+    return False
+
+
+def measure(documents: dict[str, str], *, materials: dict | None = None,
+            versions: dict | None = None, facts: list[dict] | None = None,
+            contradictions: list[dict] | None = None) -> dict:
     """Показатели по всем документам прогона."""
     text = "\n".join(documents.values())
     claims = [line for document in documents.values() for line in statements(document)]
-    sourced = [line for line in claims if SOURCE.search(line)]
+    materials, versions = materials or {}, versions or {}
+    actual = material_versions(materials)
+    valid = {name for name, digest in actual.items() if versions.get(name) == digest}
+
+    def valid_ref(ref: str) -> bool:
+        name, _, digest = ref.partition("@sha256:")
+        return name in valid and (not digest or digest == actual[name])
+
+    cited = [line for line in claims if _references(line)]
+    sourced = [line for line in cited if all(valid_ref(ref) for ref in _references(line))]
+    grounded = [line for line in sourced if _annotations_match(line, facts or [], materials, valid)]
     assumed = [line for line in claims if ASSUMPTION.search(line) or GAP.search(line)]
-    unsupported = [line for line in claims if line not in sourced and line not in assumed]
+    unsupported = [line for line in claims if line not in grounded and line not in assumed]
     return {
+        "source_version_errors": sorted(name for name in set(materials) | set(versions)
+                                        if name not in valid),
         "claims": len(claims),
         "sourced_claims": len(sourced),
+        "citation_presence": round(len(cited) / len(claims), 3) if claims else 0.0,
         "source_accuracy": round(len(sourced) / len(claims), 3) if claims else 0.0,
+        "grounded_claims": len(grounded),
         "unsupported_claims": len(unsupported),
+        "verified_contradictions": sum(
+            any(_annotations_match(line.strip().lstrip("-*•").strip(), [annotation], materials, valid)
+                for line in text.splitlines()) for annotation in contradictions or []
+        ),
         "contradictions_mentioned": len(CONTRADICTION.findall(text)),
         "gaps_marked": len(GAP.findall(text)),
         "chars": len(text),

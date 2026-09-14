@@ -130,7 +130,7 @@ SLA: p95 <= 800 мс, доля ошибок <= 1%.
 Этот режим нужен для обновления иллюстраций документации. Он требует работающих стенда, runner, backend и frontend, extra `[docs]` и Chromium Playwright:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[docs]"
+.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[docs]"
 .venv\Scripts\python.exe -m playwright install chromium
 .venv\Scripts\python.exe scripts/shoot_nt_run_portal.py --out .tmp/nt-run-portal
 ```

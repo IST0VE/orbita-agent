@@ -178,7 +178,7 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
                         decision = {}
                 except ValueError:
                     decision = {}
-            money = charge(usage)
+            money = charge(usage, state=state)
             return {"run_history": [*history, response], "decision": decision,
                     "planning_steps": state["planning_steps"] + 1,
                     "usage": usage, "spend": money,
@@ -422,7 +422,8 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
             # Keep terminal stopped/failed status: historical assessment cannot turn it into PASSED.
             child = nt_graph.build_graph(sources=sources).compile()
             analysis = await child.ainvoke({**result, "messages": [HumanMessage("Проанализируй фактический период НТ")],
-                                           "usage": state.get("usage", {})}, child_config)
+                                           "usage": state.get("usage", {}),
+                                           "spend": state.get("spend", {})}, child_config)
         compact = {k: analysis.get(k) for k in ("analysis_result", "diagnostic_status", "diagnostic_gaps",
                                                 "recommendations", "root_cause_hypotheses")}
         artifacts = {f"analysis_{state['attempt']}": analysis.get("artifacts", {}).get("report", "Анализ недоступен")}

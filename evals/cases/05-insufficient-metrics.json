@@ -16,5 +16,8 @@
     "min_gaps_marked": 4,
     "max_unsupported_claims": 1,
     "publication_status": "created"
+  },
+  "material_versions": {
+    "измерения.md": "70467fcf7f46f680217680515d2e8312a416d7ed858efbb7c43da29f3729bb9a"
   }
 }

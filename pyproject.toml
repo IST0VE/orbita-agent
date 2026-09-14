@@ -94,6 +94,8 @@ where = ["src"]
 # всеми: пакет отдельный, но репозиторий один, и красный CI должен быть один.
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/costmeter/tests"]
+# Repository helpers (evals/scripts) must import with both pytest entry points.
+pythonpath = ["."]
 addopts = "-q --strict-markers"
 
 [tool.ruff]

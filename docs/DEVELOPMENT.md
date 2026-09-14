@@ -4,6 +4,8 @@
 
 Начните с [локальной установки](GETTING_STARTED.md). Все команды ниже запускаются из корня репозитория. Общая схема компонентов — в [архитектуре](ARCHITECTURE.md).
 
+`pip install -r requirements.txt` устанавливает редактируемые пакеты с runtime-ограничениями из `requirements.lock`. Те же версии использует CI приложения и Docker. При добавлении extras передавайте `-c requirements.lock`; dev-инструменты в runtime-lock не входят. Совместимость отдельной библиотеки costmeter проверяется самостоятельной работой CI без lock приложения.
+
 ## Основные проверки
 
 Windows PowerShell:
@@ -31,7 +33,7 @@ git diff --check
 Браузерные регрессии стоят в CI и запускаются локально после сборки:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[uitest]"
+.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[uitest]"
 .venv\Scripts\python.exe -m playwright install chromium
 .venv\Scripts\python.exe web/tests/browser_regressions.py
 ```
@@ -109,7 +111,7 @@ PUBLISH_TARGET=none PIPELINE_REQUIRE_APPROVAL=0 .venv/bin/python run_demo.py
 Для PostgreSQL дополнительно установите extra:
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[postgres]"
+.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[postgres]"
 ```
 
 Задайте `CHECKPOINT_BACKEND=postgres` и доступный вашему процессу `POSTGRES_URI`. Внутри Compose имя хоста — `postgres`; с хоста такой адрес недоступен. Штатный Compose не публикует порт базы на localhost.

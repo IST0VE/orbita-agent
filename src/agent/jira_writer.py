@@ -428,9 +428,9 @@ def create_issue(
         raise JiraError(str(exc)) from exc
 
     data = _get("POST", f"{s.api_path}/issue", s, json={"fields": fields})
-    key = str(data.get("key") or "")
+    key = str(data.get("key") or "") if isinstance(data, dict) else ""
     if not key:
-        raise JiraError("трекер не вернул ключ созданной задачи")
+        raise jira.JiraUnknown("трекер не вернул ключ созданной задачи")
     return {
         "local": item.local,
         "key": key,
@@ -492,13 +492,16 @@ def _recover(
     except JiraError as exc:
         journal.unresolved(run, kind, local, f"сверка не удалась: {exc}")
         return "unknown", None, str(exc)
-    if found:
+    if len(found) == 1:
         issue = found[0]
         journal.finish(run, kind, local, remote=issue["key"], url=issue["url"],
                        detail="восстановлено сверкой по метке операции")
         return "done", issue, ""
-    # Сверка прошла и ничего не нашла: предыдущий POST до трекера не доехал.
-    return "send", None, ""
+    # Поисковый индекс может отставать от записи. Пустой результат не доказывает
+    # отказ POST; несколько совпадений также требуют проверки оператором.
+    reason = "сверка не установила единственную задачу по метке операции"
+    journal.unresolved(run, kind, local, reason)
+    return "unknown", None, reason
 
 
 def create_issues(
@@ -515,9 +518,8 @@ def create_issues(
 
     Порядок берётся из плана: эпики первыми, потому что ключ родителя нужен
     настоящий. Отказ на одной карточке не отменяет остальные — он записывается
-    в `failed` с причиной. Ребёнок, чей родитель не завёлся, всё равно
-    заводится, но уже без родителя: задача без эпика полезнее отсутствующей
-    задачи, а расхождение видно в предупреждениях.
+    в `failed` с причиной. Создание ребёнка откладывается до создания родителя,
+    чтобы повтор мог завершить всю иерархию без осиротевших задач.
 
     `run` — устойчивый ключ прогона. С ним каждая операция проходит через
     журнал (`jira_journal`): повтор узла после падения между принятым POST и
@@ -575,7 +577,10 @@ def create_issues(
             warnings.append(f"{item.local}: экран создания требует незаполненные поля: " + ", ".join(missing))
         parent_key = keys.get(item.parent, "")
         if item.parent and not parent_key:
-            warnings.append(f"{item.local}: родитель {item.parent} не заведён, задача без родителя")
+            reason = f"родитель {item.parent} не заведён, создание отложено"
+            warnings.append(f"{item.local}: {reason}")
+            failed.append({"local": item.local, "summary": item.summary, "reason": reason})
+            continue
         # Запись «отправляем» делается ДО запроса. Журнал, заполняемый после
         # ответа, не знает ровно о том случае, ради которого он заведён:
         # о принятом POST, ответ на который не дошёл.
@@ -595,15 +600,27 @@ def create_issues(
                 operation=operation,
             )
         except JiraError as exc:
+            if isinstance(exc, jira.JiraUnknown):
+                if book is not None:
+                    book.unresolved(run, "issue", item.local, str(exc))
+                unresolved.append({"local": item.local, "summary": item.summary, "reason": str(exc)})
+                warnings.append(f"{item.local}: результат отправки неизвестен ({exc}); повтор требует сверки")
+                continue
             if book is not None:
                 book.fail(run, "issue", item.local, str(exc))
             failed.append({"local": item.local, "summary": item.summary, "reason": str(exc)})
             continue
         if book is not None:
             book.finish(run, "issue", item.local, remote=result["key"], url=result["url"])
+            if parent_key:
+                book.begin(run, "parent", item.local)
+                book.finish(run, "parent", item.local, remote=parent_key)
         keys[item.local] = result["key"]
         created.append(result)
 
+    parent_warnings, parent_unresolved = _restore_parents(plan, keys, s, schema, book, run)
+    warnings += parent_warnings
+    unresolved += parent_unresolved
     link_warnings, link_unresolved = _link_dependencies(plan, keys, s, book, run)
     warnings += link_warnings
     unresolved += link_unresolved
@@ -619,6 +636,46 @@ def create_issues(
         # отказ означает «не заведено», неопределённость — «неизвестно».
         result["unresolved"] = unresolved
     return result
+
+
+def _restore_parents(plan, keys, s, schema, book, run) -> tuple[list[str], list[dict]]:
+    """Repair children created by older versions without their parent.
+
+    Parent assignment is an idempotent field update. Read it before retrying
+    so that a lost PUT response is reconciled instead of reported as failure.
+    """
+    warnings, unresolved = [], []
+    if book is None:
+        return warnings, unresolved
+    for item in plan.items:
+        child, parent = keys.get(item.local), keys.get(item.parent)
+        if not child or not item.parent:
+            continue
+        record = book.record(run, "parent", item.local)
+        if record and record["state"] == jira_journal.COMPLETED and record["remote"] == parent:
+            continue
+        try:
+            if not parent:
+                raise JiraError(f"родитель {item.parent} пока не создан")
+            field = schema.get("epic_link") if item.type != jira_plan.SUBTASK else None
+            field = field or "parent"
+            fields = _get("GET", f"{s.api_path}/issue/{child}", s, params={"fields": field}).get("fields") or {}
+            current = fields.get(field)
+            current_key = current.get("key") if isinstance(current, dict) else current
+            book.begin(run, "parent", item.local)
+            if current_key != parent:
+                if current_key:
+                    raise JiraError("у задачи уже другой родитель; требуется проверка оператором")
+                value = {"key": parent} if field == "parent" else parent
+                _get("PUT", f"{s.api_path}/issue/{child}", s,
+                     json={"fields": outgoing.guard({field: value}, "fields")})
+            book.finish(run, "parent", item.local, remote=parent)
+        except JiraError as exc:
+            book.begin(run, "parent", item.local)
+            book.unresolved(run, "parent", item.local, str(exc))
+            warnings.append(f"{child}: родительская связь не подтверждена ({exc})")
+            unresolved.append({"local": item.local, "summary": "родительская связь", "reason": str(exc)})
+    return warnings, unresolved
 
 
 def _link_dependencies(
@@ -655,11 +712,12 @@ def _link_dependencies(
                 record = book.record(run, "link", pair)
                 if record and record["state"] == jira_journal.COMPLETED:
                     continue
-                if record and record["state"] == jira_journal.PENDING:
+                if record and record["state"] in {jira_journal.PENDING, jira_journal.UNKNOWN}:
                     try:
                         if jira.find_link(blocker, blocked, s):
                             book.finish(run, "link", pair, detail="связь уже существует")
                             continue
+                        raise jira.JiraUnknown("сверка пока не подтвердила связь")
                     except JiraError as exc:
                         book.unresolved(run, "link", pair, f"сверка не удалась: {exc}")
                         unresolved.append({"local": pair, "summary": "связь «блокирует»",
@@ -674,8 +732,14 @@ def _link_dependencies(
                 link(blocker, blocked, s)
             except JiraError as exc:
                 if book is not None:
-                    book.fail(run, "link", pair, str(exc))
-                warnings.append(f"{blocker} → {blocked}: связь не создана ({exc})")
+                    if isinstance(exc, jira.JiraUnknown):
+                        book.unresolved(run, "link", pair, str(exc))
+                    else:
+                        book.fail(run, "link", pair, str(exc))
+                if isinstance(exc, jira.JiraUnknown):
+                    unresolved.append({"local": pair, "summary": "связь «блокирует»", "reason": str(exc)})
+                outcome = "результат связи неизвестен" if isinstance(exc, jira.JiraUnknown) else "связь не создана"
+                warnings.append(f"{blocker} → {blocked}: {outcome} ({exc})")
                 continue
             if book is not None:
                 book.finish(run, "link", pair)

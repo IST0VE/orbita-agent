@@ -81,10 +81,11 @@ class ConfluencePublisher:
     def missing(self) -> list[str]:
         return confluence.missing_vars()
 
-    def publish(self, title: str, document: str) -> dict:
+    def publish(self, title: str, document: str, *, expected: dict | None = None) -> dict:
         title, document = checked(title, document)
         try:
-            return confluence.publish_page(title, document)
+            kwargs = {"expected": expected} if expected is not None else {}
+            return confluence.publish_page(title, document, **kwargs)
         except confluence.ConfluenceError as exc:
             raise PublishError(str(exc)) from exc
 

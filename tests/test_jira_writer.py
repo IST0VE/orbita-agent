@@ -277,7 +277,7 @@ def test_one_rejected_card_does_not_cancel_the_rest():
 
 
 @responses.activate
-def test_a_child_of_a_failed_epic_is_created_without_a_parent():
+def test_a_child_of_a_failed_epic_is_deferred():
     register_types()
     responses.add(responses.POST, f"{BASE}{API}/issue", status=400, json={"errorMessages": ["нет"]})
     responses.add(responses.POST, f"{BASE}{API}/issue", json={"key": "ORB-2"}, status=201)
@@ -291,9 +291,10 @@ def test_a_child_of_a_failed_epic_is_created_without_a_parent():
         settings=CLOUD,
     )
 
-    assert "parent" not in sent(1)
-    assert len(result["created"]) == 1
-    assert any("без родителя" in warning for warning in result["warnings"])
+    assert len([c for c in responses.calls if c.request.method == "POST"]) == 1
+    assert result["created"] == []
+    assert [item["local"] for item in result["failed"]] == ["EPIC-1", "T-1"]
+    assert any("создание отложено" in warning for warning in result["warnings"])
 
 
 def test_creating_without_a_project_is_refused_before_the_network():

@@ -152,8 +152,8 @@ def check_commitment(data: dict, capabilities: dict, approved: dict | None) -> d
     только в графе означала бы, что достаточно обратиться к runner мимо графа.
     """
     fresh = commitment_of(data, capabilities)
-    if approved is None:
-        return fresh
+    if not approved:
+        raise ValueError("approved run parameters are required")
     if not isinstance(approved, dict) or fingerprint(approved) != fingerprint(fresh):
         raise ValueError("approved run parameters no longer match the runner configuration")
     return fresh
