@@ -33,6 +33,13 @@ from __future__ import annotations
 from langchain_core.language_models import BaseChatModel
 
 from agent import config as cfg
+from agent import llm_pacing
+
+# Ритм обращений к модели: один обработчик на процесс, потому что минутное окно
+# шлюз считает по ключу, а не по клиенту. Клиентов ниже несколько — по одному на
+# сочетание провайдера, модели и temperature, — и свой счётчик у каждого означал
+# бы превышение ровно там, где конвейер переключает роль на другую модель.
+_pacer = llm_pacing.Pacer()
 
 
 def _deepseek(model: str, kwargs: dict) -> BaseChatModel:
@@ -116,6 +123,11 @@ def build_llm(
     client = _CLIENTS.get(key)
     if client is None:
         name, model_name, temp = key
-        client = _FACTORIES[name](model_name, dict(cfg.llm_kwargs(), temperature=temp))
+        # callbacks — не наблюдение, а управление: `Pacer` придерживает запрос
+        # до отправки, пока в минутном окне шлюза не освободится место. Вешается
+        # он здесь, на клиента, а не на вызовы: звать модель в проекте умеют
+        # больше десяти мест, и каждое из них обошло бы обёртку.
+        kwargs = dict(cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer])
+        client = _FACTORIES[name](model_name, kwargs)
         _CLIENTS[key] = client
     return client
