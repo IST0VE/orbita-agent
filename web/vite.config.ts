@@ -31,6 +31,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (id.includes("@xyflow") || id.includes("d3-")) return "graph";
           if (
             id.includes("@langchain") ||
             id.includes("langsmith") ||

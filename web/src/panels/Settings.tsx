@@ -24,6 +24,7 @@ import {
 } from "../api";
 import { Panel } from "../ui";
 import { Modal } from "../Modal";
+import { Check, ChevronDown, ChevronRight, Lock, Search, X } from "../ui/icons";
 
 /** Как значение выглядело бы в файле после сохранения: пара знаков и звёздочки. */
 function maskPreview(value: string): string {
@@ -49,7 +50,11 @@ function Field({
 
   const label = (
     <span className={`set-name ${touched ? "changed" : ""}`} title={field.description}>
-      {field.secret ? <span className="lock">▪ </span> : "  "}
+      {field.secret ? (
+        <span className="lock" title="секрет: в браузер приезжает маска">
+          <Lock size={13} aria-hidden="true" />
+        </span>
+      ) : null}
       {field.name}
       {touched ? " *" : ""}
     </span>
@@ -76,9 +81,11 @@ function Field({
         <span>
           <button
             className={`toggle ${on ? "on" : ""}`}
+            aria-pressed={on}
             onClick={() => set(on ? "0" : "1")}
           >
-            [{on ? "×" : " "}] {on ? "вкл" : "выкл"}
+            {on ? <Check size={14} aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
+            {on ? "включено" : "выключено"}
           </button>
           <span className="swatch">
             по умолчанию {field.default || "не задано"}
@@ -110,7 +117,7 @@ function Field({
     return (
       <div className="set-field">
         {label}
-        <span style={{ display: "flex", gap: "1ch", alignItems: "baseline" }}>
+        <span className="set-secret">
           {touched ? (
             <>
               <input
@@ -120,18 +127,18 @@ function Field({
                 placeholder="новое значение"
                 onChange={(e) => set(e.target.value)}
               />
-              <button onClick={() => setRevealed((r) => !r)}>
-                [{revealed ? "скрыть" : "показать"}]
+              <button className="btn-ghost btn-sm" onClick={() => setRevealed((r) => !r)}>
+                {revealed ? "Скрыть" : "Показать"}
               </button>
-              <button onClick={() => onChange(field.name, undefined)}>[отмена]</button>
+              <button className="btn-ghost btn-sm" onClick={() => onChange(field.name, undefined)}>Отмена</button>
               {draft ? <span className="swatch">{maskPreview(draft)}</span> : null}
             </>
           ) : (
             <>
-              <span style={{ color: field.filled ? "var(--fg)" : "var(--fg-faint)" }}>
+              <span className={field.filled ? "mono" : "hint"}>
                 {field.filled ? field.value : "не задано"}
               </span>
-              <button onClick={() => set("")}>[изменить]</button>
+              <button className="btn-sm" onClick={() => set("")}>Изменить</button>
             </>
           )}
         </span>
@@ -184,7 +191,7 @@ function Comment({
           placeholder="зачем эта переменная здесь"
           onChange={(e) => onChange(field.name, e.target.value)}
         />
-        <button onClick={() => onChange(field.name, undefined)}>[отмена]</button>
+        <button className="btn-ghost btn-sm" onClick={() => onChange(field.name, undefined)}>Отмена</button>
       </div>
     );
   }
@@ -192,7 +199,7 @@ function Comment({
     <div className="set-comment">
       {field.comment ? <span className="set-note"># {field.comment}</span> : null}
       <button onClick={() => onChange(field.name, field.comment)}>
-        [{field.comment ? "править комментарий" : "+ комментарий"}]
+        {field.comment ? "Править комментарий" : "Добавить комментарий"}
       </button>
     </div>
   );
@@ -298,12 +305,12 @@ export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () 
   return (
     <Modal label="Настройки" onClose={onClose}>
       <Panel
-        title="НАСТРОЙКИ"
+        title="Настройки"
         right={<span className="hint">{doc?.path ?? "…"}</span>}
         foot={
           <>
-            <button onClick={save} disabled={!dirty || saving}>
-              [{saving ? "запись…" : `сохранить${dirty ? ` (${dirty})` : ""}`}]
+            <button className="btn-primary" onClick={save} disabled={!dirty || saving}>
+              {saving ? "Запись…" : `Сохранить${dirty ? ` (${dirty})` : ""}`}
             </button>
             <button
               onClick={() => {
@@ -312,27 +319,37 @@ export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () 
               }}
               disabled={!dirty || saving}
             >
-              [сбросить правки]
+              Сбросить правки
             </button>
-            <button onClick={onClose}>[закрыть · esc]</button>
+            <button className="btn-ghost" onClick={onClose}>Закрыть · esc</button>
             {dirty ? <span className="hint">Правки сохранятся при закрытии окна до обновления страницы.</span> : null}
             {status ? <span className="ok">{status}</span> : null}
             {error ? <span className="error">{error}</span> : null}
           </>
         }
       >
-        <div className="set-field" style={{ marginBottom: "0.6em" }}>
-          <span className="set-name">поиск</span>
-          <input
-            type="text"
-            value={filter}
-            autoFocus
-            placeholder="часть имени или описания"
-            onChange={(e) => setFilter(e.target.value)}
-          />
+        <div className="settings-search">
+          <span className="set-name">Поиск</span>
+          <label className="canvas-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              type="text"
+              value={filter}
+              autoFocus
+              aria-label="Поиск настройки"
+              placeholder="Часть имени или описания"
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </label>
         </div>
 
-        {!doc && !error ? <div className="hint">читаю .env…</div> : null}
+        {!doc && !error ? (
+          <div className="engine-widget">
+            <span className="skeleton" style={{ width: "40%" }} />
+            <span className="skeleton" style={{ width: "70%" }} />
+            <span className="skeleton" style={{ width: "55%" }} />
+          </div>
+        ) : null}
 
         {/*
           Что применено прямо сейчас — не то же самое, что лежит в файле.
@@ -343,6 +360,9 @@ export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () 
         {doc?.applied?.length ? (
           <details className="set-applied" open={doc.restart_required}>
             <summary>
+              {doc.restart_required
+                ? <ChevronDown size={14} aria-hidden="true" />
+                : <ChevronRight size={14} aria-hidden="true" />}
               Применено сейчас: {doc.applied.length}
               {doc.restart_required ? " · файл отличается, нужен перезапуск" : ""}
             </summary>
@@ -366,7 +386,7 @@ export function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () 
 
         {sections.map((section) => (
           <div className="set-section" key={section.title}>
-            <h3>── {section.title} ──</h3>
+            <h3>{section.title}</h3>
             {section.fields.map((field) => (
               <div key={field.name}>
                 <Field field={field} draft={drafts[field.name]} onChange={change} />

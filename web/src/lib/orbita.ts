@@ -210,10 +210,3 @@ export function publicationLabel(publication: Publication): { text: string; tone
     PUBLICATION_LABELS[publication.status] ?? { text: publication.status, tone: "muted" }
   );
 }
-
-export const TONE_VAR: Record<Tone, string> = {
-  ok: "var(--green)",
-  muted: "var(--fg-dim)",
-  warn: "var(--amber)",
-  bad: "var(--red)",
-};

@@ -8,6 +8,18 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../../../lib/orbita";
 import { names, text } from "./shared";
 import type { WidgetProps } from "../../manifest/types";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  File,
+  FileText,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  X,
+} from "../../../ui/icons";
 
 /**
  * Выбор папки задачи, а внутри неё — файла-источника.
@@ -160,7 +172,9 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
                     title={expanded ? "свернуть" : "развернуть"}
                     onClick={() => fold(item.name, !expanded)}
                   >
-                    {expanded ? "▾" : "▸"}
+                    {expanded
+                      ? <ChevronDown size={14} aria-hidden="true" />
+                      : <ChevronRight size={14} aria-hidden="true" />}
                   </button>
                 ) : (
                   <span className="task-picker-toggle" />
@@ -173,7 +187,11 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
                   onClick={() => choose(item.name)}
                   title={output ? "готовая документация из папки outputs" : "выбрать папку для прогона"}
                 >
-                  <span className="mark">{active ? "◆" : "◇"}</span>
+                  <span className="mark">
+                    {expanded
+                      ? <FolderOpen size={15} aria-hidden="true" />
+                      : <Folder size={15} aria-hidden="true" />}
+                  </span>
                   <span className="name">{item.title || item.name}</span>
                   {output ? <span className="badge">out</span> : null}
                   <span className="count">{files}</span>
@@ -211,7 +229,13 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
                             selectable ? pick(item.name, file.name) : open(item.name, file.name)
                           }
                         >
-                          {selectable ? <span className="mark">{picked ? "◆" : "◇"}</span> : null}
+                          <span className="mark">
+                            {selectable && picked
+                              ? <Check size={14} aria-hidden="true" />
+                              : file.diagram
+                                ? <FileText size={14} aria-hidden="true" />
+                                : <File size={14} aria-hidden="true" />}
+                          </span>
                           <span className="name">{file.name}</span>
                         </button>
                         {selectable && readable ? (
@@ -221,7 +245,7 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
                             aria-label={`показать ${file.name}`}
                             onClick={() => open(item.name, file.name)}
                           >
-                            [?]
+                            <Eye size={14} aria-hidden="true" />
                           </button>
                         ) : null}
                         <span className="hint">{formatBytes(file.size)}</span>
@@ -238,11 +262,15 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
         <input
           value={newTask}
           disabled={readonly}
-          placeholder="новая папка"
+          aria-label="Имя новой папки задачи"
+          placeholder="Новая папка"
           onChange={(event) => setNewTask(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") create(); }}
         />
-        <button disabled={readonly || !newTask.trim()} onClick={create}>[создать]</button>
+        <button disabled={readonly || !newTask.trim()} onClick={create}>
+          <FolderPlus size={15} aria-hidden="true" />
+          Создать
+        </button>
       </div>
       {error ? <span className="error">{error}</span> : null}
     </div>
@@ -321,7 +349,7 @@ export function FilePickerWidget({ binding, context, value, onChange, readonly }
         {chosen.map((name) => (
           <li key={name} className={missing.includes(name) ? "missing" : undefined}>
             <span className="name" title={name}>
-              <span className="mark">◆</span>
+              <span className="mark"><FileText size={14} aria-hidden="true" /></span>
               <span className="text">{name}</span>
             </span>
             <button
@@ -332,7 +360,7 @@ export function FilePickerWidget({ binding, context, value, onChange, readonly }
               aria-label={`убрать ${name} из выбранных`}
               onClick={() => drop(name)}
             >
-              [×]
+              <X size={14} aria-hidden="true" />
             </button>
           </li>
         ))}

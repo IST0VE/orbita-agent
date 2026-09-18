@@ -17,7 +17,6 @@ import {
   type UiBundle,
 } from "./engine/api/client";
 import { LiveEventFactory, runErrorMessage } from "./engine/api/langgraphAdapter";
-import { GraphCanvas } from "./engine/canvas/GraphCanvas";
 import { configurableOf } from "./engine/manifest/bindings";
 import type {
   EngineCapabilities,
@@ -26,24 +25,27 @@ import type {
   WidgetAction,
 } from "./engine/manifest/types";
 import { localized } from "./engine/manifest/validate";
+import { RUN_LABELS } from "./engine/runtime/labels";
 import { createRuntimeSnapshot, runtimeReducer } from "./engine/runtime/reducer";
+import { useColumns } from "./hooks/useColumns";
 import { useColumnWidth } from "./hooks/useColumnWidth";
 import { useServerStatus } from "./hooks/useServerStatus";
-import { SafeMarkdown } from "./engine/security/safeMarkdown";
-import { InterruptSurface, SurfaceRenderer } from "./engine/surfaces/SurfaceRenderer";
+import { InterruptSurface } from "./engine/surfaces/SurfaceRenderer";
 import { Timeline } from "./engine/timeline/Timeline";
 import type { OrbitaState } from "./lib/orbita";
-import { AgentPicker, graphInfo, sortAssistants } from "./panels/Agents";
+import { graphInfo, sortAssistants } from "./panels/Agents";
 import { SettingsOverlay } from "./panels/Settings";
-import { Orbit, Panel, Spinner } from "./ui";
+import { Inspector } from "./app/Inspector";
+import { Sidebar } from "./app/Sidebar";
+import { TaskDock } from "./app/TaskDock";
+import { TopBar, type NavTarget } from "./app/TopBar";
+import { Workspace } from "./app/Workspace";
 
 type StateType = { messages: Message[] } & OrbitaState & Record<string, unknown>;
 
 const GRAPH_KEY = "orbita.graph";
-/** Границы ширины левой колонки: уже — список нечитаем, шире — незачем. */
 const TASK_KEY = "orbita.task";
 const DEFAULT_GRAPH = "agent";
-const RUN_LABELS = { idle: "готов к работе", queued: "в очереди", running: "выполняется", interrupted: "ждёт решения", completed: "завершён", failed: "ошибка", cancelled: "остановлен" };
 const apiUrl = API_URL || window.location.origin;
 const threadKey = (graphId: string) => `orbita.thread.${graphId}`;
 
@@ -75,11 +77,17 @@ export function App() {
   const online = useServerStatus();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [animated, setAnimated] = useState(() => localStorage.getItem("orbita.animation") === "1");
+  const [animated, setAnimated] = useState(() => localStorage.getItem("orbita.animation") !== "0");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   /** Открытый документ занимает главный экран вместо схемы. */
   const [openDoc, setOpenDoc] = useState<{ title: string; text: string } | null>(null);
   const { width: leftWidth, startResize, reset: resetLeftWidth } = useColumnWidth();
+  const columns = useColumns();
+  /** Раздел, названный в шапке последним, и запрос прокрутки левой колонки. */
+  const [navActive, setNavActive] = useState<NavTarget>("analytics");
+  const [scrollRequest, setScrollRequest] = useState<
+    { target: "top" | "published"; nonce: number } | null
+  >(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runtime, dispatch] = useReducer(
     runtimeReducer,
@@ -469,172 +477,169 @@ export function App() {
     eventFactory.current = null;
   };
 
+  /**
+   * Навигация шапки.
+   *
+   * Экран в приложении один, поэтому раздел — это не адрес, а место на экране:
+   * «Проекты» открывают левую колонку и уводят её к списку папок, «База
+   * знаний» — к опубликованным документам, «Аналитика» возвращает схему
+   * вместо открытого документа.
+   */
+  const navigate = useCallback((target: NavTarget) => {
+    if (target === "settings") {
+      setSettingsOpen(true);
+      return;
+    }
+    setNavActive(target);
+    if (target === "analytics") {
+      setOpenDoc(null);
+      return;
+    }
+    columns.openSidebar();
+    setScrollRequest((previous) => ({
+      target: target === "knowledge" ? "published" : "top",
+      nonce: (previous?.nonce ?? 0) + 1,
+    }));
+  }, [columns]);
+
+  const toggleAnimation = useCallback(() => {
+    setAnimated((value) => {
+      localStorage.setItem("orbita.animation", value ? "0" : "1");
+      return !value;
+    });
+  }, []);
+
+  /** О чём стоит сказать в шапке: отказы узлов и неудачный прогон. */
+  const alerts = useMemo(
+    () =>
+      Object.values(runtime.executions).filter((item) => item.status === "failed").length
+      + (runtime.runStatus === "failed" ? 1 : 0),
+    [runtime.executions, runtime.runStatus],
+  );
+
   const label = graphInfo(current, graphId, manifestInfo);
   const fatalError = assistantsError || bundleError || actionError;
+  const locked = stream.isLoading || busy;
 
   return (
     <div
       className="app engine-app"
+      data-sidebar={columns.sidebar ? "open" : "closed"}
+      data-inspector={columns.inspector ? "open" : "closed"}
+      data-animated={animated ? "true" : "false"}
       style={leftWidth ? ({ "--col-left": `${leftWidth}px` } as React.CSSProperties) : undefined}
     >
-      {/* Сцена лежит за всем интерфейсом. Пока читают документ её нет: текст
-          и вращение за ним не уживаются. */}
-      {openDoc ? null : (
-        <div className="orbit-stage">
-          <Orbit
-            animated={animated}
-            steer="window"
-            tone={runtime.runStatus === "interrupted" ? "wait" : stream.isLoading ? "run" : "idle"}
-          />
-        </div>
-      )}
-      <header className="header">
-        <span className="brand">ORBITA</span>
-        <AgentPicker
-          assistants={assistants}
-          selected={assistantId}
-          onSelect={chooseAssistant}
-          disabled={stream.isLoading || busy}
-          info={manifestInfo}
-        />
-        <span className="rule">{"─".repeat(400)}</span>
-        <span className="status">
-          <Spinner on={stream.isLoading} />
-          <span className={online === null ? "dot-idle" : online === "ok" ? "dot-ok" : "dot-bad"}>
-            {online === null ? "◇ связь…" : online === "ok" ? "◆ на связи" : online === "unauthorized" ? "◆ нет доступа" : "◆ нет сервера"}
-          </span>
-          <span
-            className={`connection connection-${runtime.connection}`}
-            aria-live="polite"
-          >
-            {RUN_LABELS[runtime.runStatus]}
-          </span>
-          <button disabled={stream.isLoading || busy} onClick={newThread}>[новый диалог]</button>
-          <button aria-pressed={detailsOpen} onClick={() => setDetailsOpen((value) => !value)}>[подробности]</button>
-          <button aria-pressed={animated} onClick={() => {
-            const next = !animated;
-            setAnimated(next);
-            localStorage.setItem("orbita.animation", next ? "1" : "0");
-          }}>[анимация: {animated ? "вкл" : "выкл"}]</button>
-          <button onClick={() => setSettingsOpen(true)}>[настройки]</button>
-        </span>
-      </header>
+      <TopBar
+        assistants={assistants}
+        assistantId={assistantId}
+        manifestInfo={manifestInfo}
+        onSelectAssistant={chooseAssistant}
+        locked={locked}
+        online={online}
+        runStatus={runtime.runStatus}
+        running={stream.isLoading}
+        onNavigate={navigate}
+        navActive={navActive}
+        onNewThread={newThread}
+        onToggleLog={() => setDetailsOpen((value) => !value)}
+        logOpen={detailsOpen}
+        alerts={alerts}
+        animated={animated}
+        onToggleAnimation={toggleAnimation}
+        sidebarOpen={columns.sidebar}
+        onToggleSidebar={columns.toggleSidebar}
+        inspectorOpen={columns.inspector}
+        onToggleInspector={columns.toggleInspector}
+      />
 
-      {bundle?.fallback ? (
-        <div className="engine-warning" role="status">
-          Упрощённый интерфейс: {bundle.warning}
-        </div>
-      ) : null}
-      {fatalError ? (
-        <div className="error" role="alert">
-          {fatalError}
-        </div>
-      ) : null}
-
-      <div className="columns engine-columns">
-        <div className="col-left">
-          <div
-            className="col-resizer"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="ширина левой колонки"
-            title="тянуть — ширина колонки"
-            onPointerDown={startResize}
-            onDoubleClick={resetLeftWidth}
-          />
-          <Panel title="ВХОД И РЕЗУЛЬТАТЫ">
-            <SurfaceRenderer
-              key={assistantId}
-              surface="left"
-              manifest={manifest}
-              runtime={runtime}
-              context={safeContext}
-              inputs={inputs}
-              onInput={updateInput}
-              onAction={handleAction}
-            />
-          </Panel>
-        </div>
-        <div className="col-center">
-          {openDoc ? (
-            <Panel
-              title={`ДОКУМЕНТ · ${openDoc.title}`}
-              right={<button onClick={() => setOpenDoc(null)}>[к схеме]</button>}
-            >
-              <div className="engine-document">
-                <SafeMarkdown value={openDoc.text} />
-              </div>
-            </Panel>
-          ) : (
-            <Panel
-              title="ГРАФ"
-              right={
-                <span className="hint">
-                  {bundle?.topology.nodes.length ?? 0} узлов · {RUN_LABELS[runtime.runStatus]}
-                </span>
-              }
-            >
-              {bundle ? (
-                <GraphCanvas
-                  key={assistantId}
-                  topology={bundle.topology}
-                  manifest={manifest}
-                  runtime={runtime}
-                  selected={selectedNode}
-                  onSelect={setSelectedNode}
-                />
-              ) : (
-                <div className="hint">{fatalError ? "Не удалось загрузить граф. Проверьте подключение к серверу и обновите страницу." : "Загрузка графа…"}</div>
-              )}
-            </Panel>
-          )}
-          <Panel title="ПРОГОН">
-            <SurfaceRenderer
-              key={assistantId}
-              surface="main"
-              manifest={manifest}
-              runtime={runtime}
-              context={safeContext}
-              inputs={inputs}
-              onInput={updateInput}
-              onAction={handleAction}
-            />
-            {stream.isLoading && manifest.capabilities?.stop_run ? (
-              <button onClick={() => handleAction({ kind: "run.stop" })}>[остановить]</button>
-            ) : null}
-          </Panel>
-        </div>
-        <div className="col-right">
-          <Panel title="СОСТОЯНИЕ">
-            <SurfaceRenderer
-              key={assistantId}
-              surface="right"
-              manifest={manifest}
-              runtime={runtime}
-              context={safeContext}
-              inputs={inputs}
-              onInput={updateInput}
-              onAction={handleAction}
-            />
-          </Panel>
-        </div>
+      <div className="app-alerts">
+        {bundle?.fallback ? (
+          <div className="engine-warning" role="status">
+            Упрощённый интерфейс: {bundle.warning}
+          </div>
+        ) : null}
+        {fatalError ? (
+          <div className="error" role="alert">
+            {fatalError}
+          </div>
+        ) : null}
       </div>
 
-      {detailsOpen ? <Panel title="ЖУРНАЛ ВЫПОЛНЕНИЯ" className="timeline-panel">
-        <Timeline runtime={runtime} onSelectNode={setSelectedNode} />
-      </Panel> : null}
-      <footer
-        className="header"
-        style={{ borderBottom: "none", borderTop: "1px solid var(--line)" }}
-      >
-        <span className="hint">
-          {label.hint || label.label}
-          {detailsOpen ? ` · manifest: ${manifest.manifest_version} · thread: ${threadId ?? "новый"}` : ""}
+      <div className="app-body">
+        <Sidebar
+          manifest={manifest}
+          runtime={runtime}
+          context={safeContext}
+          inputs={inputs}
+          onInput={updateInput}
+          onAction={handleAction}
+          surfaceKey={assistantId}
+          startResize={startResize}
+          resetWidth={resetLeftWidth}
+          scrollRequest={scrollRequest}
+          ready={Boolean(bundle)}
+        />
+
+        <Workspace
+          bundle={bundle}
+          manifest={manifest}
+          runtime={runtime}
+          selected={selectedNode}
+          onSelect={setSelectedNode}
+          document={openDoc}
+          onCloseDocument={() => setOpenDoc(null)}
+          error={fatalError}
+          canvasKey={assistantId}
+        />
+
+        <Inspector
+          manifest={manifest}
+          runtime={runtime}
+          context={safeContext}
+          inputs={inputs}
+          onInput={updateInput}
+          onAction={handleAction}
+          surfaceKey={assistantId}
+          projectTitle={label.label}
+          threadId={threadId}
+        />
+      </div>
+
+      <TaskDock
+        manifest={manifest}
+        runtime={runtime}
+        context={safeContext}
+        inputs={inputs}
+        onInput={updateInput}
+        onAction={handleAction}
+        surfaceKey={assistantId}
+        running={stream.isLoading}
+        canStop={Boolean(manifest.capabilities?.stop_run)}
+        project={label.label}
+      />
+
+      {detailsOpen ? (
+        <div className="app-log">
+          <Timeline
+            runtime={runtime}
+            onSelectNode={setSelectedNode}
+            onClose={() => setDetailsOpen(false)}
+          />
+        </div>
+      ) : null}
+
+      <footer className="app-footer">
+        <span className="truncate">{label.hint || label.label}</span>
+        <span className="app-footer-right">
+          {stream.error ? (
+            <span className="error" role="alert">{runErrorMessage(stream.error)}</span>
+          ) : null}
+          <span className="mono">manifest {manifest.manifest_version}</span>
+          <span className="mono">thread {threadId ?? "новый"}</span>
+          <span>{RUN_LABELS[runtime.runStatus]}</span>
         </span>
-        {stream.error ? (
-          <span className="error" role="alert">{runErrorMessage(stream.error)}</span>
-        ) : null}
       </footer>
+
       <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {/*
         Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на

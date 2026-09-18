@@ -1,34 +1,96 @@
-import type { GraphTopology } from "../../lib/graph";
+﻿import type { GraphTopology } from "../../lib/graph";
 
+import type { ElkNode, ELK } from "elkjs/lib/elk-api";
+
+// Shared geometry: coordinates describe the actual card, including terminals.
+export const NODE_WIDTH = 216;
+export const NODE_HEIGHT = 68;
+export const TERMINAL_WIDTH = 132;
+export const TERMINAL_HEIGHT = 40;
+export const CANVAS_PADDING = 40;
 export type LayoutHints = Record<string, { rank?: number; order?: number }>;
-export type NodePosition = { id: string; x: number; y: number };
+export type Point = { x: number; y: number };
+export type NodePosition = Point & { id: string };
+export type NodeBox = NodePosition & { width: number; height: number };
+export type Port = { id: string; type: "source" | "target"; y: number };
+export type LayoutNode = NodeBox & { ports: Port[] };
+export type LayoutEdge = { id: string; source: string; target: string; sourceHandle: string; targetHandle: string; points: Point[] };
+export type GraphLayout = { nodes: LayoutNode[]; edges: LayoutEdge[] };
 
-export function layeredLayout(topology: GraphTopology, hints: LayoutHints = {}): NodePosition[] {
-  const ids = topology.nodes.map((node) => node.id);
-  const rank = new Map<string, number>(ids.map((id) => [id, hints[id]?.rank ?? 0]));
-  const incoming = new Map<string, number>(ids.map((id) => [id, 0]));
-  topology.edges.forEach((edge) => incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1));
-  const queue = ids.filter((id) => (incoming.get(id) ?? 0) === 0).sort();
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const current = queue[cursor];
-    for (const edge of topology.edges.filter((item) => item.source === current)) {
-      rank.set(edge.target, Math.max(rank.get(edge.target) ?? 0, (rank.get(current) ?? 0) + 1));
-      incoming.set(edge.target, (incoming.get(edge.target) ?? 1) - 1);
-      if (incoming.get(edge.target) === 0) queue.push(edge.target);
+export function nodeSize(id: string) {
+  const terminal = id === "__start__" || id === "__end__";
+  return { width: terminal ? TERMINAL_WIDTH : NODE_WIDTH, height: terminal ? TERMINAL_HEIGHT : NODE_HEIGHT };
+}
+
+/** Stable port identities distinguish parallel edges and self loops. */
+export function layoutInput(topology: GraphTopology, hints: LayoutHints = {}) {
+  const ids = new Set(topology.nodes.map((node) => node.id));
+  const edges = topology.edges.flatMap((edge, index) => ids.has(edge.source) && ids.has(edge.target)
+    ? [{ ...edge, id: `edge-${index}`, sourceHandle: `out-${index}`, targetHandle: `in-${index}` }] : []);
+  const orderedIds = [...ids].sort((a, b) =>
+    (hints[a]?.rank ?? 0) - (hints[b]?.rank ?? 0)
+    || (hints[a]?.order ?? 0) - (hints[b]?.order ?? 0)
+    || a.localeCompare(b),
+  );
+  const order = new Map(orderedIds.map((id, index) => [id, index]));
+  const nodes: LayoutNode[] = orderedIds.map((id) => {
+    const size = nodeSize(id);
+    const ports: Port[] = [];
+    for (const type of ["source", "target"] as const) {
+      const opposite = type === "source" ? "target" : "source";
+      const connected = edges.filter((edge) => edge[type] === id)
+        .sort((a, b) => order.get(a[opposite])! - order.get(b[opposite])!);
+      connected.forEach((edge, index) => ports.push({
+        id: type === "source" ? edge.sourceHandle : edge.targetHandle,
+        type, y: size.height * (index + 1) / (connected.length + 1),
+      }));
     }
-  }
-  const maxRank = Math.max(0, ...rank.values());
-  ids.forEach((id) => { if (!queue.includes(id) && (rank.get(id) ?? 0) === 0) rank.set(id, maxRank + 1); });
-  const layers = new Map<number, string[]>();
-  ids.forEach((id) => {
-    const layer = rank.get(id) ?? 0;
-    if (!layers.has(layer)) layers.set(layer, []);
-    layers.get(layer)?.push(id);
+    return { id, ...size, x: 0, y: 0, ports };
   });
-  const positions: NodePosition[] = [];
-  [...layers.entries()].sort(([a], [b]) => a - b).forEach(([layer, nodes]) => {
-    nodes.sort((a, b) => (hints[a]?.order ?? 0) - (hints[b]?.order ?? 0) || a.localeCompare(b));
-    nodes.forEach((id, index) => positions.push({ id, x: 40 + layer * 210, y: 40 + index * 100 }));
+  return { nodes, edges };
+}
+
+/** The caller supplies ELK: a native worker in the browser, bundled in tests. */
+export async function layeredLayout(topology: GraphTopology, hints: LayoutHints, elk: Pick<ELK, "layout">): Promise<GraphLayout> {
+  const input = layoutInput(topology, hints);
+  if (!input.nodes.length) return { nodes: [], edges: [] };
+  const result = await elk.layout<ElkNode>({
+    id: "graph",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.edgeRouting": "ORTHOGONAL",
+      "elk.padding": "[top=40,left=40,bottom=40,right=40]",
+      "elk.spacing.nodeNode": "52",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "88",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "24",
+      "elk.spacing.edgeEdge": "14",
+      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+      "elk.layered.crossingMinimization.forceNodeModelOrder": "true",
+      "elk.randomSeed": "1",
+    },
+    children: input.nodes.map((node) => ({
+      id: node.id, width: node.width, height: node.height,
+      layoutOptions: { "elk.portConstraints": "FIXED_POS" },
+      ports: node.ports.map((port) => ({
+        id: `${node.id}:${port.id}`, width: 0, height: 0,
+        x: port.type === "source" ? node.width : 0, y: port.y,
+        layoutOptions: { "elk.port.side": port.type === "source" ? "EAST" : "WEST" },
+      })),
+    })),
+    edges: input.edges.map((edge) => ({
+      id: edge.id,
+      sources: [`${edge.source}:${edge.sourceHandle}`],
+      targets: [`${edge.target}:${edge.targetHandle}`],
+    })),
   });
-  return positions;
+  const placed = new Map(result.children?.map((node) => [node.id, node]));
+  const routed = new Map(result.edges?.map((edge) => [edge.id, edge]));
+  return {
+    nodes: input.nodes.map((node) => ({ ...node, x: placed.get(node.id)?.x ?? 0, y: placed.get(node.id)?.y ?? 0 })),
+    edges: input.edges.map((edge) => {
+      const section = routed.get(edge.id)?.sections?.[0];
+      return { ...edge, points: section ? [section.startPoint, ...section.bendPoints ?? [], section.endPoint] : [] };
+    }),
+  };
 }

@@ -11,6 +11,7 @@ import { SafeMarkdown } from "../../security/safeMarkdown";
 import { safeUrl } from "../../security/safeUrl";
 import type { WidgetProps } from "../../manifest/types";
 import { JsonWidget } from "./primitives";
+import { Check, ChevronRight, Copy, ExternalLink, ShieldCheck, X } from "../../../ui/icons";
 
 export type Draft = {
   id?: string;
@@ -49,15 +50,21 @@ export const DRAFT_ACTIONS: Record<string, string> = {
 
 export function CopyDraftButton({ value, label }: { value: string; label: string }) {
   const [notice, setNotice] = useState("");
-  return <span><button onClick={async () => {
-    try {
-      if (!navigator.clipboard) throw new Error("clipboard unavailable");
-      await navigator.clipboard.writeText(value);
-      setNotice("Скопировано");
-    } catch {
-      setNotice("Копирование недоступно. Раскройте текст и скопируйте вручную.");
-    }
-  }}>[{label}]</button><span role="status" className="hint">{notice}</span></span>;
+  return <span className="copy-draft">
+    <button className="btn-ghost btn-sm" onClick={async () => {
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(value);
+        setNotice("Скопировано");
+      } catch {
+        setNotice("Копирование недоступно. Раскройте текст и скопируйте вручную.");
+      }
+    }}>
+      <Copy size={14} aria-hidden="true" />
+      {label}
+    </button>
+    <span role="status" className="hint">{notice}</span>
+  </span>;
 }
 
 
@@ -68,6 +75,23 @@ export function draftSummary(drafts: Draft[]): string {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts].map(([action, count]) => `${DRAFT_ACTIONS[action] ?? action}: ${count}`).join(", ");
+}
+
+
+/** Что изменится в существующем объекте: числа сразу, строки — по запросу. */
+export function DraftDiff({ diff }: { diff: NonNullable<Draft["diff"]> }) {
+  if (!diff.available) {
+    return diff.reason ? <p className="hint draft-diff-note">{text(diff.reason)}</p> : null;
+  }
+  if (diff.unchanged) return <p className="hint draft-diff-note">Содержимое не меняется.</p>;
+  const summary = `Изменения: +${diff.added ?? 0} / −${diff.removed ?? 0} строк`;
+  return <details className="draft-diff">
+    <summary>
+      <ChevronRight size={14} aria-hidden="true" />
+      {summary}
+    </summary>
+    <pre className="draft-diff-body">{text(diff.text)}</pre>
+  </details>;
 }
 
 
@@ -83,20 +107,6 @@ export function draftSummary(drafts: Draft[]): string {
  * storage format показывается текстом намеренно: оператор должен видеть то,
  * что уедет на wiki, а не браузерную интерпретацию этого.
  */
-/** Что изменится в существующем объекте: числа сразу, строки — по запросу. */
-export function DraftDiff({ diff }: { diff: NonNullable<Draft["diff"]> }) {
-  if (!diff.available) {
-    return diff.reason ? <p className="hint draft-diff-note">{text(diff.reason)}</p> : null;
-  }
-  if (diff.unchanged) return <p className="hint draft-diff-note">Содержимое не меняется.</p>;
-  const summary = `Изменения: +${diff.added ?? 0} / −${diff.removed ?? 0} строк`;
-  return <details className="draft-diff">
-    <summary>{summary}</summary>
-    <pre className="draft-diff-body">{text(diff.text)}</pre>
-  </details>;
-}
-
-
 export function DraftListWidget({ value }: WidgetProps) {
   const drafts = Array.isArray(value) ? (value as Draft[]) : [];
   if (!drafts.length) return <div className="hint">Черновиков нет.</div>;
@@ -113,13 +123,18 @@ export function DraftListWidget({ value }: WidgetProps) {
       const body = text(draft.document);
       return <div key={text(draft.id) || index}><details className="draft">
         <summary>
-          <span className="draft-open-label">Открыть текст ▸</span>
           <span className={`draft-action draft-action-${action}`}>{DRAFT_ACTIONS[action] ?? action}</span>
           <b>{text(draft.title) || text(draft.id)}</b>
           <span className="hint">{text(draft.where)}{draft.chars ? ` · ${draft.chars} символов` : ""}</span>
+          <span className="draft-open-label">Открыть текст</span>
         </summary>
         {draft.note ? <div className="hint">{text(draft.note)}</div> : null}
-        {href && action !== "form" ? <a href={href} target="_blank" rel="noreferrer noopener">существующий объект</a> : null}
+        {href && action !== "form" ? (
+          <a href={href} target="_blank" rel="noreferrer noopener">
+            Существующий объект
+            <ExternalLink size={13} aria-hidden="true" />
+          </a>
+        ) : null}
         {(draft.fields ?? []).length ? <dl className="draft-fields">
           {(draft.fields ?? []).map((field, position) => <div key={position}>
             <dt>{text(field.label)}</dt><dd>{text(field.value)}</dd>
@@ -137,9 +152,14 @@ export function DraftListWidget({ value }: WidgetProps) {
         */}
         {draft.diff ? <DraftDiff diff={draft.diff} /> : null}
         {action === "form" ? <div className="external-drafts-action">
-          {href ? <a href={href} target="_blank" rel="noreferrer noopener">Открыть в Jira ↗</a> : null}
-          <CopyDraftButton value={text(draft.title)} label="копировать заголовок" />
-          <CopyDraftButton value={body} label="копировать описание" />
+          {href ? (
+            <a href={href} target="_blank" rel="noreferrer noopener">
+              Открыть в Jira
+              <ExternalLink size={13} aria-hidden="true" />
+            </a>
+          ) : null}
+          <CopyDraftButton value={text(draft.title)} label="Копировать заголовок" />
+          <CopyDraftButton value={body} label="Копировать описание" />
           {draft.note ? <p className="hint">{draft.note}</p> : null}
         </div> : null}
       </div>;
@@ -176,7 +196,10 @@ export function ApprovalWidget({ value, binding, readonly, onAction }: WidgetPro
     },
   });
   return <div className="approve" role="dialog" aria-modal="true" aria-label="Требуется решение оператора">
-    <h4>▲ ТРЕБУЕТСЯ ПОДТВЕРЖДЕНИЕ</h4>
+    <div className="approve-head">
+      <ShieldCheck size={20} aria-hidden="true" />
+      <h4>Требуется подтверждение</h4>
+    </div>
     {payload.title ? <b>{text(payload.title)}</b> : null}
     {/* Черновики выше сводки: подтверждают то, что уедет, а не пересказ. */}
     {Array.isArray(payload.drafts) && payload.drafts.length
@@ -190,26 +213,40 @@ export function ApprovalWidget({ value, binding, readonly, onAction }: WidgetPro
       ? <ul className="draft-warnings">{(payload.warnings as string[]).map((warning, index) => <li key={index}>{text(warning)}</li>)}</ul>
       : null}
     {payload.document
-      ? <details className="draft-whole"><summary>Сводка конвейера</summary><SafeMarkdown value={payload.document} /></details>
+      ? <details className="draft-whole">
+          <summary>
+            <ChevronRight size={14} aria-hidden="true" />
+            Сводка конвейера
+          </summary>
+          <SafeMarkdown value={payload.document} />
+        </details>
       : <JsonWidget {...({ value } as WidgetProps)} />}
     {asksProject ? <label>Проект Jira
       <input list="approve-projects" value={project} placeholder="ORB" maxLength={40} onChange={(event) => setProject(event.target.value)} />
       <datalist id="approve-projects">{known.map((item) => <option value={text(item.key)} key={text(item.key)}>{text(item.name)}</option>)}</datalist>
     </label> : null}
-    <label>Причина (необязательно)<input value={reason} maxLength={4000} onChange={(event) => setReason(event.target.value)} /></label>
+    <label>Причина (необязательно)
+      <input value={reason} maxLength={4000} onChange={(event) => setReason(event.target.value)} />
+    </label>
     {nativeDrafts ? <div className="external-drafts-action">
-      <button disabled={readonly} onClick={() => decide("drafts")}>[создать черновики в Confluence]</button>
+      <button disabled={readonly} onClick={() => decide("drafts")}>Создать черновики в Confluence</button>
       <p className="hint">Появятся ссылки на редактор Confluence. Внесите правки и опубликуйте страницы там. Для существующих страниц создаются отдельные копии.</p>
     </div> : null}
     {asksProject ? <div className="external-drafts-action">
-      <button disabled={readonly || !project.trim()} onClick={() => decide("drafts")}>[подготовить формы для проверки в Jira]</button>
+      <button disabled={readonly || !project.trim()} onClick={() => decide("drafts")}>Подготовить формы для проверки в Jira</button>
       <p className="hint">Откройте формы в Jira, внесите правки и создайте задачи вручную. Возможность заполнить поля по ссылке зависит от версии Jira.</p>
     </div> : null}
-    <button autoFocus className="btn-yes" disabled={readonly || (asksProject && !project.trim())} onClick={() => decide("approved")}>[подтвердить]</button>
-    <button className="btn-no" disabled={readonly} onClick={() => decide("rejected")}>
-      [{text(payload.reject_label) || "отклонить"}]
-    </button>
-    {payload.reject_hint ? <p className="hint">{text(payload.reject_hint)}</p> : null}
+    <div className="approve-decision">
+      <button autoFocus className="btn-yes" disabled={readonly || (asksProject && !project.trim())} onClick={() => decide("approved")}>
+        <Check size={16} aria-hidden="true" />
+        Подтвердить
+      </button>
+      <button className="btn-no" disabled={readonly} onClick={() => decide("rejected")}>
+        <X size={16} aria-hidden="true" />
+        {text(payload.reject_label) || "Отклонить"}
+      </button>
+      {payload.reject_hint ? <p className="hint">{text(payload.reject_hint)}</p> : null}
+    </div>
   </div>;
 }
 

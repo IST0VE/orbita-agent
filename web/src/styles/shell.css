@@ -1,0 +1,877 @@
+/*
+ * Каркас приложения: шапка, три колонки, док задачи, журнал, подвал.
+ *
+ * Высота раздаётся сеткой, а не подбирается процентами: единственная область,
+ * которая тянется, — средний ряд с колонками; остальные занимают столько,
+ * сколько занимают. Прокрутка при этом живёт внутри колонок, а не у страницы
+ * целиком — шапка и поле задачи должны оставаться на экране всегда.
+ */
+
+/*
+ * Колонка из полос, а не сетка с именованными рядами: полос на экране от пяти
+ * до семи — журнал открывается по кнопке, полоса предупреждений появляется
+ * вместе с предупреждением, — и привязка к номеру ряда ломалась бы каждый раз,
+ * когда одна из них исчезает.
+ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.app-header,
+.app-alerts,
+.app-footer {
+  flex: none;
+}
+
+/*
+ * Поле задачи не сжимается никогда: обрезанная кнопка «Запустить» — это
+ * неработающий экран. Журнал сжимается первым, он справочный. Полоса с
+ * колонками берёт остаток и не претендует на высоту своего содержимого
+ * (отсюда `flex-basis: 0` у неё ниже): содержимое правой колонки бывает
+ * длиной в экран, и по нему нельзя мерить экран.
+ */
+.app-dock {
+  flex: 0 0 auto;
+}
+
+.app-log {
+  flex: 0 1 auto;
+}
+
+/* --------------------------------------------------------------------- */
+/* Шапка                                                                  */
+/* --------------------------------------------------------------------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: var(--header-height);
+  padding: 0 var(--space-5);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: var(--z-header);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  color: var(--accent-orange);
+}
+
+.brand-name {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+/* Развилка конвейера. Разделитель слева отделяет её от логотипа: это выбор
+   режима работы продукта, а не часть названия. */
+.pick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--border);
+}
+
+.pick-button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 200px;
+  max-width: 260px;
+  min-height: var(--control-height);
+  padding: 0 var(--space-3) 0 var(--space-4);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.pick-current {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pick-chevron {
+  flex: none;
+  color: var(--text-secondary);
+  transition: transform var(--transition-base), color var(--transition-base);
+}
+
+.pick-button:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--border-strong);
+}
+
+/* Открытый список — это состояние кнопки, а не только всплывшая панель:
+   иначе непонятно, откуда панель выросла. */
+.pick-button[aria-expanded="true"] {
+  color: var(--text-brand);
+  background: var(--accent-orange-soft);
+  border-color: var(--accent-orange);
+  box-shadow: var(--shadow-focus);
+}
+
+.pick-button[aria-expanded="true"] .pick-chevron {
+  color: var(--text-brand);
+  transform: rotate(180deg);
+}
+
+/* Панель не перекрывает кнопку и не липнет к ней: зазор в четыре пикселя
+   читается как «это другой слой». */
+.pick-menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: var(--space-5);
+  z-index: var(--z-dropdown);
+  width: max-content;
+  min-width: 260px;
+  max-width: min(360px, calc(100vw - var(--space-8)));
+  max-height: min(420px, calc(100vh - var(--header-height) - var(--space-7)));
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+  animation: pick-drop var(--duration-fast) var(--ease);
+}
+
+@keyframes pick-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.pick-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+
+/* Подсветка одна на мышь и на клавиши: два разных выделения на экране
+   одновременно читаются как два курсора. */
+.pick-option[data-active="true"] {
+  background: var(--surface-muted);
+}
+
+.pick-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.pick-option-label {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+.pick-option-hint {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.pick-option[aria-selected="true"] .pick-option-label {
+  color: var(--text-brand);
+}
+
+.pick-check {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent-orange);
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.nav-link {
+  min-height: 30px;
+  padding: 0 var(--space-4);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+}
+
+.nav-link:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  border-color: transparent;
+}
+
+.nav-link[aria-current="page"] {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  border-color: transparent;
+}
+
+.header-spacer {
+  flex: 1 1 auto;
+  min-width: var(--space-3);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.status-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+/* Разделитель между группами действий в шапке. */
+.header-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--on-teal-soft);
+  background: var(--accent-teal-soft);
+  border: 1px solid var(--accent-teal-border);
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+.avatar:hover:not(:disabled) {
+  background: var(--accent-teal-soft);
+  border-color: var(--accent-teal);
+}
+
+/* Точка на кнопке журнала: в прогоне есть отказ или остановка. */
+.bell-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.header-actions button {
+  position: relative;
+}
+
+/* --------------------------------------------------------------------- */
+/* Полоса предупреждений под шапкой                                        */
+/* --------------------------------------------------------------------- */
+.app-alerts {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5) 0;
+}
+
+.app-alerts:empty {
+  display: none;
+  padding: 0;
+}
+
+/* --------------------------------------------------------------------- */
+/* Три колонки                                                            */
+/* --------------------------------------------------------------------- */
+.app-body {
+  display: grid;
+  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
+  gap: var(--space-4);
+  flex: 1 1 0;
+  /* Схеме гарантирован рост: ниже этого она перестаёт быть схемой. */
+  min-height: 200px;
+  padding: var(--space-4) var(--space-5);
+}
+
+.app[data-sidebar="closed"] .app-body {
+  grid-template-columns: minmax(0, 1fr) var(--col-right);
+}
+
+.app[data-inspector="closed"] .app-body {
+  grid-template-columns: var(--col-left) minmax(0, 1fr);
+}
+
+.app[data-sidebar="closed"][data-inspector="closed"] .app-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app[data-sidebar="closed"] .sidebar,
+.app[data-inspector="closed"] .inspector {
+  display: none;
+}
+
+.sidebar,
+.inspector,
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-body > * {
+  min-height: 0;
+}
+
+/*
+ * Колонка не прокручивается сама — прокручивается её начинка. Разница важна
+ * ровно из-за ручки ширины: она торчит за правый край колонки, и в
+ * прокручиваемом элементе её бы обрезало, а заодно она бы уезжала вверх
+ * вместе с содержимым.
+ */
+.sidebar {
+  position: relative;
+  overflow: visible;
+}
+
+.sidebar-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden auto;
+  padding-right: var(--space-2);
+}
+
+.inspector {
+  gap: var(--space-4);
+  overflow: hidden auto;
+  padding-right: var(--space-2);
+}
+
+.workspace {
+  gap: var(--space-4);
+  position: relative;
+}
+
+/* Ручка ширины левой колонки. Тонкая полоса между колонками: видна на
+   наведении, работает с клавиатуры через двойной щелчок сброса. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--space-4) / -2 - 3px);
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: var(--z-sticky);
+}
+
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  inset: var(--space-6) 3px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background var(--transition-base);
+}
+
+.col-resizer:hover::after {
+  background: var(--border-strong);
+}
+
+.app[data-sidebar="closed"] .col-resizer {
+  display: none;
+}
+
+/* --------------------------------------------------------------------- */
+/* Карточка                                                               */
+/* --------------------------------------------------------------------- */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.panel-title h3 {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+  min-width: 0;
+}
+
+.panel-title-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.panel-body {
+  padding: var(--space-5);
+  min-width: 0;
+  overflow: auto;
+}
+
+.panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+/* Карточка без рамки заголовка: секции правой колонки. */
+.panel-flush > .panel-body {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+.panel-flush > .panel-title {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+/* --------------------------------------------------------------------- */
+/* Левая колонка                                                          */
+/* --------------------------------------------------------------------- */
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-2);
+}
+
+.sidebar-head .eyebrow {
+  min-width: 0;
+}
+
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* Подпись продукта внизу колонки: последнее, что читают, и единственное
+   место, где интерфейс говорит о себе словами. */
+.sidebar-footer {
+  margin-top: auto;
+  padding: var(--space-5);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.sidebar-footer-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.sidebar-footer-brand svg {
+  color: var(--accent-orange);
+}
+
+.sidebar-footer p {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------------------- */
+/* Правая колонка                                                         */
+/* --------------------------------------------------------------------- */
+.inspector-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.inspector-card > .eyebrow {
+  display: block;
+}
+
+.status-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.status-note {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: calc(var(--space-3) * -1) 0 0;
+}
+
+/* Полоса ресурса: минималистичная, бирюзовая, без подписи внутри. */
+.meter {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.meter-head b {
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent-teal);
+  transition: width var(--duration-slow) var(--ease);
+}
+
+.meter-fill.warn { background: var(--warning); }
+.meter-fill.bad { background: var(--error); }
+
+/* --------------------------------------------------------------------- */
+/* Док задачи                                                             */
+/* --------------------------------------------------------------------- */
+.app-dock {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0 var(--space-5) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dock-head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.dock-head h2 svg {
+  color: var(--accent-orange);
+}
+
+.dock-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+/*
+ * Поле задачи всегда на виду.
+ *
+ * Док прокручивается — иначе виджет, который манифест поставил в эту
+ * поверхность следом за полем, оказался бы обрезан и недоступен. Но само поле
+ * прилипает к низу: оно единственное, ради чего эта полоса существует, и
+ * уезжать под ленту из полусотни сообщений оно не должно. Лента при этом
+ * прокручивается внутри себя и держится своего низа (`useStickyScroll`).
+ */
+.dock-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  min-height: 0;
+  max-height: clamp(180px, 34vh, 420px);
+  overflow: auto;
+}
+
+.dock-body > * {
+  flex: none;
+}
+
+.dock-body > [data-widget="messages"] {
+  max-height: clamp(96px, 20vh, 240px);
+  overflow: hidden;
+}
+
+.dock-body > [data-widget="chat-input"] {
+  position: sticky;
+  bottom: calc(var(--space-5) * -1);
+  padding: var(--space-3) 0 var(--space-5);
+  margin-bottom: calc(var(--space-5) * -1);
+  background: var(--surface);
+  /* Тень кверху: без неё прилипшее поле выглядит не закреплённой полосой, а
+     обрывом ленты ровно на середине сообщения. */
+  box-shadow: 0 -10px 12px -10px rgba(16, 24, 40, 0.18);
+  z-index: var(--z-sticky);
+}
+
+/* --------------------------------------------------------------------- */
+/* Журнал выполнения                                                      */
+/* --------------------------------------------------------------------- */
+.app-log {
+  display: flex;
+  flex-direction: column;
+  /* Журнал сжимается, но не до полоски: ниже этого в нём не остаётся ни
+     строки события, и открытый журнал перестаёт быть журналом. */
+  min-height: 128px;
+  max-height: clamp(160px, 30vh, 380px);
+  margin: 0 var(--space-5) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------- */
+/* Подвал                                                                 */
+/* --------------------------------------------------------------------- */
+.app-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  overflow: hidden;
+  min-height: 34px;
+  padding: 0 var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.app-footer .mono {
+  color: var(--text-secondary);
+}
+
+.app-footer-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: auto;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------------- */
+/* Адаптация                                                              */
+/* --------------------------------------------------------------------- */
+/*
+ * Порядок отказа от элементов: сначала уходит правая колонка, затем левая,
+ * затем шапка сворачивается в одну строку. Схема остаётся на экране всегда —
+ * ради неё экран и открывают.
+ */
+/*
+ * Какие колонки помещаются в окно, решает не таблица стилей, а `useColumns`:
+ * состояние колонки — это и умолчание по ширине окна, и решение оператора,
+ * а медиазапрос знает только первое и стирал бы второе при каждом изменении
+ * размера. Здесь остаются размеры и то, что от ширины зависит целиком.
+ */
+@media (max-width: 1024px) {
+  :root {
+    --col-left: 252px;
+    --col-right: 272px;
+  }
+
+  .app-nav {
+    display: none;
+  }
+
+  .status .status-run {
+    display: none;
+  }
+}
+
+/* Узкое окно: открытая колонка занимает экран целиком вместо схемы. Две
+   колонки по 250 пикселей рядом со схемой в 380 пикселей не помещаются ни
+   при какой вёрстке. */
+@media (max-width: 900px) {
+  .app[data-sidebar="open"] .app-body,
+  .app[data-inspector="open"] .app-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app[data-sidebar="open"] .workspace,
+  .app[data-inspector="open"] .workspace {
+    display: none;
+  }
+
+  .col-resizer {
+    display: none;
+  }
+}
+
+/*
+ * Узкая шапка. Уходит то, без чего работать можно: колокольчик (о том же
+ * говорит журнал) и аватар. Переключатели колонок и «Новый диалог»
+ * остаются — без них на этой ширине не добраться до материалов и не начать
+ * новый ход.
+ */
+@media (max-width: 760px) {
+  .header-alerts,
+  .avatar,
+  .app-footer .mono {
+    display: none;
+  }
+
+  .app-header {
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .pick {
+    padding-left: 0;
+    border-left: 0;
+    order: 3;
+    width: 100%;
+  }
+
+  .pick-button {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .pick-menu {
+    left: 0;
+    right: 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .app-body {
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-3);
+  }
+
+  .app-dock,
+  .app-log {
+    margin: 0 var(--space-4) var(--space-3);
+  }
+
+  .app-alerts {
+    padding: var(--space-3) var(--space-4) 0;
+  }
+
+  .panel-body,
+  .dock-body {
+    padding: var(--space-4);
+  }
+
+  /* На телефоне лента уступает место полю: прочитать прогон можно, пролистав
+     док, а написать задачу больше негде. */
+  .dock-body > [data-widget="messages"] {
+    max-height: clamp(72px, 14vh, 160px);
+  }
+
+  .app-footer {
+    padding: 0 var(--space-4);
+  }
+}

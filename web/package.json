@@ -9,12 +9,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test:engine": "node --experimental-strip-types --experimental-specifier-resolution=node --test tests/engine.test.ts tests/auth.test.ts",
+    "test:engine": "node --experimental-strip-types --experimental-specifier-resolution=node --test tests/engine.test.ts tests/auth.test.ts tests/canvas.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph-sdk": "^1.10.2",
+    "@xyflow/react": "^12.11.6",
+    "elkjs": "^0.12.0",
+    "lucide-react": "^1.47.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

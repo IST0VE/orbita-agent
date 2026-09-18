@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ELK from "elkjs/lib/elk.bundled.js";
 import { ActionDispatcher } from "../src/engine/actions/dispatcher.ts";
 
 import { conditionMatches, configurableOf, inputSurfaceOf, matchInterrupt, resolveBinding } from "../src/engine/manifest/bindings.ts";
@@ -248,7 +249,7 @@ test("form subset reports enum, required, length and unknown fields", () => {
   assert.equal(errors["$.extra"], "Неизвестное поле");
 });
 
-test("layered layout is deterministic and honors rank/order hints", () => {
+test("layered layout is deterministic and honors model order hints", async () => {
   const topology = {
     nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
     edges: [
@@ -257,8 +258,8 @@ test("layered layout is deterministic and honors rank/order hints", () => {
     ],
   };
   const hints = { a: { rank: 0, order: 2 }, b: { rank: 0, order: 1 }, c: { rank: 2 } };
-  const first = layeredLayout(topology, hints);
-  const second = layeredLayout(topology, hints);
+  const first = (await layeredLayout(topology, hints, new ELK())).nodes;
+  const second = (await layeredLayout(topology, hints, new ELK())).nodes;
   assert.deepEqual(first, second);
   assert.ok((first.find((item) => item.id === "b")?.y ?? 99) < (first.find((item) => item.id === "a")?.y ?? 0));
   assert.ok((first.find((item) => item.id === "c")?.x ?? 0) > (first.find((item) => item.id === "a")?.x ?? 99));

@@ -292,26 +292,29 @@ def regressions(call, js, until, click):
     fill(array, '["one"]')
 
     js(
-        "[...document.querySelectorAll('.canvas-tools button')].find(b=>b.textContent==='[список]').click()"
+        "[...document.querySelectorAll('.canvas-tools button')].find(b=>b.textContent==='Список').click()"
     )
     until("!!document.querySelector('.graph-list tbody tr')")
     js("document.querySelector('.graph-list tbody tr').focus()")
     key("Enter", 13)
     until("!!document.querySelector('.node-details')")
-    click("закрыть")
+    # Карточку узла закрывает кнопка со значком: текста у неё нет, адресуемся
+    # по имени для экранного диктора.
+    js("document.querySelector('.node-details button').click()")
+    until("document.querySelector('.node-details') === null")
     js("document.querySelector('.graph-list tbody tr').focus()")
     key(" ", 32)
     until("!!document.querySelector('.node-details')")
-    click("закрыть")
+    js("document.querySelector('.node-details button').click()")
 
     js(
-        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('настройки')).focus()"
+        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Настройки')).focus()"
     )
-    click("настройки")
+    click("Настройки")
     until("!!document.querySelector('.set-section input')")
     assert js("document.querySelector('dialog').matches(':modal')")
     js(
-        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('новый диалог')).focus()"
+        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).focus()"
     )
     assert js("document.querySelector('dialog').contains(document.activeElement)"), (
         "Background can take focus"
@@ -323,99 +326,99 @@ def regressions(call, js, until, click):
     assert js("document.querySelector('dialog').contains(document.activeElement)")
 
     fill(".set-section .set-field input", "first")
-    click("править комментарий")
+    click("Править комментарий")
     fill(".set-comment textarea", "first note")
-    click("сохранить")
+    click("Сохранить")
     until(
-        "[...document.querySelectorAll('dialog button')].some(b=>b.textContent.includes('запись…'))"
+        "[...document.querySelectorAll('dialog button')].some(b=>b.textContent.includes('Запись…'))"
     )
     fill(".set-section .set-field input", "second")
     fill(".set-comment textarea", "second note")
     key("Escape", 27)
     until("document.querySelector('dialog') === null")
-    assert js("document.activeElement.textContent.includes('настройки')"), (
+    assert js("document.activeElement.textContent.includes('Настройки')"), (
         "Opener focus not restored"
     )
-    click("настройки")
+    click("Настройки")
     until("!!document.querySelector('.panel-foot .ok')")
     assert SETTINGS["TEST_VALUE"] == "first"
     assert NOTES["TEST_VALUE"] == "first note"
     assert js("document.querySelector('.set-section input').value") == "second"
     assert js("document.querySelector('.set-comment textarea').value") == "second note"
     assert not js(
-        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('сохранить')).disabled"
+        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('Сохранить')).disabled"
     )
-    click("сохранить")
+    click("Сохранить")
     until("!document.querySelector('.panel-foot .ok')")
     until(
-        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('сохранить'))?.disabled && !!document.querySelector('.panel-foot .ok')"
+        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('Сохранить'))?.disabled && !!document.querySelector('.panel-foot .ok')"
     )
     assert SETTINGS["TEST_VALUE"] == "second"
     assert NOTES["TEST_VALUE"] == "second note"
 
     SAVE_OK = False
     fill(".set-section input", "retry value")
-    click("сохранить")
+    click("Сохранить")
     until(
         "document.querySelector('.panel-foot .error')?.textContent.includes('Save fixture unavailable')"
     )
     assert js("document.querySelector('.set-section input').value") == "retry value"
     SAVE_OK = True
-    click("сохранить")
+    click("Сохранить")
     until("!document.querySelector('.panel-foot .error')")
     until("!!document.querySelector('.panel-foot .ok')")
     assert SETTINGS["TEST_VALUE"] == "retry value"
     fill(".set-section input", "unsaved")
     # Незаписанный секрет не должен пережить закрытие окна, а обычная правка —
     # должна: иначе токен лежит в памяти вкладки всю сессию просто так.
-    click("изменить")
+    click("Изменить")
     fill('input[type="password"]', "unsaved-secret")
-    click("закрыть")
-    click("настройки")
+    click("Закрыть")
+    click("Настройки")
     until("!!document.querySelector('.set-section input')")
     assert js("document.querySelector('.set-section input').value") == "unsaved"
     assert js("document.querySelector('input[type=password]') === null"), "Secret draft survived"
-    click("сбросить правки")
+    click("Сбросить правки")
     until("document.querySelector('.set-section input').value === 'retry value'")
     (smoke.ARTIFACTS / "settings.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
-    click("закрыть")
+    click("Закрыть")
 
     PUBLICATIONS_OK = False
     js("document.querySelector('.engine-outline').open=true")
-    click("обновить список")
+    click("Обновить список")
     until(
         "document.querySelector('.engine-outline [role=alert]')?.textContent.includes('Publication fixture unavailable')"
     )
-    assert "пока пусто" not in js("document.querySelector('.engine-outline').textContent")
+    assert "Пока пусто" not in js("document.querySelector('.engine-outline').textContent")
     js("document.querySelector('.engine-outline').open=false")
     assert "ошибка загрузки" in js("document.querySelector('.engine-outline summary').textContent")
     PUBLICATIONS_OK = True
     js("document.querySelector('.engine-outline').open=true")
-    click("повторить загрузку")
+    click("Повторить загрузку")
     until(
         "!!document.querySelector('.engine-outline .resource-list button') && !document.querySelector('.engine-outline [role=alert]')"
     )
 
     HEALTH = "offline"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('нет сервера')")
+    until("document.querySelector('.status').textContent.includes('Нет сервера')")
     # Просроченный токен — это не упавший сервер: чинить надо разное, и
     # фоновая проверка не должна ни спрашивать токен, ни врать про сервер.
     HEALTH = "unauthorized"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('нет доступа')")
+    until("document.querySelector('.status').textContent.includes('Нет доступа')")
     HEALTH = "ok"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('на связи')")
+    until("document.querySelector('.status').textContent.includes('На связи')")
     js("window.dispatchEvent(new Event('offline'))")
-    until("document.querySelector('.status').textContent.includes('нет сервера')")
+    until("document.querySelector('.status').textContent.includes('Нет сервера')")
     js("window.dispatchEvent(new Event('online'))")
-    until("document.querySelector('.status').textContent.includes('на связи')")
+    until("document.querySelector('.status').textContent.includes('На связи')")
     # Применённые настройки: значение, источник и «нужен перезапуск».
     # Секрет остаётся маской и здесь.
-    click("настройки")
+    click("Настройки")
     until("document.querySelector('.set-applied') !== null")
     assert js("document.querySelector('.set-applied').open === true"), (
         "расхождение файла и процесса должно быть видно сразу"

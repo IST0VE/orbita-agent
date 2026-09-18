@@ -312,25 +312,36 @@ def main(extra_checks=None):
             )
             assert not any("/history" in path for path in REQUESTS), REQUESTS
             assert js("document.querySelectorAll('.engine-timeline').length") == 0
+            # Орбитальный водяной знак за схемой — статический SVG с анимацией
+            # средствами CSS: разметку он не перерисовывает ни в покое, ни в
+            # движении. Раньше на этом месте стояла сцена, считавшая кадры
+            # текстом, и проверка ловила её холостой ход; теперь ловить нечего,
+            # и проверяется ровно это — плюс то, что движение выключается
+            # кнопкой и системной настройкой «меньше движения».
+            until("!!document.querySelector('.orbit-ring')", seconds=15)
             js(
-                "window.framesPainted=0; new MutationObserver(()=>window.framesPainted++).observe(document.querySelector('.orbit'), {childList:true});"
+                "window.framesPainted=0; new MutationObserver(()=>window.framesPainted++)"
+                ".observe(document.querySelector('.orbit'), {childList:true, subtree:true});"
             )
-            time.sleep(1)
-            assert js("window.framesPainted") == 0, "Idle background keeps rendering"
-            click("анимация:")
-            until("window.framesPainted > 2")
+            motion = "getComputedStyle(document.querySelector('.orbit-ring')).animationName"
+            toggle = "document.querySelector('[aria-label=\"Движение фона\"]')"
+            assert js(motion) != "none", "Background motion is off by default"
+            js(f"{toggle}.click()")
+            until(f"{motion} === 'none'")
+            js(f"{toggle}.click()")
+            until(f"{motion} !== 'none'")
             call(
                 "Emulation.setEmulatedMedia",
                 {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
             )
-            time.sleep(0.2)
-            js("window.framesPainted=0")
+            until(f"{motion} === 'none'")
+            call("Emulation.setEmulatedMedia", {"features": []})
+            until(f"{motion} !== 'none'")
             time.sleep(0.4)
-            assert js("window.framesPainted") == 0, "Reduced motion keeps animating"
-            click("анимация:")
-            click("показать предыдущие")
+            assert js("window.framesPainted") == 0, "Background scene re-renders markup"
+            click("Показать предыдущие")
             until("document.querySelectorAll('.msg').length === 100")
-            click("подробности")
+            js("document.querySelector('[aria-label=\"Журнал выполнения\"]').click()")
             until("document.querySelector('.engine-timeline') !== null")
             screenshot = call("Page.captureScreenshot")["data"]
             (ARTIFACTS / "desktop.png").write_bytes(base64.b64decode(screenshot))
@@ -349,7 +360,7 @@ def main(extra_checks=None):
             js(
                 "const draft=document.querySelector('textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(draft,'Reject'); draft.dispatchEvent(new Event('input',{bubbles:true}));"
             )
-            click("запустить")
+            click("Запустить")
             until(
                 "document.querySelector('[role=alert]')?.textContent.includes('Fixture validation failure')"
             )
@@ -360,32 +371,34 @@ def main(extra_checks=None):
                 "const input=document.querySelector('textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Test'); input.dispatchEvent(new Event('input',{bubbles:true}));"
             )
             until(
-                "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('запустить')&&!b.disabled)"
+                "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Запустить')&&!b.disabled)"
             )
-            click("запустить")
-            click("запустить")
-            until("document.querySelector('select[aria-label=\"Агент\"]').disabled")
+            click("Запустить")
+            click("Запустить")
+            until("document.querySelector('.pick-button').disabled")
             until(
-                "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('остановить'))"
+                "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Остановить'))"
             )
             assert js(
-                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('новый диалог')).disabled"
+                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).disabled"
             )
-            click("остановить")
-            until("document.querySelector('.status').textContent.includes('остановлен')")
+            click("Остановить")
+            until("document.querySelector('.status').textContent.includes('Остановлен')")
             time.sleep(0.5)
-            assert js("document.querySelector('.status').textContent.includes('остановлен')")
+            assert js("document.querySelector('.status').textContent.includes('Остановлен')")
             assert REQUESTS.count("/threads/saved-thread/runs/stream") == 1, "Duplicate submission"
             until(
-                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('новый диалог')).disabled"
+                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).disabled"
             )
-            click("новый диалог")
+            click("Новый диалог")
             until("document.querySelectorAll('.msg').length === 0")
-            js(
-                "const picker=document.querySelector('.pick select'); picker.value='demo'; picker.dispatchEvent(new Event('change',{bubbles:true}));"
-            )
+            js("document.querySelector('.pick-button').click()")
+            until("!!document.querySelector('.pick-menu [data-graph=demo]')")
+            js("document.querySelector('.pick-menu [data-graph=demo]').click()")
             until(
-                "document.querySelector('.pick select').value === 'demo' && document.querySelector('.graph') !== null"
+                "document.querySelector('.pick-button').dataset.graph === 'demo'"
+                " && !document.querySelector('.pick-menu')"
+                " && document.querySelector('.graph') !== null"
             )
             assert js("document.querySelectorAll('.msg').length") == 0
             additional = extra_checks(call, js, until, click) if extra_checks else []
@@ -423,8 +436,8 @@ def main(extra_checks=None):
                             "1000-message history limited to 50",
                             "older messages accessible",
                             "no full checkpoint history request",
-                            "idle scene paints zero frames",
-                            "animation respects reduced motion",
+                            "background watermark never re-renders markup",
+                            "background motion follows the toggle and reduced motion",
                             "journal mounts on demand",
                             "desktop/tablet/mobile overflow",
                             "agent picker visible",
