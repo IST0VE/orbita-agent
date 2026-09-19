@@ -5,6 +5,7 @@
  * Отсюда их размер и отсюда же — отдельный файл.
  */
 import { useCallback, useEffect, useState } from "react";
+import { useLatestRequest } from "../../../hooks/useLatestRequest";
 import { formatBytes } from "../../../lib/orbita";
 import { names, text } from "./shared";
 import type { WidgetProps } from "../../manifest/types";
@@ -67,6 +68,7 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
   /** Сколько файлов влезает в поле-приёмник; сказано манифестом, не виджетом. */
   const documentMultiple = binding.options?.document_multiple === true;
   const resource = context.resource;
+  const reading = useLatestRequest();
   const mutateResource = context.mutateResource;
   const setInput = context.setInput;
   const chosen = documentInput ? names(context.inputs[documentInput]) : [];
@@ -122,9 +124,13 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
     setFolded((previous) => ({ ...previous, [name]: !open }));
   // Документ открывается на главном экране, а не в углу панели: читать его
   // в колонке шириной с список файлов невозможно.
-  const open = (task: string, name: string) =>
-    resource(resourceId, "read", { task, name })
+  const open = (task: string, name: string) => {
+    // На главный экран уезжает последний выбранный файл, а не последний
+    // приехавший ответ.
+    const request = reading.begin();
+    return resource(resourceId, "read", { task, name })
       .then((response) => {
+        if (!reading.current(request)) return;
         const document = response as { name: string; text: string };
         onAction?.({
           kind: "publication.open",
@@ -132,7 +138,8 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
         });
         setError("");
       })
-      .catch((reason: Error) => setError(reason.message));
+      .catch((reason: Error) => reading.current(request) && setError(reason.message));
+  };
   const create = () => {
     const name = newTask.trim();
     if (!name) return;
@@ -157,9 +164,12 @@ export function TaskPickerWidget({ binding, context, value, onChange, onAction, 
           const active = item.name === text(value);
           const output = item.kind === "output";
           const files = item.files?.length ?? 0;
-          // По умолчанию раскрыта папка вывода и выбранная задача; решение
-          // оператора важнее умолчания и живёт до перезагрузки.
-          const expanded = folded[item.name] === undefined ? output || active : !folded[item.name];
+          // По умолчанию раскрыта только выбранная папка. Папка готовых
+          // документов раньше раскрывалась сама — в колонке, которая была
+          // единственным местом, где эти документы вообще видно. Теперь у них
+          // есть раздел «Результаты» и целая «База знаний», а двадцать
+          // готовых файлов поверх списка материалов прячут сами материалы.
+          const expanded = folded[item.name] === undefined ? active : !folded[item.name];
           return (
             <div className="task-picker-folder" key={item.name}>
               <div className="task-picker-row">

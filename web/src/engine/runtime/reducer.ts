@@ -22,6 +22,7 @@ export function createRuntimeSnapshot(
     manifestVersion,
     connection: "idle",
     runStatus: "idle",
+    runAccepted: false,
     state: {},
     executions: {},
     executionOrder: [],
@@ -31,6 +32,28 @@ export function createRuntimeSnapshot(
     bufferedEvents: {},
   };
 }
+
+/**
+ * События, которых не бывает без согласия сервера принять ход.
+ *
+ * `run.started` рисует адаптер сам, сразу после отправки. Всё остальное здесь
+ * приходит уже из потока: сервер назвал run_id, пошли узлы, приехала
+ * остановка, снимок состояния или завершение. Любое из них означает, что
+ * отправку приняли, — а значит, отказ после этого относится уже к ходу, а не
+ * к попытке его начать.
+ */
+const SERVER_CONFIRMED = new Set([
+  "run.created",
+  "run.queued",
+  "run.completed",
+  "node.queued",
+  "node.started",
+  "node.update",
+  "node.completed",
+  "node.failed",
+  "interrupt.created",
+  "state.snapshot",
+]);
 
 function dataOf(event: RuntimeEvent): Record<string, unknown> {
   return event.data && typeof event.data === "object" ? (event.data as Record<string, unknown>) : {};
@@ -79,7 +102,12 @@ function applyOrdered(state: RuntimeSnapshot, event: RuntimeEvent): RuntimeSnaps
   };
   if (event.type === "thread.created") next.threadId = String(data.threadId ?? event.threadId);
   if (event.type === "run.queued" || (event.type === "run.created" && state.runStatus !== "running")) next.runStatus = "queued";
-  if (event.type === "run.started") next.runStatus = "running";
+  if (event.type === "run.started") {
+    next.runStatus = "running";
+    next.runAccepted = false;
+  }
+  // Согласие сервера принять ход: до него отправка ещё может отказать.
+  if (SERVER_CONFIRMED.has(event.type)) next.runAccepted = true;
   if (event.type === "run.completed" && state.runStatus !== "cancelled" && state.runStatus !== "failed") next.runStatus = "completed";
   if (event.type === "run.failed") {
     next.runStatus = "failed";
@@ -228,6 +256,7 @@ function startRunWindow(state: RuntimeSnapshot): RuntimeSnapshot {
     executions: {},
     executionOrder: [],
     interrupts: [],
+    runAccepted: false,
     error: undefined,
   };
 }

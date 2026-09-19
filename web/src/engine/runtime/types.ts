@@ -56,6 +56,16 @@ export type RuntimeSnapshot = {
   manifestVersion: string;
   connection: ConnectionStatus;
   runStatus: RunStatus;
+  /**
+   * Запуск принят сервером, а не только объявлен локально.
+   *
+   * `run.started` создаёт адаптер сразу после отправки, чтобы экран не
+   * молчал; `run.created` приходит с настоящим `run_id`, то есть означает
+   * согласие сервера принять ход. Разница видна снаружи: до неё отправка
+   * ещё может отказать, и всё, что построено на «уже запущено», в этот
+   * момент неверно — так и пропадал неотправленный текст задачи.
+   */
+  runAccepted: boolean;
   state: Record<string, unknown>;
   executions: Record<string, NodeExecution>;
   executionOrder: string[];

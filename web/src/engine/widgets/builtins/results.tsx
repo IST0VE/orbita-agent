@@ -16,6 +16,7 @@ import {
   type CostSummary,
   type Publication,
 } from "../../../lib/orbita";
+import { useLatestRequest } from "../../../hooks/useLatestRequest";
 import { text } from "./shared";
 import { SafeMarkdown } from "../../security/safeMarkdown";
 import { safeUrl } from "../../security/safeUrl";
@@ -30,6 +31,7 @@ import {
   FileText,
   Inbox,
   RotateCcw,
+  Search,
 } from "../../../ui/icons";
 import { EmptyState, Meter } from "../../../ui";
 
@@ -242,8 +244,27 @@ export function PublicationWidget({ value }: WidgetProps) {
  * выбор агента; файлы задачи важнее, поэтому они остаются наверху и всегда
  * видны, а сюда заглядывают по надобности. Состояние свёртки переживает
  * перерисовки: ключ в localStorage, как у ширины левой колонки.
+ *
+ * Это единственное место списка публикаций. Был ещё раздел «База знаний» в
+ * шапке — тот же ресурс, тот же листинг каталога, — но читались документы и
+ * оттуда, и отсюда одинаково: `publication.open` открывает их в главной
+ * области. Раздел добавлял к колонке одно поле фильтра, и оно теперь здесь.
+ *
+ * Сам список глобальный: он переживает тред, сценарий и прогон, и поэтому
+ * немного спорит с колонкой, которая в остальном про текущий прогон. Так
+ * дешевле, чем держать ради него раздел; когда появятся «Документы» из
+ * дорожной карты, архив переедет туда.
  */
 export const PUBLISHED_OPEN_KEY = "orbita.published.open";
+
+/**
+ * С какого размера списку нужен фильтр.
+ *
+ * Поле ввода над тремя строчками — чистый шум: глазами быстрее. Порог
+ * подобран по колонке: примерно столько имён видно без прокрутки, и дальше
+ * начинается поиск вместо чтения.
+ */
+const FILTER_FROM = 8;
 
 
 export function PublishedListWidget({ value, binding, context, onAction }: WidgetProps) {
@@ -254,7 +275,9 @@ export function PublishedListWidget({ value, binding, context, onAction }: Widge
   const [listError, setListError] = useState("");
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  const [query, setQuery] = useState("");
   const resource = context.resource;
+  const reading = useLatestRequest();
   useEffect(() => {
     let live = true;
     setLoading(true);
@@ -267,14 +290,26 @@ export function PublishedListWidget({ value, binding, context, onAction }: Widge
     }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [resource, runtimePublicationKey(publication), revision]);
-  const read = (name: string, title: string) =>
-    resource("orbita.publications", "read", { name })
+  // Фильтр по имени и заголовку, не по содержимому: список приезжает
+  // листингом каталога, текста страниц в нём нет, и обещать поиск по знаниям
+  // тут нечем.
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? documents.filter((item) => `${item.title} ${item.name}`.toLowerCase().includes(needle))
+    : documents;
+  const read = (name: string, title: string) => {
+    // То же правило, что в дереве материалов: применяется ответ последнего
+    // запроса.
+    const request = reading.begin();
+    return resource("orbita.publications", "read", { name })
       .then((response) => {
+        if (!reading.current(request)) return;
         const document = response as { name: string; text: string };
         onAction?.({ kind: "publication.open", payload: { title: title || document.name, text: document.text } });
         setError("");
       })
-      .catch((reason: Error) => setError(reason.message));
+      .catch((reason: Error) => reading.current(request) && setError(reason.message));
+  };
   const toggle = (next: boolean) => {
     setOpen(next);
     localStorage.setItem(PUBLISHED_OPEN_KEY, next ? "1" : "0");
@@ -289,11 +324,32 @@ export function PublishedListWidget({ value, binding, context, onAction }: Widge
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
       </span>
       {binding.title ?? "Опубликованные документы"}
-      <span className={listError ? "error" : "hint"}>{loading ? "загрузка…" : listError ? "ошибка загрузки" : documents.length}</span>
+      {/* При включённом фильтре счётчик называет обе величины: одно число
+          рядом с отфильтрованным списком читается как весь архив. */}
+      <span className={listError ? "error" : "hint"}>
+        {loading
+          ? "загрузка…"
+          : listError
+            ? "ошибка загрузки"
+            : needle
+              ? `${shown.length} из ${documents.length}`
+              : documents.length}
+      </span>
     </summary>
-    {documents.length ? (
-      <ul className="resource-list">{documents.map((item) => <li key={item.name}>
-        <button onClick={() => read(item.name, item.title)}>
+    {documents.length >= FILTER_FROM ? (
+      <label className="canvas-search">
+        <Search size={15} aria-hidden="true" />
+        <input
+          aria-label="Найти опубликованный документ"
+          value={query}
+          placeholder="Найти документ…"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
+    ) : null}
+    {shown.length ? (
+      <ul className="resource-list">{shown.map((item) => <li key={item.name}>
+        <button onClick={() => read(item.name, item.title)} title={item.name}>
           <span className="name">
             <span className="mark"><FileText size={14} aria-hidden="true" /></span>
             {item.title || item.name}
@@ -302,7 +358,11 @@ export function PublishedListWidget({ value, binding, context, onAction }: Widge
         <span className="hint">{formatBytes(item.size)}</span>
       </li>)}</ul>
     ) : !loading && !listError ? (
-      <EmptyState icon={Inbox} title="Пока пусто" hint="Опубликованные документы появятся здесь после публикации." />
+      documents.length ? (
+        <p className="inspector-empty">Ничего не найдено.</p>
+      ) : (
+        <EmptyState icon={Inbox} title="Пока пусто" hint="Опубликованные документы появятся здесь после публикации." />
+      )
     ) : null}
     {listError ? (
       <div className="error" role="alert">

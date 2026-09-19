@@ -17,6 +17,7 @@
 - `registry.py` — compile-time allowlist manifests и resource adapters;
 - `graph_manifests/` — версии UI для `agent`, `drawio`, `jira`, `prep`, `audit`, `update`;
 - `redaction.py` — backend `remove`, `mask`, `truncate`, `metadata_only`, `role`;
+- `web/src/engine/manifest/redaction.ts` — те же режимы на стороне интерфейса: правила манифеста применяются к снимку состояния и к данным событий, которые фронтенд получает напрямую через SDK, минуя серверный нормализатор. Это дополнение к серверной очистке, а не её замена: к моменту вызова данные уже в браузере;
 - `events.py` — per-run sequence, deduplication и bounded replay primitives;
 - `schemas/` — JSON Schema manifest/event v1;
 - `web/src/engine/` — недоверчивый manifest resolver, reducer runtime,

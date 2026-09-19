@@ -86,6 +86,9 @@ published/
 node_modules/
 dist/
 build/
+# ...кроме web/build: это исходники сборки frontend (CSP собирается из
+# VITE_API_URL), а не её результат. Правило build/ выше их скрывало.
+!web/build/
 .astro/
 .vite/
 .next/

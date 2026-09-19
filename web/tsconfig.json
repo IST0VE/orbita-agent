@@ -13,8 +13,10 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "types": ["vite/client"]
   },
+  "// allowImportingTsExtensions": "Модули, которые грузит и браузер, и `node --experimental-strip-types` в tests/, импортируются с расширением .ts: Node ESM не достраивает его сам. Эмиссии нет, поэтому расширение никуда не попадает.",
   "//": "vite.config.ts сюда не входит намеренно: это код для Node, а не для браузера, и он тянул бы за собой @types/node ради одной строки. Vite собирает конфиг сам.",
   "include": ["src"]
 }

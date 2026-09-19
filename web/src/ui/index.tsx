@@ -1,8 +1,10 @@
 /**
  * Мелкие детали интерфейса, из которых собран весь остальной экран.
  *
- * Здесь нет библиотеки компонентов: карточка, точка состояния и полоса — это
- * несколько элементов и класс из дизайн-системы, а не пакет с зависимостями.
+ * Здесь нет библиотеки компонентов: точка состояния, полоса доли и пустое
+ * состояние — это несколько элементов и класс из дизайн-системы, а не пакет
+ * с зависимостями.
+ *
  * Правило приёма в этот файл одно: деталь должна встречаться минимум в двух
  * несвязанных местах экрана. Всё, что нужно одному месту, живёт рядом с ним.
  */
@@ -10,42 +12,6 @@
 import type { ReactNode } from "react";
 
 import { type LucideIcon } from "./icons";
-
-/**
- * Карточка с заголовком.
- *
- * Базовая поверхность интерфейса: белый прямоугольник с мягкой тенью на
- * тёплом фоне приложения. Раньше на её месте была рамка из знаков
- * `┤ ЗАГОЛОВОК ├` — в моноширинной сетке это работало, в пропорциональной
- * работает рамка и воздух.
- */
-export function Panel({
-  title,
-  right,
-  children,
-  foot,
-  className = "",
-  icon: Icon,
-}: {
-  title: string;
-  right?: ReactNode;
-  children: ReactNode;
-  foot?: ReactNode;
-  className?: string;
-  icon?: LucideIcon;
-}) {
-  return (
-    <section className={`panel ${className}`.trim()}>
-      <div className="panel-title">
-        {Icon ? <Icon size={16} aria-hidden="true" /> : null}
-        <h3>{title}</h3>
-        {right ? <div className="panel-title-right">{right}</div> : null}
-      </div>
-      <div className="panel-body">{children}</div>
-      {foot ? <div className="panel-foot">{foot}</div> : null}
-    </section>
-  );
-}
 
 export type Tone = "ok" | "run" | "warn" | "bad" | "idle" | "brand";
 
@@ -93,12 +59,6 @@ export function Meter({
       </div>
     </div>
   );
-}
-
-/** Вертушка ожидания. Чистый CSS: анимация знаками ушла вместе с терминалом. */
-export function Spinner({ on }: { on: boolean }) {
-  if (!on) return null;
-  return <span className="spinner" role="status" aria-label="Идёт прогон" />;
 }
 
 /**

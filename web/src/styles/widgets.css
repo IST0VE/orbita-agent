@@ -18,28 +18,35 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--text-secondary);
 }
 
-/* Виджеты левой и правой колонок стоят карточками: у каждого свой предмет. */
-.sidebar-scroll > .engine-widget,
-.inspector > .engine-widget {
-  padding: var(--space-5);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+/*
+ * Виджет в колонке — не карточка.
+ *
+ * Раньше каждый из них стоял белым прямоугольником с рамкой и тенью на тёплом
+ * фоне: девять карточек в одной колонке читались как девять независимых
+ * объектов, хотя это разделы одного списка материалов. Границу теперь держит
+ * сама колонка, а виджеты внутри раздела разделены отступом.
+ */
+.sidebar-section > .engine-widget {
+  padding: 0 var(--space-2);
+}
+
+.sidebar-section > .engine-widget + .engine-widget {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .engine-warning {
   display: flex;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--on-warning-soft);
   background: var(--warning-soft);
   border: 1px solid var(--warning-border);
@@ -102,7 +109,7 @@
 .resource-list .hint {
   flex: none;
   padding-right: var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -137,7 +144,7 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
@@ -146,7 +153,7 @@
 
 .task-picker-current {
   margin-left: auto;
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   font-weight: var(--weight-medium);
   letter-spacing: 0;
   text-transform: none;
@@ -258,7 +265,7 @@ button.task-picker-toggle:hover:not(:disabled) {
   flex: none;
   margin-left: auto;
   padding: 0 var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-medium);
   color: var(--text-secondary);
   background: var(--surface-muted);
@@ -274,7 +281,6 @@ button.task-picker-toggle:hover:not(:disabled) {
 .task-picker-folders .badge {
   flex: none;
   padding: 0 var(--space-2);
-  font-size: 10px;
   color: var(--on-teal-soft);
   background: var(--accent-teal-soft);
   border-color: var(--accent-teal-border);
@@ -362,19 +368,36 @@ button.task-picker-open:hover:not(:disabled) {
   min-width: 0;
 }
 
+/*
+ * Выбранное — строка чипов, а не второй файловый список.
+ *
+ * Дерево материалов стоит выше и показывает выбор галочкой прямо в нём;
+ * здесь остаётся ответ на единственный вопрос перед запуском: что именно
+ * уедет в прогон.
+ */
+.file-picker .resource-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .file-picker .resource-list li {
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
+  width: auto;
+  padding: 2px var(--space-2) 2px var(--space-3);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-pill);
 }
 
 .file-picker .name {
-  flex: 1 1 auto;
-  font-size: var(--text-base);
+  flex: 0 1 auto;
+  max-width: 24ch;
+  font-size: var(--type-label);
+  color: var(--color-accent-text);
 }
 
 .file-picker .name .mark {
-  color: var(--text-brand);
+  color: var(--color-accent-text);
 }
 
 .file-picker li.missing {
@@ -434,7 +457,7 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .msg-role {
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
@@ -448,7 +471,7 @@ button.file-picker-drop:hover:not(:disabled) {
 
 .msg-text {
   min-width: 0;
-  font-size: var(--text-md);
+  font-size: var(--type-body);
   line-height: var(--leading-relaxed);
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -463,7 +486,7 @@ button.file-picker-drop:hover:not(:disabled) {
 
 .msg-tool .msg-text {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--type-mono);
   color: var(--text-secondary);
 }
 
@@ -474,7 +497,7 @@ button.file-picker-drop:hover:not(:disabled) {
   margin-top: var(--space-2);
   padding: var(--space-2) var(--space-3);
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   color: var(--on-blue-soft);
   background: var(--accent-blue-soft);
   border-radius: var(--radius-xs);
@@ -489,20 +512,29 @@ button.file-picker-drop:hover:not(:disabled) {
 /* --------------------------------------------------------------------- */
 /* Поле задачи                                                            */
 /* --------------------------------------------------------------------- */
+/*
+ * Композер: поле и одно главное действие.
+ *
+ * Поле начинается с двух строк и растёт руками. Восемьдесят четыре пикселя
+ * высоты «на всякий случай» отнимали у схемы столько же, сколько занимает
+ * сама строка запроса.
+ */
 .engine-chat-input {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
 }
 
 .engine-chat-input textarea {
-  min-height: 84px;
-  padding: var(--space-4);
-  font-size: var(--text-md);
-  line-height: var(--leading-relaxed);
+  min-height: 52px;
+  max-height: 30vh;
+  padding: var(--space-3);
+  font-size: var(--type-body);
+  line-height: var(--leading-normal);
   background: var(--bg-secondary);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 
 .engine-chat-input textarea:focus {
@@ -521,8 +553,22 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .composer-hint {
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   color: var(--text-secondary);
+}
+
+/* Инструкция сценария над полем: её пишет манифест, и она бывает длинной. */
+.composer-caption {
+  margin: 0;
+  font-size: var(--type-dense);
+  line-height: var(--leading-normal);
+  color: var(--text-secondary);
+}
+
+/* Вертушка внутри оранжевой кнопки: своя обводка, иначе её не видно. */
+.spinner-inverse {
+  border-color: rgba(255, 255, 255, 0.45);
+  border-top-color: var(--text-inverse);
 }
 
 /* --------------------------------------------------------------------- */
@@ -537,7 +583,7 @@ button.file-picker-drop:hover:not(:disabled) {
 
 .run-summary-outcome {
   margin: 0;
-  font-size: var(--text-md);
+  font-size: var(--type-body);
   font-weight: var(--weight-medium);
   line-height: var(--leading-normal);
   color: var(--text-primary);
@@ -555,7 +601,7 @@ button.file-picker-drop:hover:not(:disabled) {
 .run-summary-problems li {
   position: relative;
   padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   line-height: var(--leading-normal);
   color: var(--on-warning-soft);
   background: var(--warning-soft);
@@ -577,7 +623,7 @@ button.file-picker-drop:hover:not(:disabled) {
 .run-summary-next {
   margin: 0;
   padding: var(--space-3) var(--space-4);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   line-height: var(--leading-normal);
   color: var(--on-teal-soft);
   background: var(--accent-teal-soft);
@@ -600,7 +646,7 @@ button.file-picker-drop:hover:not(:disabled) {
   align-items: center;
   gap: var(--space-2);
   padding: 2px var(--space-3);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-medium);
   border-radius: var(--radius-pill);
   color: var(--text-secondary);
@@ -663,14 +709,14 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .issue-project {
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   font-weight: var(--weight-medium);
   color: var(--text-secondary);
 }
 
 .issue-summary {
   min-width: 0;
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -686,7 +732,7 @@ button.file-picker-drop:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
@@ -703,7 +749,7 @@ button.file-picker-drop:hover:not(:disabled) {
   letter-spacing: 0;
   text-transform: none;
   font-weight: var(--weight-regular);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
 }
 
 .engine-outline-mark {
@@ -713,6 +759,16 @@ button.file-picker-drop:hover:not(:disabled) {
 
 .engine-outline > *:not(summary) {
   margin-top: var(--space-3);
+}
+
+/* Поиск по опубликованным занимает ширину колонки: фиксированные 180px от
+   панели графа оставляли справа пустую полосу. */
+.engine-outline > .canvas-search {
+  display: flex;
+}
+
+.engine-outline > .canvas-search input {
+  width: 100%;
 }
 
 /* --------------------------------------------------------------------- */
@@ -730,7 +786,7 @@ button.file-picker-drop:hover:not(:disabled) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-3);
-  font-size: var(--text-md);
+  font-size: var(--type-body);
 }
 
 .draft {
@@ -754,7 +810,7 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .draft-open-label {
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   color: var(--text-secondary);
   order: 9;
   margin-left: auto;
@@ -763,7 +819,7 @@ button.file-picker-drop:hover:not(:disabled) {
 .draft-action {
   display: inline-flex;
   padding: 2px var(--space-3);
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-medium);
   border-radius: var(--radius-pill);
   color: var(--on-teal-soft);
@@ -792,7 +848,7 @@ button.file-picker-drop:hover:not(:disabled) {
   background: var(--surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
 }
 
 .draft-fields > div {
@@ -808,7 +864,7 @@ button.file-picker-drop:hover:not(:disabled) {
 .draft-fields dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   overflow-wrap: anywhere;
 }
 
@@ -828,7 +884,7 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .draft-diff > summary {
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--on-warning-soft);
 }
 
@@ -837,7 +893,7 @@ button.file-picker-drop:hover:not(:disabled) {
   margin-top: var(--space-2);
   padding: var(--space-4);
   overflow: auto;
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   background: var(--surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
@@ -858,14 +914,14 @@ button.file-picker-drop:hover:not(:disabled) {
 
 .draft-warnings li {
   padding: var(--space-3) var(--space-4);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--on-warning-soft);
   background: var(--warning-soft);
   border-radius: var(--radius-xs);
 }
 
 .draft-whole > summary {
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--text-secondary);
 }
 
@@ -903,19 +959,19 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .approve h4 {
-  font-size: var(--text-lg);
+  font-size: var(--type-heading);
   font-weight: var(--weight-semibold);
 }
 
 .approve > b {
-  font-size: var(--text-md);
+  font-size: var(--type-body);
 }
 
 .approve label {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   color: var(--text-secondary);
 }
 
@@ -939,7 +995,7 @@ button.file-picker-drop:hover:not(:disabled) {
 }
 
 .approve-queries pre {
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
 }
 
 .approve-decision {
@@ -1009,7 +1065,7 @@ button.file-picker-drop:hover:not(:disabled) {
 .form-fields textarea {
   min-height: 72px;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--type-mono);
 }
 
 form > ul.error {
@@ -1027,71 +1083,37 @@ form > button {
 /* --------------------------------------------------------------------- */
 /* Журнал выполнения                                                      */
 /* --------------------------------------------------------------------- */
+/*
+ * Лента событий. Поиск, фильтр и выгрузка живут в шапке консоли — это её
+ * панель инструментов, и второй такой же над самим списком не нужно.
+ */
 .engine-timeline {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.timeline-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.timeline-tools h2 {
-  font-size: var(--text-md);
-  font-weight: var(--weight-semibold);
-  margin-right: auto;
-}
-
-.timeline-tools input {
-  width: 180px;
-  min-height: 30px;
-}
-
-.timeline-tools select {
-  min-height: 30px;
-}
-
-.engine-timeline > ol {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
   margin: 0;
-  padding: var(--space-2) var(--space-3);
+  padding: 0;
   list-style: none;
-  min-height: 0;
-  overflow: auto;
+  min-width: 0;
 }
 
-/* В журнале и в доке пустое состояние не должно занимать пол-экрана. */
-.engine-timeline .empty-state,
-.dock-body .empty-state {
-  padding: var(--space-6) var(--space-5);
-}
-
-.engine-timeline > ol > li {
+.engine-timeline > li {
   display: grid;
   grid-template-columns: 8px 78px 132px minmax(0, 1fr);
   gap: var(--space-3);
   align-items: baseline;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-xs);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   transition: background var(--transition-base);
 }
 
-.engine-timeline > ol > li:hover {
+.engine-timeline > li:hover {
   background: var(--bg-secondary);
 }
 
 .engine-timeline time {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   color: var(--text-secondary);
 }
 
@@ -1114,7 +1136,7 @@ form > button {
 .engine-timeline .timeline-detail button {
   min-height: 22px;
   padding: 0 var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   font-family: var(--font-mono);
   color: var(--on-blue-soft);
   background: var(--accent-blue-soft);
@@ -1129,7 +1151,7 @@ form > button {
 
 .engine-timeline .timeline-seq {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   color: var(--text-secondary);
   margin-left: auto;
 }
@@ -1158,15 +1180,6 @@ dialog.overlay::backdrop {
   backdrop-filter: blur(2px);
 }
 
-dialog.overlay > .panel {
-  max-height: calc(100vh - var(--space-8));
-  box-shadow: var(--shadow-lg);
-}
-
-dialog.overlay > .panel > .panel-body {
-  overflow: auto;
-}
-
 .engine-interrupt-overlay {
   width: min(720px, calc(100vw - var(--space-8)));
 }
@@ -1189,7 +1202,7 @@ pre[data-language] {
   max-height: 320px;
   padding: var(--space-4);
   overflow: auto;
-  font-size: var(--text-xs);
+  font-size: var(--type-mono-dense);
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -1204,7 +1217,7 @@ pre[data-language] {
   background: var(--warning-soft);
   border: 1px solid var(--warning-border);
   border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
 }
 
 .widget-error {
@@ -1220,7 +1233,7 @@ pre[data-language] {
 /* Markdown                                                               */
 /* --------------------------------------------------------------------- */
 .safe-markdown {
-  font-size: var(--text-md);
+  font-size: var(--type-body);
   line-height: var(--leading-relaxed);
   color: var(--text-primary);
   min-width: 0;
@@ -1238,19 +1251,19 @@ pre[data-language] {
 .safe-markdown h1,
 .safe-markdown h2 {
   margin: var(--space-7) 0 var(--space-4);
-  font-size: var(--text-xl);
+  font-size: var(--type-heading);
   letter-spacing: -0.01em;
 }
 
 .safe-markdown h3 {
   margin: var(--space-6) 0 var(--space-3);
-  font-size: var(--text-lg);
+  font-size: var(--type-body);
 }
 
 .safe-markdown h4,
 .safe-markdown h5 {
   margin: var(--space-5) 0 var(--space-3);
-  font-size: var(--text-md);
+  font-size: var(--type-body);
 }
 
 .safe-markdown p {
@@ -1278,7 +1291,6 @@ pre[data-language] {
 
 .safe-markdown code {
   padding: 1px 5px;
-  font-size: 0.88em;
   color: var(--on-orange-soft);
   background: var(--accent-orange-soft);
   border-radius: var(--radius-xs);
@@ -1324,7 +1336,7 @@ pre[data-language] {
 }
 
 .artifact-list > details > summary {
-  font-size: var(--text-base);
+  font-size: var(--type-body);
   color: var(--text-primary);
 }
 
@@ -1341,7 +1353,6 @@ pre[data-language] {
   margin-top: var(--space-2);
   padding: var(--space-4);
   overflow: auto;
-  font-size: var(--text-sm);
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -1363,7 +1374,7 @@ pre[data-language] {
 }
 
 .cost-amount {
-  font-size: var(--text-2xl);
+  font-size: var(--type-title);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.02em;
   color: var(--text-primary);

@@ -1,8 +1,11 @@
+import { isSafeBindingPath, isUnsafeToken } from "./paths.ts";
 import type { UiManifest } from "./types";
 
 export const SUPPORTED_MANIFEST_MAJOR = "1";
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
+/** Режимы очистки, которые понимает и сервер (`redaction.py`), и фронтенд. */
+const REDACTION_MODES = new Set(["remove", "mask", "truncate", "metadata_only", "role"]);
 
 export class ManifestValidationError extends Error {
   constructor(message: string) {
@@ -37,6 +40,41 @@ function id(value: unknown, field: string): asserts value is string {
   }
 }
 
+/**
+ * Путь биндинга проверяется тем же разбором, которым его потом читают.
+ *
+ * Отклонённый манифест уходит в fallback с предупреждением в шапке. Принятый
+ * и непрочитываемый — это исключение во время отрисовки поверхности, то есть
+ * пустой экран: разрешение биндинга идёт до границы ошибок виджета.
+ */
+function path(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string") throw new ManifestValidationError(`${field} отсутствует`);
+  if (!isSafeBindingPath(value)) throw new ManifestValidationError(`${field}: недопустимый путь`);
+}
+
+/** Условие показа читает состояние теми же путями — и проверяется так же. */
+function condition(value: unknown, field: string, depth = 0): void {
+  if (value === undefined) return;
+  if (depth > 20) throw new ManifestValidationError(`${field}: условие вложено глубже 20 уровней`);
+  const item = object(value, field);
+  if (item.path !== undefined) path(item.path, `${field}.path`);
+  if (item.not !== undefined) condition(item.not, `${field}.not`, depth + 1);
+  for (const key of ["all", "any"] as const) {
+    const list = item[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) throw new ManifestValidationError(`${field}.${key}: ожидался массив`);
+    list.forEach((child, index) => condition(child, `${field}.${key}[${index}]`, depth + 1));
+  }
+}
+
+/** Виджет биндинга состояния: путь, условие показа и ничего сверх. */
+function widgetBinding(value: unknown, field: string): void {
+  const item = object(value, field);
+  path(item.path, `${field}.path`);
+  id(item.widget, `${field}.widget`);
+  condition(item.visible_when, `${field}.visible_when`);
+}
+
 export function validateManifest(value: unknown, expectedGraphId?: string): UiManifest {
   const manifest = object(value, "manifest");
   safe(manifest);
@@ -64,7 +102,16 @@ export function validateManifest(value: unknown, expectedGraphId?: string): UiMa
     const nodes = object(manifest.nodes, "nodes");
     for (const [nodeId, node] of Object.entries(nodes)) {
       id(nodeId, "node id");
-      object(node, `nodes.${nodeId}`);
+      const item = object(node, `nodes.${nodeId}`);
+      if (item.output !== undefined) widgetBinding(item.output, `nodes.${nodeId}.output`);
+      for (const key of ["badges", "details"] as const) {
+        const list = item[key];
+        if (list === undefined) continue;
+        if (!Array.isArray(list)) {
+          throw new ManifestValidationError(`nodes.${nodeId}.${key}: ожидался массив`);
+        }
+        list.forEach((child, index) => widgetBinding(child, `nodes.${nodeId}.${key}[${index}]`));
+      }
     }
   }
   for (const field of ["input", "state", "interrupts", "surfaces", "actions", "redaction"]) {
@@ -76,20 +123,44 @@ export function validateManifest(value: unknown, expectedGraphId?: string): UiMa
   for (const binding of (manifest.state ?? []) as unknown[]) {
     const item = object(binding, "state binding");
     id(item.id, "state.id");
-    id(item.widget, "state.widget");
-    if (typeof item.path !== "string") throw new ManifestValidationError("state.path отсутствует");
+    widgetBinding(item, "state");
   }
   for (const binding of (manifest.input ?? []) as unknown[]) {
     const item = object(binding, "input binding");
     id(item.id, "input.id");
     id(item.widget, "input.widget");
-    if (typeof item.target !== "string") throw new ManifestValidationError("input.target отсутствует");
+    path(item.target, "input.target");
   }
   for (const binding of (manifest.interrupts ?? []) as unknown[]) {
     const item = object(binding, "interrupt binding");
     id(item.id, "interrupt.id");
     id(item.widget, "interrupt.widget");
     object(item.resume_schema, "interrupt.resume_schema");
+    condition(item.match, "interrupt.match");
+    if (item.bindings !== undefined) {
+      if (!Array.isArray(item.bindings)) {
+        throw new ManifestValidationError("interrupt.bindings: ожидался массив");
+      }
+      item.bindings.forEach((child, index) => widgetBinding(child, `interrupt.bindings[${index}]`));
+    }
+  }
+  for (const action of (manifest.actions ?? []) as unknown[]) {
+    condition(object(action, "action").visible_when, "action.visible_when");
+  }
+  // Правила очистки читаются по тем же токенам плюс `*`, и применяются они
+  // уже на фронтенде (`manifest/redaction.ts`). Правило с непонятным режимом
+  // молча не сработало бы — то есть обещало бы очистку, которой нет.
+  for (const value of (manifest.redaction ?? []) as unknown[]) {
+    const rule = object(value, "redaction rule");
+    if (typeof rule.path !== "string" || !rule.path) {
+      throw new ManifestValidationError("redaction.path отсутствует");
+    }
+    if (rule.path.split(".").some((token) => isUnsafeToken(token))) {
+      throw new ManifestValidationError(`redaction.path: недопустимый путь ${rule.path}`);
+    }
+    if (typeof rule.mode !== "string" || !REDACTION_MODES.has(rule.mode)) {
+      throw new ManifestValidationError(`redaction.mode: неподдерживаемый режим ${String(rule.mode)}`);
+    }
   }
   return manifest as unknown as UiManifest;
 }

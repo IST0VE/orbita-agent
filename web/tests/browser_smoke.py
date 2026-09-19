@@ -292,6 +292,31 @@ def main(extra_checks=None):
                     f"[...document.querySelectorAll('button')].find(b=>b.textContent.includes({json.dumps(label)})).click()"
                 )
 
+            # Настройки стали разделом приложения, а не окном поверх работы:
+            # вход в них один — меню профиля.
+            def open_settings(item="Настройки приложения", group=None):
+                js("document.querySelector('.menu-avatar .menu-trigger').click()")
+                js(
+                    "[...document.querySelectorAll('.menu-item')]"
+                    f".find(b=>b.textContent.includes({json.dumps(item)})).click()"
+                )
+                until("!!document.querySelector('.settings')")
+                if group:
+                    js(
+                        "[...document.querySelectorAll('.settings-nav-item')]"
+                        f".find(b=>b.textContent.includes({json.dumps(group)})).click()"
+                    )
+
+            def close_settings():
+                js("document.querySelector('[aria-label=\"Закрыть настройки\"]').click()")
+                until("document.querySelector('.settings') === null")
+
+            def workspace_view(label):
+                js(
+                    "[...document.querySelectorAll('.workspace-bar .tab')]"
+                    f".find(b=>b.textContent.includes({json.dumps(label)})).click()"
+                )
+
             call("Runtime.enable")
             call("Page.enable")
             call(
@@ -324,12 +349,16 @@ def main(extra_checks=None):
                 ".observe(document.querySelector('.orbit'), {childList:true, subtree:true});"
             )
             motion = "getComputedStyle(document.querySelector('.orbit-ring')).animationName"
+            # Движение фона — настройка интерфейса, а не действие: живёт в
+            # разделе «Оформление», а не значком в шапке рядом с уведомлениями.
+            open_settings("Оформление", None)
             toggle = "document.querySelector('[aria-label=\"Движение фона\"]')"
             assert js(motion) != "none", "Background motion is off by default"
             js(f"{toggle}.click()")
             until(f"{motion} === 'none'")
             js(f"{toggle}.click()")
             until(f"{motion} !== 'none'")
+            close_settings()
             call(
                 "Emulation.setEmulatedMedia",
                 {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
@@ -341,8 +370,15 @@ def main(extra_checks=None):
             assert js("window.framesPainted") == 0, "Background scene re-renders markup"
             click("Показать предыдущие")
             until("document.querySelectorAll('.msg').length === 100")
-            js("document.querySelector('[aria-label=\"Журнал выполнения\"]').click()")
+            js(
+                "[...document.querySelectorAll('.console-tabs button')]"
+                ".find(b=>b.textContent.includes('События')).click()"
+            )
             until("document.querySelector('.engine-timeline') !== null")
+            js(
+                "[...document.querySelectorAll('.console-tabs button')]"
+                ".find(b=>b.textContent.includes('Поток')).click()"
+            )
             screenshot = call("Page.captureScreenshot")["data"]
             (ARTIFACTS / "desktop.png").write_bytes(base64.b64decode(screenshot))
             for width in [1366, 900, 390]:
@@ -358,17 +394,17 @@ def main(extra_checks=None):
                 base64.b64decode(call("Page.captureScreenshot")["data"])
             )
             js(
-                "const draft=document.querySelector('textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(draft,'Reject'); draft.dispatchEvent(new Event('input',{bubbles:true}));"
+                "const draft=document.querySelector('.task-composer textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(draft,'Reject'); draft.dispatchEvent(new Event('input',{bubbles:true}));"
             )
             click("Запустить")
             until(
                 "document.querySelector('[role=alert]')?.textContent.includes('Fixture validation failure')"
             )
-            assert js("document.querySelector('textarea').value") == "Reject", (
+            assert js("document.querySelector('.task-composer textarea').value") == "Reject", (
                 "Rejected submission erased the draft"
             )
             js(
-                "const input=document.querySelector('textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Test'); input.dispatchEvent(new Event('input',{bubbles:true}));"
+                "const input=document.querySelector('.task-composer textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Test'); input.dispatchEvent(new Event('input',{bubbles:true}));"
             )
             until(
                 "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Запустить')&&!b.disabled)"
@@ -379,18 +415,22 @@ def main(extra_checks=None):
             until(
                 "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Остановить'))"
             )
+            # Вторая половина того же правила: поле пустеет, когда сервер принял
+            # ход. До этого момента текст принадлежит оператору — см. проверку
+            # отказа выше и отказ после preflight в browser_regressions.
+            until("document.querySelector('.task-composer textarea').value === ''")
             assert js(
-                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).disabled"
+                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
             )
             click("Остановить")
-            until("document.querySelector('.status').textContent.includes('Остановлен')")
+            until("document.querySelector('.run-badge').textContent.includes('Остановлен')")
             time.sleep(0.5)
-            assert js("document.querySelector('.status').textContent.includes('Остановлен')")
+            assert js("document.querySelector('.run-badge').textContent.includes('Остановлен')")
             assert REQUESTS.count("/threads/saved-thread/runs/stream") == 1, "Duplicate submission"
             until(
-                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).disabled"
+                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
             )
-            click("Новый диалог")
+            click("Новый прогон")
             until("document.querySelectorAll('.msg').length === 0")
             js("document.querySelector('.pick-button').click()")
             until("!!document.querySelector('.pick-menu [data-graph=demo]')")
@@ -401,7 +441,12 @@ def main(extra_checks=None):
                 " && document.querySelector('.graph') !== null"
             )
             assert js("document.querySelectorAll('.msg').length") == 0
-            additional = extra_checks(call, js, until, click) if extra_checks else []
+            shell = {
+                "open_settings": open_settings,
+                "close_settings": close_settings,
+                "workspace_view": workspace_view,
+            }
+            additional = extra_checks(call, js, until, click, shell) if extra_checks else []
             js("fetch('/fixture/interrupt',{method:'POST'})")
             call(
                 "Page.addScriptToEvaluateOnNewDocument",
@@ -444,6 +489,7 @@ def main(extra_checks=None):
                             "active run locks graph and thread",
                             "double submission blocked",
                             "rejected submission preserves draft",
+                            "accepted run clears the draft",
                             "cancellation stays cancelled",
                             "new thread clears messages",
                             "graph switching",

@@ -81,6 +81,16 @@ export type InterruptBinding = {
   bindings?: WidgetBinding[];
 };
 
+/** Правило очистки: путь с `*` по спискам и режим из `redaction.py`. */
+export type RedactionRule = {
+  path: string;
+  mode: "remove" | "mask" | "truncate" | "metadata_only" | "role";
+  /** Для `truncate`: сколько символов остаётся. */
+  max_length?: number;
+  /** Для `role`: кому значение видно. */
+  roles?: string[];
+};
+
 export type SurfaceId = "header" | "left" | "main" | "right" | "bottom" | "modal" | "drawer";
 export type SurfaceManifest = {
   id: SurfaceId;
@@ -134,7 +144,7 @@ export type UiManifest = {
   interrupts?: InterruptBinding[];
   surfaces?: SurfaceManifest[];
   actions?: ActionManifest[];
-  redaction?: Array<{ path: string; mode: string }>;
+  redaction?: RedactionRule[];
   theme?: Record<string, JsonValue>;
 };
 

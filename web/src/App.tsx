@@ -17,7 +17,9 @@ import {
   type UiBundle,
 } from "./engine/api/client";
 import { LiveEventFactory, runErrorMessage } from "./engine/api/langgraphAdapter";
+import { useGraphView } from "./engine/canvas/useGraphView";
 import { configurableOf } from "./engine/manifest/bindings";
+import { redactor } from "./engine/manifest/redaction";
 import type {
   EngineCapabilities,
   SafeWidgetContext,
@@ -25,21 +27,24 @@ import type {
   WidgetAction,
 } from "./engine/manifest/types";
 import { localized } from "./engine/manifest/validate";
-import { RUN_LABELS } from "./engine/runtime/labels";
 import { createRuntimeSnapshot, runtimeReducer } from "./engine/runtime/reducer";
 import { useColumns } from "./hooks/useColumns";
 import { useColumnWidth } from "./hooks/useColumnWidth";
 import { useServerStatus } from "./hooks/useServerStatus";
 import { InterruptSurface } from "./engine/surfaces/SurfaceRenderer";
-import { Timeline } from "./engine/timeline/Timeline";
 import type { OrbitaState } from "./lib/orbita";
-import { graphInfo, sortAssistants } from "./panels/Agents";
-import { SettingsOverlay } from "./panels/Settings";
-import { Inspector } from "./app/Inspector";
-import { Sidebar } from "./app/Sidebar";
-import { TaskDock } from "./app/TaskDock";
-import { TopBar, type NavTarget } from "./app/TopBar";
-import { Workspace } from "./app/Workspace";
+import { SettingsPage } from "./panels/settings/SettingsPage";
+import { AppShell } from "./app/AppShell";
+import { ContextBar } from "./app/ContextBar";
+import { ExecutionConsole, type ConsoleTab } from "./app/ExecutionConsole";
+import { FileSidebar, type SidebarScroll } from "./app/FileSidebar";
+import { GlobalHeader } from "./app/GlobalHeader";
+import { Inspector } from "./app/inspector/Inspector";
+import { graphInfo, rememberScenario, sortAssistants } from "./app/scenarios";
+import { hasResultContent } from "./app/result";
+import type { AppSection, SettingsGroupId, WorkspaceView } from "./app/sections";
+import { TaskComposer } from "./app/TaskComposer";
+import { Workspace, type OpenDocument } from "./app/Workspace";
 
 type StateType = { messages: Message[] } & OrbitaState & Record<string, unknown>;
 
@@ -56,6 +61,20 @@ function pickAssistant(list: Assistant[], wanted: string): Assistant | undefined
 function waitingNode(interrupt: { ns?: string[] } | undefined): string | undefined {
   const namespace = interrupt?.ns;
   return namespace?.length ? namespace[namespace.length - 1].split(":")[0] || undefined : undefined;
+}
+
+/**
+ * Папка задачи для строки контекста.
+ *
+ * Берётся из того поля ввода, которое объявлено деревом папок: какое это поле
+ * и как оно называется, знает манифест, а не фронтенд. У сценария обновления
+ * документа таких полей два — в строке контекста показывается первое, то же,
+ * что стоит первым и в колонке материалов.
+ */
+function currentTask(manifest: UiManifest, inputs: Record<string, unknown>): string {
+  const field = (manifest.input ?? []).find((input) => input.widget === "task-picker");
+  const value = field ? inputs[field.id] : "";
+  return typeof value === "string" ? value : "";
 }
 
 export function App() {
@@ -75,19 +94,23 @@ export function App() {
     task: localStorage.getItem(TASK_KEY) || "",
   }));
   const online = useServerStatus();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  /** Где находится оператор: рабочая область, база знаний или настройки. */
+  const [section, setSection] = useState<AppSection>("workspace");
+  /** На что он смотрит внутри рабочей области. */
+  const [view, setView] = useState<WorkspaceView>("graph");
   const [animated, setAnimated] = useState(() => localStorage.getItem("orbita.animation") !== "0");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  /** Открытый документ занимает главный экран вместо схемы. */
-  const [openDoc, setOpenDoc] = useState<{ title: string; text: string } | null>(null);
+  /** Открытый документ занимает главную область вместо схемы. */
+  const [openDoc, setOpenDoc] = useState<OpenDocument | null>(null);
   const { width: leftWidth, startResize, reset: resetLeftWidth } = useColumnWidth();
   const columns = useColumns();
-  /** Раздел, названный в шапке последним, и запрос прокрутки левой колонки. */
-  const [navActive, setNavActive] = useState<NavTarget>("analytics");
-  const [scrollRequest, setScrollRequest] = useState<
-    { target: "top" | "published"; nonce: number } | null
-  >(null);
+  const { openInspector, openSidebar, closeSidebar, closeInspector } = columns;
+  const graph = useGraphView();
+  /** Консоль выполнения: до первого прогона её нет. */
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [consoleTab, setConsoleTab] = useState<ConsoleTab>("stream");
+  const [scrollRequest, setScrollRequest] = useState<SidebarScroll>(null);
+  const [settingsGroup, setSettingsGroup] = useState<SettingsGroupId | undefined>();
   const [actionError, setActionError] = useState<string | null>(null);
   const [runtime, dispatch] = useReducer(
     runtimeReducer,
@@ -104,6 +127,8 @@ export function App() {
   const actionPending = useRef(false);
   const [busy, setBusy] = useState(false);
   const wasLoading = useRef(false);
+  /** Восстановленный тред открывает консоль один раз, а не при каждом кадре. */
+  const restored = useRef(false);
 
   const current = assistants.find((item) => item.assistant_id === assistantId);
   const graphId = current?.graph_id ?? bundle?.manifest.graph_id ?? DEFAULT_GRAPH;
@@ -113,6 +138,19 @@ export function App() {
     graph_id: graphId,
     title: current?.name || graphId,
   };
+
+  /*
+   * Единственное место, где данные графа входят в интерфейс.
+   *
+   * Правила `redaction` объявлены в манифесте, но применял их только серверный
+   * нормализатор событий, мимо которого идёт SDK. Здесь они применяются к тому
+   * каналу, которым данные приходят на самом деле: к снимку состояния и к
+   * полезной нагрузке событий, из которых потом собираются карточка узла,
+   * консоль и её выгрузка.
+   *
+   * Это не замена серверной очистке: к моменту вызова данные уже в браузере.
+   */
+  const clean = useMemo(() => redactor(manifest.redaction), [manifest.redaction]);
 
   const setKnownThread = useCallback(
     (value: string | null) => {
@@ -138,12 +176,29 @@ export function App() {
       for (const [nodeId, update] of Object.entries(
         (data ?? {}) as Record<string, unknown>,
       )) {
-        dispatch({ type: "event", event: factory.nodeUpdated(nodeId, update) });
+        dispatch({ type: "event", event: factory.nodeUpdated(nodeId, clean(update)) });
       }
     },
     onCreated: (run) => {
       const factory = eventFactory.current;
-      if (factory) dispatch({ type: "event", event: factory.created(run.run_id, run.thread_id) });
+      if (!factory) return;
+      // SDK объявляет `{run_id, thread_id}`, но часть его путей зовёт callback
+      // с `{runId}`. Читаем обе записи: иначе событие о принятом ходе приходит
+      // с пустым идентификатором, и в журнале вместо run_id сервера остаётся
+      // локальный `live-…`.
+      const meta = run as unknown as {
+        run_id?: string;
+        thread_id?: string;
+        runId?: string;
+        threadId?: string;
+      };
+      dispatch({
+        type: "event",
+        event: factory.created(
+          meta.run_id ?? meta.runId ?? "",
+          meta.thread_id ?? meta.threadId ?? threadRef.current ?? "",
+        ),
+      });
     },
     onTaskEvent: (data) => {
       const factory = eventFactory.current;
@@ -162,17 +217,17 @@ export function App() {
       if (Object.prototype.hasOwnProperty.call(task, "input")) {
         dispatch({
           type: "event",
-          event: factory.nodeStarted(task.name, task.id, task.input),
+          event: factory.nodeStarted(task.name, task.id, clean(task.input)),
         });
       } else if (task.error !== null && task.error !== undefined) {
         dispatch({
           type: "event",
-          event: factory.nodeFailed(task.name, task.id, task.error),
+          event: factory.nodeFailed(task.name, task.id, clean(task.error)),
         });
       } else if (Object.prototype.hasOwnProperty.call(task, "result")) {
         dispatch({
           type: "event",
-          event: factory.nodeCompleted(task.name, task.id, task.result),
+          event: factory.nodeCompleted(task.name, task.id, clean(task.result)),
         });
       }
     },
@@ -265,7 +320,10 @@ export function App() {
   }, [threadId]);
 
   useEffect(() => {
-    if (current) localStorage.setItem(GRAPH_KEY, current.graph_id);
+    if (current) {
+      localStorage.setItem(GRAPH_KEY, current.graph_id);
+      rememberScenario(current.graph_id);
+    }
   }, [current]);
   useEffect(() => {
     localStorage.setItem(TASK_KEY, String(inputs.task ?? ""));
@@ -277,7 +335,7 @@ export function App() {
     dispatch({
       type: "reconcile",
       snapshot: {
-        state: values ?? {},
+        state: clean(values ?? {}),
         threadId,
         runStatus: stream.isLoading
           ? "running"
@@ -286,7 +344,7 @@ export function App() {
             : runtimeRef.current.runStatus,
       },
     });
-  }, [stream.values, serverInterrupt, stream.isLoading, threadId, bundle, assistantId]);
+  }, [stream.values, serverInterrupt, stream.isLoading, threadId, bundle, assistantId, clean]);
 
   useEffect(() => {
     // Only the idle SDK snapshot decides whether an approval was consumed.
@@ -325,13 +383,47 @@ export function App() {
     wasLoading.current = stream.isLoading;
   }, [assistantId, graphId, serverInterrupt, stream.isLoading]);
 
+  /**
+   * Консоль открывается сама тогда, когда ей есть что показать: с началом
+   * прогона и при возвращении к треду, в котором уже что-то происходило.
+   * Свернул её оператор — она остаётся свёрнутой до следующего прогона.
+   */
+  useEffect(() => {
+    if (runtime.runId) setConsoleOpen(true);
+  }, [runtime.runId]);
+  useEffect(() => {
+    if (restored.current) return;
+    const values = stream.values as StateType | undefined;
+    if (Array.isArray(values?.messages) && values.messages.length) {
+      restored.current = true;
+      setConsoleOpen(true);
+    }
+  }, [stream.values]);
+
+  /** Прогон закончился — итог показывается сам, если он есть. */
+  useEffect(() => {
+    if (runtime.runStatus !== "completed") return;
+    if (hasResultContent(manifest, runtime)) setView((value) => (value === "graph" ? "result" : value));
+  }, [runtime.runStatus, runtime.state, manifest]);
+
   const startRun = useCallback(
     (payload: unknown) => {
       const question =
         typeof payload === "object" && payload
           ? String((payload as { value?: unknown }).value ?? "")
           : String(payload ?? "");
-      if (!question.trim() || stream.isLoading) return;
+      // Двойное нажатие и отправка во время прогона — не ошибка, а гонка: её
+      // здесь и гасили молчанием.
+      if (stream.isLoading) return;
+      // Запуск без текста — это несогласованный контракт виджета, а не выбор
+      // оператора: поле задачи пустое не отправляет. Молчаливый возврат делал
+      // такое расхождение невидимым — кнопка срабатывала, ход не начинался и
+      // ошибки не было.
+      if (!question.trim()) {
+        throw new Error(
+          "Запуск без текста задачи: виджет прислал payload без строкового `value`.",
+        );
+      }
       runFailed.current = false;
       runCancelled.current = false;
       const factory = new LiveEventFactory(
@@ -343,6 +435,8 @@ export function App() {
       runStarted.current = true;
       // Ход начался — на главном экране снова нужна схема, а не документ.
       setOpenDoc(null);
+      setView("graph");
+      setConsoleOpen(true);
       dispatch({ type: "event", event: factory.startRun() });
       return stream.submit(
         { messages: [{ type: "human", content: question.trim() }] },
@@ -360,6 +454,9 @@ export function App() {
     setOpenDoc(null);
     setSelectedNode(null);
     setActionError(null);
+    setView("graph");
+    setConsoleOpen(false);
+    restored.current = true;
     runStarted.current = false;
     runFailed.current = false;
     runCancelled.current = false;
@@ -374,6 +471,16 @@ export function App() {
       topologyHash: bundle?.topologyHash,
     });
   }, [assistantId, bundle?.topologyHash, graphId, manifest.manifest_version, setKnownThread, stream.isLoading]);
+
+  const openDocument = useCallback((payload: unknown) => {
+    const document = (payload ?? {}) as { title?: unknown; text?: unknown };
+    setOpenDoc({
+      title: String(document.title ?? "документ"),
+      text: String(document.text ?? ""),
+    });
+    setSection("workspace");
+    setView("document");
+  }, []);
 
   const dispatcher = useMemo(
     () =>
@@ -403,16 +510,10 @@ export function App() {
             streamMode: ["values", "updates", "tasks"],
           });
         },
-        "publication.open": (payload) => {
-          const document = (payload ?? {}) as { title?: unknown; text?: unknown };
-          setOpenDoc({
-            title: String(document.title ?? "документ"),
-            text: String(document.text ?? ""),
-          });
-        },
+        "publication.open": openDocument,
         "resource.refresh": () => undefined,
       }, (body) => validateAction(apiUrl, body)),
-    [capabilities, manifest, newThread, startRun, stream],
+    [capabilities, manifest, newThread, openDocument, startRun, stream],
   );
 
   const handleAction = useCallback(
@@ -465,6 +566,10 @@ export function App() {
     setOpenDoc(null);
     setBundle(null);
     setBundleError(null);
+    setSection("workspace");
+    setView("graph");
+    setConsoleOpen(false);
+    restored.current = false;
     dispatch({ type: "reset", assistantId: id, graphId: next.graph_id, manifestVersion: "0.0.fallback" });
     setAssistantId(id);
     setThreadId(localStorage.getItem(threadKey(next.graph_id)) || null);
@@ -477,30 +582,30 @@ export function App() {
     eventFactory.current = null;
   };
 
-  /**
-   * Навигация шапки.
-   *
-   * Экран в приложении один, поэтому раздел — это не адрес, а место на экране:
-   * «Проекты» открывают левую колонку и уводят её к списку папок, «База
-   * знаний» — к опубликованным документам, «Аналитика» возвращает схему
-   * вместо открытого документа.
-   */
-  const navigate = useCallback((target: NavTarget) => {
-    if (target === "settings") {
-      setSettingsOpen(true);
-      return;
-    }
-    setNavActive(target);
-    if (target === "analytics") {
-      setOpenDoc(null);
-      return;
-    }
-    columns.openSidebar();
-    setScrollRequest((previous) => ({
-      target: target === "knowledge" ? "published" : "top",
-      nonce: (previous?.nonce ?? 0) + 1,
-    }));
-  }, [columns]);
+  /** Выбор узла открывает инспектор: подробности приходят к тому, кто их спросил. */
+  const selectNode = useCallback((nodeId: string | null) => {
+    setSelectedNode(nodeId);
+    if (nodeId) openInspector();
+  }, [openInspector]);
+
+  const showMaterials = useCallback(() => {
+    setSection("workspace");
+    openSidebar();
+    setScrollRequest((previous) => ({ target: "input", nonce: (previous?.nonce ?? 0) + 1 }));
+  }, [openSidebar]);
+
+  const openConsole = useCallback((tab: ConsoleTab) => {
+    setSection("workspace");
+    setConsoleTab(tab);
+    setConsoleOpen(true);
+  }, []);
+
+  const openSettings = useCallback((group?: SettingsGroupId) => {
+    setSection("settings");
+    // Раздел настроек знает, какую группу открыть: меню профиля ведёт либо к
+    // модели, либо к оформлению, и промахиваться мимо не должно.
+    if (group) setSettingsGroup(group);
+  }, []);
 
   const toggleAnimation = useCallback(() => {
     setAnimated((value) => {
@@ -520,53 +625,65 @@ export function App() {
   const label = graphInfo(current, graphId, manifestInfo);
   const fatalError = assistantsError || bundleError || actionError;
   const locked = stream.isLoading || busy;
+  const streamError = stream.error ? runErrorMessage(stream.error) : null;
 
   return (
-    <div
-      className="app engine-app"
-      data-sidebar={columns.sidebar ? "open" : "closed"}
-      data-inspector={columns.inspector ? "open" : "closed"}
-      data-animated={animated ? "true" : "false"}
-      style={leftWidth ? ({ "--col-left": `${leftWidth}px` } as React.CSSProperties) : undefined}
-    >
-      <TopBar
-        assistants={assistants}
-        assistantId={assistantId}
-        manifestInfo={manifestInfo}
-        onSelectAssistant={chooseAssistant}
-        locked={locked}
-        online={online}
-        runStatus={runtime.runStatus}
-        running={stream.isLoading}
-        onNavigate={navigate}
-        navActive={navActive}
-        onNewThread={newThread}
-        onToggleLog={() => setDetailsOpen((value) => !value)}
-        logOpen={detailsOpen}
-        alerts={alerts}
-        animated={animated}
-        onToggleAnimation={toggleAnimation}
-        sidebarOpen={columns.sidebar}
-        onToggleSidebar={columns.toggleSidebar}
-        inspectorOpen={columns.inspector}
-        onToggleInspector={columns.toggleInspector}
-      />
-
-      <div className="app-alerts">
-        {bundle?.fallback ? (
-          <div className="engine-warning" role="status">
-            Упрощённый интерфейс: {bundle.warning}
-          </div>
-        ) : null}
-        {fatalError ? (
-          <div className="error" role="alert">
-            {fatalError}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="app-body">
-        <Sidebar
+    <AppShell
+      section={section}
+      sidebarOpen={columns.sidebar}
+      inspectorOpen={columns.inspector}
+      narrow={columns.narrow}
+      animated={animated}
+      leftWidth={leftWidth}
+      onDismissDrawer={() => { closeSidebar(); closeInspector(); }}
+      header={
+        <GlobalHeader
+          assistants={assistants}
+          assistantId={assistantId}
+          manifestInfo={manifestInfo}
+          onSelectAssistant={chooseAssistant}
+          locked={locked}
+          online={online}
+          onSection={setSection}
+          onOpenSettings={openSettings}
+          alerts={alerts}
+          onOpenAlerts={() => openConsole("events")}
+        />
+      }
+      context={
+        <ContextBar
+          task={currentTask(manifest, inputs)}
+          onPickTask={showMaterials}
+          scenario={label.label}
+          scenarioHint={label.hint}
+          runStatus={runtime.runStatus}
+          running={stream.isLoading}
+          canStop={Boolean(manifest.capabilities?.stop_run)}
+          onStop={() => handleAction({ kind: "run.stop" })}
+          onNewThread={newThread}
+          newThreadDisabled={locked}
+          events={runtime.events.length}
+          consoleOpen={consoleOpen}
+          onToggleConsole={() => setConsoleOpen((value) => !value)}
+          sidebarOpen={columns.sidebar}
+          onToggleSidebar={columns.toggleSidebar}
+          inspectorOpen={columns.inspector}
+          onToggleInspector={columns.toggleInspector}
+        />
+      }
+      alerts={
+        <div className="app-alerts">
+          {bundle?.fallback ? (
+            <div className="engine-warning" role="status">
+              Упрощённый интерфейс: {bundle.warning}
+            </div>
+          ) : null}
+          {fatalError ? <div className="error" role="alert">{fatalError}</div> : null}
+          {streamError ? <div className="error" role="alert">{streamError}</div> : null}
+        </div>
+      }
+      sidebar={
+        <FileSidebar
           manifest={manifest}
           runtime={runtime}
           context={safeContext}
@@ -578,20 +695,41 @@ export function App() {
           resetWidth={resetLeftWidth}
           scrollRequest={scrollRequest}
           ready={Boolean(bundle)}
+          drawer={columns.narrow}
+          onClose={closeSidebar}
         />
-
+      }
+      main={
         <Workspace
           bundle={bundle}
           manifest={manifest}
           runtime={runtime}
+          context={safeContext}
+          inputs={inputs}
+          onInput={updateInput}
+          onAction={handleAction}
           selected={selectedNode}
-          onSelect={setSelectedNode}
+          onSelect={selectNode}
+          view={view}
+          onView={setView}
+          graph={graph}
           document={openDoc}
-          onCloseDocument={() => setOpenDoc(null)}
+          onCloseDocument={() => { setOpenDoc(null); setView("graph"); }}
           error={fatalError}
-          canvasKey={assistantId}
         />
-
+      }
+      composer={
+        <TaskComposer
+          manifest={manifest}
+          runtime={runtime}
+          context={safeContext}
+          inputs={inputs}
+          onInput={updateInput}
+          onAction={handleAction}
+          onPickContext={showMaterials}
+        />
+      }
+      inspector={
         <Inspector
           manifest={manifest}
           runtime={runtime}
@@ -599,48 +737,40 @@ export function App() {
           inputs={inputs}
           onInput={updateInput}
           onAction={handleAction}
-          surfaceKey={assistantId}
-          projectTitle={label.label}
+          topology={bundle?.topology ?? null}
+          selectedNode={selectedNode}
+          onClearNode={() => setSelectedNode(null)}
+          scenarioTitle={label.label}
           threadId={threadId}
+          onClose={closeInspector}
         />
-      </div>
-
-      <TaskDock
-        manifest={manifest}
-        runtime={runtime}
-        context={safeContext}
-        inputs={inputs}
-        onInput={updateInput}
-        onAction={handleAction}
-        surfaceKey={assistantId}
-        running={stream.isLoading}
-        canStop={Boolean(manifest.capabilities?.stop_run)}
-        project={label.label}
-      />
-
-      {detailsOpen ? (
-        <div className="app-log">
-          <Timeline
+      }
+      console={
+        consoleOpen ? (
+          <ExecutionConsole
+            manifest={manifest}
             runtime={runtime}
-            onSelectNode={setSelectedNode}
-            onClose={() => setDetailsOpen(false)}
+            context={safeContext}
+            inputs={inputs}
+            onInput={updateInput}
+            onAction={handleAction}
+            tab={consoleTab}
+            onTab={setConsoleTab}
+            onClose={() => setConsoleOpen(false)}
+            onSelectNode={selectNode}
           />
-        </div>
-      ) : null}
-
-      <footer className="app-footer">
-        <span className="truncate">{label.hint || label.label}</span>
-        <span className="app-footer-right">
-          {stream.error ? (
-            <span className="error" role="alert">{runErrorMessage(stream.error)}</span>
-          ) : null}
-          <span className="mono">manifest {manifest.manifest_version}</span>
-          <span className="mono">thread {threadId ?? "новый"}</span>
-          <span>{RUN_LABELS[runtime.runStatus]}</span>
-        </span>
-      </footer>
-
-      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        ) : null
+      }
+    >
+      <SettingsPage
+        open={section === "settings"}
+        group={settingsGroup}
+        onClose={() => setSection("workspace")}
+        online={online}
+        animated={animated}
+        onToggleAnimation={toggleAnimation}
+        onResetLayout={resetLeftWidth}
+      />
       {/*
         Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на
         время отправки нельзя: пока идёт прогон, оператор должен видеть, что
@@ -654,6 +784,6 @@ export function App() {
         onAction={handleAction}
         busy={busy || stream.isLoading}
       />
-    </div>
+    </AppShell>
   );
 }

@@ -67,7 +67,7 @@ export const BUILTIN_WIDGETS: WidgetDefinition[] = [
   definition("json", JsonWidget), definition("table", TableWidget), definition("key-value", KeyValueWidget),
   definition("number", NumberWidget), definition("money", MoneyWidget), definition("progress", ProgressWidget),
   definition("status", StatusWidget), definition("messages", MessagesWidget),
-  definition("chat-input", ChatInputWidget, ["input"]), definition("form", FormWidget, ["input", "edit", "interrupt"]),
+  definition("chat-input", ChatInputWidget, ["input"], true), definition("form", FormWidget, ["input", "edit", "interrupt"]),
   definition("approval", ApprovalWidget, ["interrupt"]), definition("artifact-list", ArtifactListWidget),
   definition("draft-list", DraftListWidget, ["view"], true),
   definition("document-preview", DocumentPreviewWidget), definition("document-diff", DocumentDiffWidget),

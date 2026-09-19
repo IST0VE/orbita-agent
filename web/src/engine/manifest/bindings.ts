@@ -1,22 +1,9 @@
+import { bindingTokens, isUnsafeToken } from "./paths.ts";
 import type { Condition, InputBinding, InterruptBinding, SurfaceId, UiManifest } from "./types";
-
-const UNSAFE = new Set(["__proto__", "prototype", "constructor"]);
-
-function tokens(path: string): string[] {
-  if (!path) return [];
-  const parts = path.startsWith("/")
-    ? path
-        .slice(1)
-        .split("/")
-        .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))
-    : path.split(".");
-  if (parts.some((part) => UNSAFE.has(part))) throw new Error("unsafe binding path");
-  return parts.filter(Boolean);
-}
 
 export function resolveBinding(root: unknown, path: string): { found: boolean; value: unknown } {
   let current = root;
-  for (const token of tokens(path)) {
+  for (const token of bindingTokens(path)) {
     if (current === null || typeof current !== "object") return { found: false, value: undefined };
     if (!Object.prototype.hasOwnProperty.call(current, token)) return { found: false, value: undefined };
     current = (current as Record<string, unknown>)[token];
@@ -93,7 +80,7 @@ export function configurableOf(
     const value = inputs[input.id];
     if (scope !== "configurable" || !name || value === undefined || value === "") continue;
     if (Array.isArray(value) && value.length === 0) continue;
-    if (UNSAFE.has(name)) continue;
+    if (isUnsafeToken(name)) continue;
     config[name] = value;
   }
   return config;

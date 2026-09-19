@@ -41,6 +41,18 @@ for gate in (key for key in TITLES if key.startswith("gate_")):
 base_manifest = smoke.manifest
 
 
+def graph_menu(page, label):
+    """
+    Действие из меню схемы.
+
+    Мини-карта, авторасстановка и сброс масштаба уехали из панели в меню за
+    многоточием: на виду остались поиск, масштаб и переключатель представления.
+    Проверки ходят тем же путём, что оператор, — через публичный интерфейс.
+    """
+    page.get_by_role("button", name="Ещё действия со схемой", exact=True).click()
+    page.locator(".menu-list .menu-item").filter(has_text=label).click()
+
+
 def manifest(graph):
     value = base_manifest(graph)
     value["nodes"] = {key: {"title": title, "description": f"Этап: {title}",
@@ -137,7 +149,7 @@ def main():
             page.keyboard.press("0")
             page.wait_for_timeout(100)
             # Fit then zoom by a toolbar click, keeping all tests in public UI.
-            page.get_by_role("button", name="Весь граф", exact=True).click()
+            page.get_by_role("button", name="Вписать граф", exact=True).click()
             node = page.locator('.react-flow__node[data-id="requirements"]')
             original_position = node.get_attribute("style")
             rect = node.bounding_box()
@@ -169,15 +181,17 @@ def main():
             assert max(deviations) < 1.5, deviations
 
             camera = view.get_attribute("style")
-            page.get_by_role("button", name="Список", exact=True).click()
-            page.get_by_role("button", name="Схема", exact=True).click()
+            # Схема и список — представления графа; схема, результат и документ
+            # — виды рабочей области. Имена совпадают, адресация разная.
+            page.locator('[data-representation="list"]').click()
+            page.locator('[data-representation="diagram"]').click()
             assert node.get_attribute("style") == moved_position, "Tab switch reset manual positions"
             assert view.get_attribute("style") == camera, "Tab switch reset the viewport"
             page.locator('.engine-outline summary').click()
             page.get_by_role("button", name="Документ проверки").click()
-            page.get_by_role("button", name="К схеме", exact=True).wait_for()
+            page.locator('.workspace-bar .tab[data-view="document"]').wait_for()
             assert not graph.is_visible()
-            page.get_by_role("button", name="К схеме", exact=True).click()
+            page.locator('.workspace-bar .tab[data-view="graph"]').click()
             assert node.get_attribute("style") == moved_position, "Opening a document reset manual positions"
             assert view.get_attribute("style") == camera, "Opening a document reset the viewport"
 
@@ -188,11 +202,11 @@ def main():
             assert view.get_attribute("style") == camera, "Run update reset the viewport"
             page.get_by_role("button", name="Остановить", exact=True).click()
             page.get_by_role("button", name="Запустить", exact=True).wait_for()
-            page.get_by_role("button", name="Мини-карта", exact=True).click()
+            graph_menu(page, "Мини-карта")
             assert page.locator(".react-flow__minimap").count() == 1
             assert node.get_attribute("style") == moved_position
 
-            page.get_by_role("button", name="Весь граф", exact=True).click()
+            page.get_by_role("button", name="Вписать граф", exact=True).click()
             node.click()
             assert page.locator(".node-details").count() == 1
             page.keyboard.press("Escape")
@@ -204,7 +218,7 @@ def main():
             assert node.get_attribute("style") != keyboard_position, "Arrow key did not move selected node"
             page.keyboard.press("Space")
             assert page.locator(".node-details").count() == 0, "Space did not toggle node selection"
-            page.get_by_role("button", name="Авторасстановка", exact=True).click()
+            graph_menu(page, "Авторасстановка")
             page.locator(".canvas-layout-state").wait_for(state="hidden")
             page.wait_for_timeout(200)
             assert node.get_attribute("style") == original_position, "Auto-layout did not restore initial positions"

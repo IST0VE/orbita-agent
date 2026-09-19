@@ -137,7 +137,19 @@ def manifest(graph):
     return value
 
 
+REJECT_RUN = False
+
+
 class Handler(smoke.Handler):
+    def do_POST(self):
+        # Отказ уже после успешного preflight: запуск не состоялся, хотя
+        # интерфейс к этому моменту успел показать «выполняется».
+        if REJECT_RUN and self.path.endswith("/runs/stream"):
+            smoke.REQUESTS.append(self.path)
+            self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
+            return self.reply({"error": "Fixture run rejected"}, 409)
+        return super().do_POST()
+
     def reply(self, value, status=200):
         if isinstance(value, dict) and "values" in value:
             value["values"]["document"] = MARKDOWN
@@ -220,16 +232,25 @@ class Handler(smoke.Handler):
         )
 
 
-def regressions(call, js, until, click):
+def regressions(call, js, until, click, shell):
     global HEALTH, PUBLICATIONS_OK, SAVE_OK, APPROVAL
+
+    open_settings = shell["open_settings"]
+    close_settings = shell["close_settings"]
+    workspace_view = shell["workspace_view"]
 
     def fill(selector, value):
         js(f"""(()=>{{const e=document.querySelector({json.dumps(selector)});
             Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,{json.dumps(value)});
             e.dispatchEvent(new Event('input',{{bubbles:true}}));}})()""")
 
-    def key(name, code, shift=False):
-        for kind in ["keyDown", "keyUp"]:
+    def key(name, code, shift=False, raw=False, text=None):
+        # Две тонкости протокола. `rawKeyDown` нужен клавишам, чья работа —
+        # действие самого браузера, а не обработчик страницы: перевод фокуса
+        # по Tab при обычном `keyDown` не выполняется. А `text` нужен там, где
+        # проверяется штатная активация элемента: без него Enter доходит до
+        # обработчиков, но кнопку не нажимает.
+        for kind in ["rawKeyDown" if raw else "keyDown", "keyUp"]:
             call(
                 "Input.dispatchKeyEvent",
                 {
@@ -237,6 +258,8 @@ def regressions(call, js, until, click):
                     "key": name,
                     "code": name,
                     "windowsVirtualKeyCode": code,
+                    "nativeVirtualKeyCode": code,
+                    **({"text": text} if text and kind != "keyUp" else {}),
                     "modifiers": 8 if shift else 0,
                 },
             )
@@ -247,6 +270,10 @@ def regressions(call, js, until, click):
     )
     js("localStorage.setItem('orbita.graph','agent')")
     call("Page.reload")
+    # Итог прогона занимает главную область, а не колонку справа: вкладка
+    # «Результат» — то место, где его читают.
+    until("!!document.querySelector('.workspace-bar .tab')", seconds=30)
+    workspace_view("Результат")
     until("document.querySelector('.safe-markdown strong')?.textContent === 'bold'")
     assert js("document.querySelectorAll('.safe-markdown table tbody tr').length") == 1
     assert js("document.querySelectorAll('.safe-markdown ul li').length") == 2
@@ -270,10 +297,14 @@ def regressions(call, js, until, click):
             "Emulation.setDeviceMetricsOverride",
             {"width": width, "height": 844, "deviceScaleFactor": 1, "mobile": width < 700},
         )
+        time.sleep(0.2)
         assert js("document.querySelector('.app').scrollWidth <= innerWidth + 1"), (
             f"Markdown overflow at {width}"
         )
 
+    # Поле ввода, которому манифест не назначил поверхность, — это параметр
+    # прогона, и стоит он среди параметров, а не в поле задачи.
+    until("!!document.querySelector('.sidebar [data-widget=form]')")
     array = '[data-widget="form"] textarea'
     fill(array, '["')
     time.sleep(0.1)
@@ -291,67 +322,73 @@ def regressions(call, js, until, click):
     until("document.querySelector('[data-widget=form] button').disabled")
     fill(array, '["one"]')
 
+    # Структурированная форма — это параметры прогона (`input[].target`), а не
+    # самостоятельный запуск. Раньше её кнопка слала `run.start` с объектом
+    # формы, обработчик читал оттуда только `payload.value` и молча ничего не
+    # делал: кнопка обещала ход, которого не было.
+    assert js("document.querySelector('[data-widget=form] button').textContent.trim()") == "Применить"
+    runs_before = len([path for path in smoke.REQUESTS if path.endswith("/runs/stream")])
+    checks_before = smoke.REQUESTS.count("/api/ui/actions/validate")
     js(
-        "[...document.querySelectorAll('.canvas-tools button')].find(b=>b.textContent==='Список').click()"
+        "document.querySelector('[data-widget=form] form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))"
     )
+    time.sleep(0.5)
+    assert len([path for path in smoke.REQUESTS if path.endswith("/runs/stream")]) == runs_before, (
+        "Parameter form started a run"
+    )
+    assert smoke.REQUESTS.count("/api/ui/actions/validate") == checks_before
+
+    # Представления графа переключаются значками: подписи «Схема» и «Список»
+    # рядом с вкладками видов читались как ещё один ряд вкладок.
+    workspace_view("Схема")
+    js("document.querySelector('[data-representation=\"list\"]').click()")
     until("!!document.querySelector('.graph-list tbody tr')")
     js("document.querySelector('.graph-list tbody tr').focus()")
     key("Enter", 13)
+    # Подробности узла открываются в инспекторе, а не карточкой поверх схемы.
     until("!!document.querySelector('.node-details')")
-    # Карточку узла закрывает кнопка со значком: текста у неё нет, адресуемся
-    # по имени для экранного диктора.
-    js("document.querySelector('.node-details button').click()")
+    js("document.querySelector('.inspector-clear').click()")
     until("document.querySelector('.node-details') === null")
     js("document.querySelector('.graph-list tbody tr').focus()")
     key(" ", 32)
     until("!!document.querySelector('.node-details')")
-    js("document.querySelector('.node-details button').click()")
+    js("document.querySelector('.inspector-clear').click()")
+    js("document.querySelector('[data-representation=\"diagram\"]').click()")
 
-    js(
-        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Настройки')).focus()"
-    )
-    click("Настройки")
+    # Настройки — раздел приложения, а не окно поверх работы. Все переменные
+    # целиком лежат в «Продвинутых»; фикстура отдаёт ровно их.
+    open_settings(group="Продвинутые")
     until("!!document.querySelector('.set-section input')")
-    assert js("document.querySelector('dialog').matches(':modal')")
-    js(
-        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый диалог')).focus()"
-    )
-    assert js("document.querySelector('dialog').contains(document.activeElement)"), (
-        "Background can take focus"
-    )
-    js("[...document.querySelectorAll('dialog button')].at(-1).focus()")
-    key("Tab", 9)
-    assert js("document.querySelector('dialog').contains(document.activeElement)")
-    key("Tab", 9, shift=True)
-    assert js("document.querySelector('dialog').contains(document.activeElement)")
+    assert js("document.querySelector('.app-body').hidden"), "Workspace still visible under settings"
+    assert js("document.querySelector('dialog') === null"), "Settings must not be a modal"
 
     fill(".set-section .set-field input", "first")
     click("Править комментарий")
     fill(".set-comment textarea", "first note")
     click("Сохранить")
     until(
-        "[...document.querySelectorAll('dialog button')].some(b=>b.textContent.includes('Запись…'))"
+        "[...document.querySelectorAll('.settings-bar button')].some(b=>b.textContent.includes('Запись…'))"
     )
     fill(".set-section .set-field input", "second")
     fill(".set-comment textarea", "second note")
     key("Escape", 27)
-    until("document.querySelector('dialog') === null")
-    assert js("document.activeElement.textContent.includes('Настройки')"), (
+    until("document.querySelector('.settings') === null")
+    assert js("document.activeElement.getAttribute('aria-label') === 'Оператор и настройки'"), (
         "Opener focus not restored"
     )
-    click("Настройки")
-    until("!!document.querySelector('.panel-foot .ok')")
+    open_settings(group="Продвинутые")
+    until("!!document.querySelector('.settings-bar .ok')")
     assert SETTINGS["TEST_VALUE"] == "first"
     assert NOTES["TEST_VALUE"] == "first note"
     assert js("document.querySelector('.set-section input').value") == "second"
     assert js("document.querySelector('.set-comment textarea').value") == "second note"
     assert not js(
-        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('Сохранить')).disabled"
+        "[...document.querySelectorAll('.settings-bar button')].find(b=>b.textContent.includes('Сохранить')).disabled"
     )
     click("Сохранить")
-    until("!document.querySelector('.panel-foot .ok')")
+    until("!document.querySelector('.settings-bar .ok')")
     until(
-        "[...document.querySelectorAll('dialog button')].find(b=>b.textContent.includes('Сохранить'))?.disabled && !!document.querySelector('.panel-foot .ok')"
+        "[...document.querySelectorAll('.settings-bar button')].find(b=>b.textContent.includes('Сохранить'))?.disabled && !!document.querySelector('.settings-bar .ok')"
     )
     assert SETTINGS["TEST_VALUE"] == "second"
     assert NOTES["TEST_VALUE"] == "second note"
@@ -360,30 +397,41 @@ def regressions(call, js, until, click):
     fill(".set-section input", "retry value")
     click("Сохранить")
     until(
-        "document.querySelector('.panel-foot .error')?.textContent.includes('Save fixture unavailable')"
+        "document.querySelector('.settings-bar .error')?.textContent.includes('Save fixture unavailable')"
     )
     assert js("document.querySelector('.set-section input').value") == "retry value"
     SAVE_OK = True
     click("Сохранить")
-    until("!document.querySelector('.panel-foot .error')")
-    until("!!document.querySelector('.panel-foot .ok')")
+    until("!document.querySelector('.settings-bar .error')")
+    until("!!document.querySelector('.settings-bar .ok')")
     assert SETTINGS["TEST_VALUE"] == "retry value"
     fill(".set-section input", "unsaved")
-    # Незаписанный секрет не должен пережить закрытие окна, а обычная правка —
-    # должна: иначе токен лежит в памяти вкладки всю сессию просто так.
+    # Незаписанный секрет не должен пережить закрытие раздела, а обычная
+    # правка — должна: иначе токен лежит в памяти вкладки всю сессию просто так.
     click("Изменить")
     fill('input[type="password"]', "unsaved-secret")
-    click("Закрыть")
-    click("Настройки")
+    close_settings()
+    open_settings(group="Продвинутые")
     until("!!document.querySelector('.set-section input')")
     assert js("document.querySelector('.set-section input').value") == "unsaved"
     assert js("document.querySelector('input[type=password]') === null"), "Secret draft survived"
     click("Сбросить правки")
     until("document.querySelector('.set-section input').value === 'retry value'")
+
+    # Применённые настройки: значение, источник и «нужен перезапуск».
+    # Секрет остаётся маской и здесь.
+    until("document.querySelector('.set-applied') !== null")
+    assert js("document.querySelector('.set-applied').open === true"), (
+        "расхождение файла и процесса должно быть видно сразу"
+    )
+    assert js("document.querySelector('.set-applied-table').textContent.includes('окружение')")
+    assert js("document.querySelector('.set-applied-table tr.warn').textContent.includes('LLM_MODEL')")
+    assert js("document.querySelector('.set-applied-table').textContent.includes('********')")
+    assert not js("document.querySelector('.set-applied-table').textContent.includes('sk-')")
     (smoke.ARTIFACTS / "settings.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
-    click("Закрыть")
+    close_settings()
 
     PUBLICATIONS_OK = False
     js("document.querySelector('.engine-outline').open=true")
@@ -401,37 +449,26 @@ def regressions(call, js, until, click):
         "!!document.querySelector('.engine-outline .resource-list button') && !document.querySelector('.engine-outline [role=alert]')"
     )
 
+    # Состояние связи — глобальный статус продукта, и стоит он один раз, в шапке.
     HEALTH = "offline"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('Нет сервера')")
+    until("document.querySelector('.system-status').textContent.includes('Нет сервера')")
     # Просроченный токен — это не упавший сервер: чинить надо разное, и
     # фоновая проверка не должна ни спрашивать токен, ни врать про сервер.
     HEALTH = "unauthorized"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('Нет доступа')")
+    until("document.querySelector('.system-status').textContent.includes('Нет доступа')")
     HEALTH = "ok"
     js("window.dispatchEvent(new Event('focus'))")
-    until("document.querySelector('.status').textContent.includes('На связи')")
+    until("document.querySelector('.system-status').textContent.includes('На связи')")
     js("window.dispatchEvent(new Event('offline'))")
-    until("document.querySelector('.status').textContent.includes('Нет сервера')")
+    until("document.querySelector('.system-status').textContent.includes('Нет сервера')")
     js("window.dispatchEvent(new Event('online'))")
-    until("document.querySelector('.status').textContent.includes('На связи')")
-    # Применённые настройки: значение, источник и «нужен перезапуск».
-    # Секрет остаётся маской и здесь.
-    click("Настройки")
-    until("document.querySelector('.set-applied') !== null")
-    assert js("document.querySelector('.set-applied').open === true"), (
-        "расхождение файла и процесса должно быть видно сразу"
-    )
-    assert js("document.querySelector('.set-applied-table').textContent.includes('окружение')")
-    assert js("document.querySelector('.set-applied-table tr.warn').textContent.includes('LLM_MODEL')")
-    assert js("document.querySelector('.set-applied-table').textContent.includes('********')")
-    assert not js("document.querySelector('.set-applied-table').textContent.includes('sk-')")
-    key("Escape", 27)
-    until("document.querySelector('.set-applied') === null")
+    until("document.querySelector('.system-status').textContent.includes('На связи')")
 
     # Итог прогона: три строки вместо четырёх блоков JSON. Проблема названа,
     # следующее действие сказано.
+    workspace_view("Результат")
     until("document.querySelector('.run-summary') !== null")
     assert js("document.querySelector('.run-summary-outcome').textContent.includes('Документов этапов: 2')")
     assert js("document.querySelector('.run-summary-problems').textContent.includes('план изменился')")
@@ -464,14 +501,65 @@ def regressions(call, js, until, click):
     call("Page.reload")
     until("document.querySelector('.approve') === null")
 
+    # Меню профиля: по пунктам ходит настоящий фокус, и Enter достаётся
+    # сфокусированной кнопке. Раньше моделей фокуса было две — пункты стояли
+    # в порядке обхода Tab, а Enter на контейнере выполнял пункт по
+    # внутреннему счётчику, который Tab не двигал: фокус стоял на
+    # «Оформлении», открывалась «Модель».
+    # Страница только что перезагружена: ждём саму шапку, а не её меню.
+    until("!!document.querySelector('.menu-avatar .menu-trigger')", seconds=30)
+    js("document.querySelector('.menu-avatar .menu-trigger').click()")
+    until("!!document.querySelector('.menu-list .menu-item')")
+    assert js("document.activeElement.textContent.includes('Настройки приложения')"), (
+        "Menu did not take focus on open"
+    )
+    key("ArrowDown", 40)
+    assert js("document.activeElement.textContent.includes('Оформление')"), (
+        "Arrow key did not move the real focus"
+    )
+    # Подсветка и фокус — одно и то же, а не два независимых состояния.
+    assert js(
+        "document.querySelector('.menu-item[data-active=true]') === document.activeElement"
+    ), "Highlight and focus disagree"
+    key("Enter", 13, text="\r")
+    until("!!document.querySelector('.settings')")
+    assert js(
+        "document.querySelector('.settings-nav-item[aria-current=page]').textContent.includes('Оформление')"
+    ), "Enter executed a different menu item than the focused one"
+    close_settings()
+
+    # В порядке обхода стоит ровно один пункт: Tab уводит фокус из меню и
+    # закрывает его, а не идёт по списку мимо подсветки.
+    js("document.querySelector('.menu-avatar .menu-trigger').click()")
+    until("!!document.querySelector('.menu-list .menu-item')")
+    assert js("document.querySelectorAll('.menu-item:not([tabindex=\"-1\"])').length") == 1
+    key("Tab", 9, raw=True)
+    until("document.querySelector('.menu-list') === null")
+
+    # Отказ запуска не уносит с собой неотправленный текст задачи: пока сервер
+    # не принял ход, поле принадлежит оператору.
+    global REJECT_RUN
+    REJECT_RUN = True
+    draft = "AUDIT IMPORTANT UNSENT DRAFT"
+    composer = ".task-composer textarea"
+    fill(composer, draft)
+    until("!document.querySelector('.composer-submit').disabled")
+    js("document.querySelector('.composer-submit').click()")
+    until("!!document.querySelector('.app-alerts .error')", seconds=15)
+    # Ход не состоялся — текст возвращается в поле и снова принадлежит оператору.
+    until(f"document.querySelector({json.dumps(composer)}).value === {json.dumps(draft)}")
+    assert js("!document.querySelector('.composer-submit').disabled"), "Submit stayed locked after refusal"
+    REJECT_RUN = False
+    fill(composer, "")
+
     (smoke.ARTIFACTS / "regressions.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
     return [
         "Markdown structure and unsafe content",
         "array drafts and invalid submission",
-        "graph Enter/Space",
-        "native modal focus and Escape",
+        "graph Enter/Space and node inspector",
+        "settings page: focus return and Escape",
         "settings save race and close/reopen",
         "settings save failure/retry",
         "secret draft dropped on close",
@@ -480,6 +568,9 @@ def regressions(call, js, until, click):
         "applied settings: value, source and restart",
         "run summary: outcome, problems, next action",
         "publish approval: destination, create/update and diff",
+        "parameter form does not start a run",
+        "menu keyboard: Enter runs the focused item",
+        "refused run keeps the unsent task",
     ]
 
 

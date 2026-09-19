@@ -5,6 +5,7 @@ import { ActionDispatcher } from "../src/engine/actions/dispatcher.ts";
 
 import { conditionMatches, configurableOf, inputSurfaceOf, matchInterrupt, resolveBinding } from "../src/engine/manifest/bindings.ts";
 import { fallbackManifest, ManifestValidationError, validateManifest } from "../src/engine/manifest/validate.ts";
+import { redact } from "../src/engine/manifest/redaction.ts";
 import { layeredLayout } from "../src/engine/canvas/layout.ts";
 import { createRuntimeSnapshot, runtimeReducer } from "../src/engine/runtime/reducer.ts";
 import { executionPath, visitCount } from "../src/engine/runtime/selectors.ts";
@@ -446,4 +447,105 @@ test("fallback manifest allows the actions it promises", () => {
   const kinds = (manifest.actions ?? []).map((action) => action.kind);
   assert.deepEqual(kinds, ["thread.create", "run.start", "run.stop", "interrupt.resume"]);
   assert.equal(manifest.capabilities?.resume_interrupt, true);
+});
+
+test("manifest validation rejects paths the binding resolver cannot read", () => {
+  const base = {
+    schema_version: "1.0",
+    manifest_version: "1.0.0",
+    graph_id: "x",
+    title: "x",
+  };
+  // Путь-строка проходила проверку типа, а падала уже при сборке поверхности —
+  // то есть вне границы ошибок виджета, пустым экраном.
+  assert.throws(
+    () => validateManifest({
+      ...base,
+      state: [{ id: "s", path: "__proto__.polluted", widget: "json" }],
+    }),
+    /недопустимый путь/,
+  );
+  assert.throws(
+    () => validateManifest({
+      ...base,
+      state: [{ id: "s", path: "ok", widget: "json", visible_when: { path: "constructor.x", exists: true } }],
+    }),
+    /недопустимый путь/,
+  );
+  assert.throws(
+    () => validateManifest({ ...base, redaction: [{ path: "secret", mode: "shred" }] }),
+    /неподдерживаемый режим/,
+  );
+  // Всё, что resolver читает, валидатор обязан принимать.
+  const accepted = validateManifest({
+    ...base,
+    state: [{ id: "s", path: "artifacts.report", widget: "markdown", visible_when: { path: "/messages/0", exists: true } }],
+    redaction: [{ path: "messages.*.response_metadata.raw_prompt", mode: "remove" }],
+  });
+  assert.equal(accepted.state?.[0].path, "artifacts.report");
+  assert.deepEqual(resolveBinding({ artifacts: { report: "ok" } }, accepted.state![0].path), {
+    found: true,
+    value: "ok",
+  });
+});
+
+test("a run is accepted only when the server confirms it, not when it is submitted", () => {
+  const factory = new LiveEventFactory("assistant", "demo", () => "thread");
+  let runtime = createRuntimeSnapshot("assistant", "demo");
+  const apply = (value: RuntimeEvent) => { runtime = runtimeReducer(runtime, { type: "event", event: value }); };
+  apply(factory.startRun());
+  // Локальный старт уже красит интерфейс «выполняется», но запуска ещё нет:
+  // отказ на этом шаге раньше уносил с собой неотправленный текст задачи.
+  assert.equal(runtime.runStatus, "running");
+  assert.equal(runtime.runAccepted, false);
+  apply(factory.failed({ name: "HTTPError", message: "409" }));
+  assert.equal(runtime.runStatus, "failed");
+  assert.equal(runtime.runAccepted, false);
+
+  apply(factory.startRun());
+  apply(factory.created("run-1", "thread-1"));
+  assert.equal(runtime.runAccepted, true);
+  assert.equal(runtime.runId, "run-1");
+  // Следующий ход в том же треде снова ждёт подтверждения сервера.
+  apply(factory.startRun());
+  assert.equal(runtime.runAccepted, false);
+  // Подтверждением служит любое событие, которого не бывает без сервера: не
+  // всякий поток начинается с объявленного run_id.
+  apply(factory.nodeStarted("context", "task-1", {}));
+  assert.equal(runtime.runAccepted, true);
+  // Отказ после подтверждения относится к ходу, а не к попытке его начать.
+  apply(factory.failed({ name: "GraphError", message: "boom" }));
+  assert.equal(runtime.runStatus, "failed");
+  assert.equal(runtime.runAccepted, true);
+});
+
+test("redaction applies manifest rules and keeps untouched objects by reference", () => {
+  const state = {
+    provider_request: { url: "https://api.example.test", body: "x".repeat(10) },
+    messages: [
+      { content: "hello", response_metadata: { raw_prompt: "SECRET", tokens: 12 } },
+      { content: "world" },
+    ],
+    artifacts: { report: "# Отчёт" },
+  };
+  const cleaned = redact(state, [
+    { path: "provider_request", mode: "metadata_only" },
+  ]);
+  assert.deepEqual(cleaned.provider_request, { type: "object", size: 2 });
+  assert.equal("raw_prompt" in (cleaned.messages[0].response_metadata as object), false);
+  assert.equal((cleaned.messages[0].response_metadata as { tokens: number }).tokens, 12);
+  // Нетронутые ветки возвращаются той же ссылкой: снимок состояния сверяется
+  // на каждом кадре потока, и лишняя копия стоила бы цикла reconcile.
+  assert.equal(cleaned.artifacts, state.artifacts);
+  assert.equal(cleaned.messages[1], state.messages[1]);
+  // Исходное значение не меняется.
+  assert.equal(state.messages[0].response_metadata?.raw_prompt, "SECRET");
+
+  assert.deepEqual(redact({ api_key: "live-key" }), { api_key: "********" });
+  assert.deepEqual(
+    redact({ note: "0123456789" }, [{ path: "note", mode: "truncate", max_length: 4 }]),
+    { note: "0123…" },
+  );
+  const same = { messages: [{ content: "hello" }] };
+  assert.equal(redact(same, [{ path: "cost.total", mode: "remove" }]), same);
 });

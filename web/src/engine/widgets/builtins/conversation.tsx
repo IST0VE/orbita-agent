@@ -64,7 +64,7 @@ export const MessagesWidget = memo(function MessagesWidget({ value }: WidgetProp
   if (!messages.length) {
     return <p className="hint engine-messages-empty">
       <MessageSquare size={14} aria-hidden="true" />
-      Прогонов ещё не было: опишите задачу ниже и запустите конвейер.
+      Сообщений пока нет: они появятся, как только начнётся прогон.
     </p>;
   }
   const start = Math.max(0, messages.length - limit);
@@ -87,20 +87,62 @@ export const MessagesWidget = memo(function MessagesWidget({ value }: WidgetProp
  * сказано подписью под полем: без неё половина операторов не знает про первое,
  * а вторая половина теряет абзац, узнав про него случайно.
  */
-export function ChatInputWidget({ readonly, onAction }: WidgetProps) {
+export function ChatInputWidget({ binding, readonly, context, onAction }: WidgetProps) {
   const [draft, setDraft] = useState("");
-  // Сохраняем текст при отказе проверки действия; очищаем после старта.
-  useEffect(() => { if (readonly) setDraft(""); }, [readonly]);
+  /** Отправленный текст, пока сервер не подтвердил, что ход принят. */
+  const submitted = useRef<string | null>(null);
+  /** Зеркало черновика: эффект блокировки не должен ходить за каждой буквой. */
+  const latest = useRef("");
+  latest.current = draft;
+  // Заголовок поля рисуется здесь, а не поверхностью: «Задача» над полем с
+  // подписью «Опишите задачу для ORBITA» — это одно и то же слово дважды.
+  // Но у НТ в заголовке лежит инструкция (какие именно данные назвать), и её
+  // терять нельзя — поэтому длинный заголовок остаётся строкой над полем.
+  const label = text(binding.title);
+  const caption = label.length > 12 ? label : "";
+  const accepted = context.runtime.runAccepted;
+  const status = context.runtime.runStatus;
+  /*
+   * Поле освобождается вместе с блокировкой — то есть после успешного
+   * preflight, как и было. Но текст при этом не выбрасывается: он хранится,
+   * пока сервер не подтвердил, что ход принят.
+   *
+   * Отказ на этом шаге (409 на `/runs/stream`, обрыв связи) раньше оставлял
+   * оператора со статусом «Ошибка» и пустым полем: ход не состоялся, а текст
+   * уже исчез. Блокировка поля и подтверждение отправки — разные события, и
+   * различены они здесь.
+   */
+  useEffect(() => {
+    if (!readonly) return;
+    if (latest.current) submitted.current = latest.current;
+    setDraft("");
+  }, [readonly]);
+  useEffect(() => {
+    const saved = submitted.current;
+    if (saved === null) return;
+    // Ход приняли — возвращать нечего.
+    if (accepted) { submitted.current = null; return; }
+    if (status === "failed") {
+      submitted.current = null;
+      // Набранное после отказа главнее сохранённого: возвращаем только в
+      // пустое поле.
+      setDraft((current) => current || saved);
+      return;
+    }
+    if (status === "cancelled" || status === "completed") submitted.current = null;
+  }, [accepted, status]);
   const send = () => {
     const value = draft.trim();
     if (!value || readonly) return;
     onAction?.({ kind: "run.start", payload: { value } });
   };
   return <div className="engine-chat-input">
+    {caption ? <p className="composer-caption">{caption}</p> : null}
     <textarea
       value={draft}
       disabled={readonly}
-      aria-label="Задача для ORBITA"
+      rows={2}
+      aria-label={label || "Задача для ORBITA"}
       placeholder="Опишите задачу для ORBITA…"
       onChange={(event) => setDraft(event.target.value)}
       onKeyDown={(event) => {
@@ -112,13 +154,20 @@ export function ChatInputWidget({ readonly, onAction }: WidgetProps) {
     />
     <div className="composer-actions">
       <span className="composer-hint">Enter — запустить, Shift + Enter — новая строка</span>
+      {/*
+        Главное действие экрана в одном экземпляре и в четырёх состояниях:
+        выключено без текста, готово с текстом, «выполняется» во время
+        прогона. Остановка стоит рядом с состоянием прогона, в строке
+        контекста: останавливают не кнопку ввода, а идущий ход.
+      */}
       <button
-        className="btn-primary btn-lg composer-submit"
+        className="btn-primary composer-submit"
         disabled={readonly || !draft.trim()}
         onClick={send}
       >
-        <Play size={15} aria-hidden="true" />
-        Запустить
+        {readonly
+          ? <><span className="spinner spinner-inverse" aria-hidden="true" />Выполняется…</>
+          : <><Play size={15} aria-hidden="true" />Запустить</>}
       </button>
     </div>
   </div>;
@@ -203,15 +252,30 @@ export function FormWidget({ binding, value, mode, readonly, onChange, onAction 
     });
   }, []);
   const errors = useMemo(() => ({ ...validateForm(draft, schema), ...parseErrors }), [draft, schema, parseErrors]);
-  const submit = () => onAction?.(
-    resuming
-      ? { kind: "interrupt.resume", interruptId, ruleId, payload: draft }
-      : { kind: "run.start", payload: draft },
-  );
+  /*
+   * Куда уходит заполненная форма.
+   *
+   * В ответе на остановку — в `interrupt.resume`, это самостоятельное
+   * действие. В режиме ввода — в собственное поле манифеста (`input[].target`,
+   * то есть `configurable.*`), и ход она не начинает: запуск начинает поле
+   * задачи, у которого есть текст. Раньше кнопка слала сюда `run.start` с
+   * объектом формы, а обработчик читал из него только `payload.value` — и
+   * молча не делал ничего. Кнопка обещала запуск, которого не было.
+   *
+   * Заодно значение попадает в параметры прогона только целиком и только
+   * корректным: до нажатия черновик живёт в форме, а не в конфигурации.
+   */
+  const submit = () => {
+    if (resuming) {
+      onAction?.({ kind: "interrupt.resume", interruptId, ruleId, payload: draft });
+      return;
+    }
+    onChange?.(draft);
+  };
   return <form onSubmit={(event) => { event.preventDefault(); if (!readonly && !Object.keys(errors).length) submit(); }}>
     {resuming ? <JsonWidget {...({ value } as WidgetProps)} /> : null}
     <fieldset className="form-fields" disabled={readonly}>
-      {fieldValue(draft, schema, (next) => { setDraft(next); onChange?.(next); }, "$", onParseError)}
+      {fieldValue(draft, schema, (next) => setDraft(next), "$", onParseError)}
     </fieldset>
     {Object.keys(errors).length ? <ul className="error">{Object.entries(errors).map(([path, message]) => <li key={path}>{path}: {message}</li>)}</ul> : null}
     {/* Оранжевой кнопка становится только там, где она — главное действие
@@ -220,8 +284,9 @@ export function FormWidget({ binding, value, mode, readonly, onChange, onAction 
     <button
       className={resuming ? "btn-primary" : ""}
       disabled={readonly || !!Object.keys(errors).length}
+      title={resuming ? undefined : "Применить значение к параметрам следующего прогона"}
     >
-      Отправить
+      {resuming ? "Отправить" : "Применить"}
     </button>
   </form>;
 }

@@ -23,7 +23,7 @@ body {
   background: var(--bg-main);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: var(--text-base);
+  font-size: var(--type-body);
   font-weight: var(--weight-regular);
   line-height: var(--leading-normal);
   /* Сглаживание и цифры одной ширины: в колонках со стоимостью и токенами
@@ -39,15 +39,45 @@ body {
   color: var(--on-orange-soft);
 }
 
+/*
+ * Заголовки.
+ *
+ * Размер задан здесь, а не в компонентах, и это не удобство, а страховка.
+ * Без него заголовок без класса берёт размер у браузера: `h1` — два кегля
+ * основного текста, `h5` — меньше основного. Так на одной странице и
+ * оказывались заголовок раздела крупнее заголовка страницы и подзаголовок
+ * мельче подписи под ним.
+ *
+ * Уровней смысловых три: страница, раздел, всё остальное. Четвёртого нет
+ * потому, что различить на глаз четыре ступени заголовков в рабочем окне
+ * невозможно — уровень ниже третьего показывают насыщенностью, а не кеглем.
+ */
 h1,
 h2,
 h3,
 h4,
-h5 {
+h5,
+h6 {
   margin: 0;
   font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
   color: var(--text-primary);
+}
+
+h1 {
+  font-size: var(--type-title);
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: var(--type-heading);
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--type-body);
 }
 
 p {
@@ -70,20 +100,31 @@ a:hover {
   border-bottom-color: var(--accent-blue-border);
 }
 
+/* Строчный код считается от строки, в которую вставлен, — правило одно на
+   весь интерфейс, включая разметку сообщений. Второго размера строчного кода
+   нет: рядом на одном экране они читаются как разные виды кода. */
 code,
 kbd,
 samp {
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: var(--type-code);
 }
 
 pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--type-mono);
   line-height: var(--leading-relaxed);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Код внутри блока уже набран моноширинным нужного кегля: ещё раз уменьшать
+   его нечем и незачем. */
+pre code,
+pre kbd,
+pre samp {
+  font-size: inherit;
 }
 
 hr {
@@ -141,19 +182,26 @@ hr {
 /* --------------------------------------------------------------------- */
 .hint {
   color: var(--text-secondary);
-  font-size: var(--text-sm);
+  font-size: var(--type-dense);
   line-height: var(--leading-normal);
 }
 
 .mono {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--type-mono);
+}
+
+/* Блок данных, в который заглядывают, а не читают подряд: вывод, разбор,
+   различия. На ступень мельче строки — и одинаково во всех таких блоках. */
+.mono-dense {
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-dense);
 }
 
 /* Заголовок секции: единственное место во всём интерфейсе, где текст набран
    прописными. Прописные здесь — это ярлык раздела, а не акцент. */
 .eyebrow {
-  font-size: var(--text-xs);
+  font-size: var(--type-label);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
@@ -189,4 +237,45 @@ hr {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* --------------------------------------------------------------------- */
+/* Последняя граница ошибок: всё приложение не отрисовалось               */
+/* --------------------------------------------------------------------- */
+.root-error {
+  max-width: 46rem;
+  margin: var(--space-8) auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--error-soft);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius-md);
+}
+
+.root-error h1 {
+  margin: 0;
+  font-size: var(--type-title);
+}
+
+.root-error p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.root-error-message {
+  margin: 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-size: var(--type-mono-dense);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.root-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }

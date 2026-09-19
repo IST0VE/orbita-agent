@@ -25,11 +25,34 @@ export function diagramStatus(runtime: RuntimeSnapshot, nodeId: string): string 
   return nodeStatus(runtime, nodeId);
 }
 
+/**
+ * Масштабы схемы.
+ *
+ * `READABLE_ZOOM` — граница, ниже которой подписи узлов перестают читаться, и
+ * вписывать в неё граф целиком бессмысленно. `ENTRANCE_ZOOM` — масштаб, с
+ * которого схему показывают вместо обзора: узел читается целиком.
+ */
+const MIN_ZOOM = 0.1;
+const READABLE_ZOOM = 0.7;
+const ENTRANCE_ZOOM = 0.9;
+
+/**
+ * Смысловой масштаб: сколько узел рассказывает о себе на этом отдалении.
+ *
+ * `far` — значок, название и состояние; `mid` — название и строка описания;
+ * `near` — всё. Полоса пишется атрибутом прямо в DOM, а не состоянием React:
+ * она меняется на каждом кадре перетаскивания полотна, и перерисовывать
+ * ради неё два десятка карточек нельзя.
+ */
+function band(element: HTMLElement | null, zoom: number): void {
+  if (element) element.dataset.zoom = zoom < 0.62 ? "far" : zoom < 0.88 ? "mid" : "near";
+}
+
 type CardData = {
   layout: LayoutNode; info?: NodeManifest; status: string; count: number; dimmed: boolean;
 };
 type CardNode = Node<CardData, "card">;
-type RoutedEdge = Edge<{ points: Point[]; boxes: NodeBox[]; deferred: boolean }, "routed">;
+type RoutedEdge = Edge<{ points: Point[]; boxes: NodeBox[]; deferred: boolean; from?: Point; to?: Point }, "routed">;
 
 const GraphCard = memo(function GraphCard({ id, data, selected }: NodeProps<CardNode>) {
   const terminal = isTerminal(id), info = data.info;
@@ -41,12 +64,12 @@ const GraphCard = memo(function GraphCard({ id, data, selected }: NodeProps<Card
       terminal ? `node-terminal terminal-${id === START ? "start" : "end"}` : nodeTone(info?.kind, info?.color),
       selected ? "selected" : "", data.dimmed ? "dimmed" : "",
     ].filter(Boolean).join(" ")}
-    title={info?.description ?? title}
+    title={info?.description ? `${title} — ${info.description}` : title}
     style={{ width: data.layout.width, height: data.layout.height }}
   >
     {data.layout.ports.map((port) => <Handle key={port.id} id={port.id} type={port.type}
       position={port.type === "source" ? Position.Right : Position.Left}
-      style={{ top: port.y - 1 }} isConnectable={false} />)}
+      style={{ top: port.y }} isConnectable={false} />)}
     {terminal ? <Icon size={15} aria-hidden="true" />
       : <span className="graph-node-icon"><Icon size={16} aria-hidden="true" /></span>}
     <span className="graph-node-text">
@@ -57,21 +80,33 @@ const GraphCard = memo(function GraphCard({ id, data, selected }: NodeProps<Card
   </div>;
 });
 
+/**
+ * Связь между карточками.
+ *
+ * Концы связи приходят из раскладки, а не из ручек React Flow: их он меряет по
+ * DOM и отдаёт край элемента с точностью до субпикселя. От такого конца не
+ * совпадал ни один маршрут ELK со своими же портами, и схема перекладывала все
+ * связи заново на первом же кадре — а конец, соскользнувший внутрь карточки,
+ * превращал её саму в препятствие и уводил связь в обход. Позиция карточки и
+ * смещение порта известны точно; ровно их считает и воркер маршрутов.
+ */
 const GraphLink = memo(function GraphLink(props: EdgeProps<RoutedEdge>) {
+  const fromX = props.data?.from?.x ?? props.sourceX, fromY = props.data?.from?.y ?? props.sourceY;
+  const toX = props.data?.to?.x ?? props.targetX, toY = props.data?.to?.y ?? props.targetY;
   const points = useMemo(() => props.data?.deferred ? props.data.points : routeEdge(
-    { x: props.sourceX, y: props.sourceY }, { x: props.targetX, y: props.targetY },
+    { x: fromX, y: fromY }, { x: toX, y: toY },
     props.data?.points ?? [], props.data?.boxes ?? [],
-  ), [props.sourceX, props.sourceY, props.targetX, props.targetY, props.data?.points, props.data?.boxes, props.data?.deferred]);
+  ), [fromX, fromY, toX, toY, props.data?.points, props.data?.boxes, props.data?.deferred]);
   const first = points[0], last = points[points.length - 1];
-  const attached = first && last && Math.abs(first.x - props.sourceX) < 0.1 && Math.abs(first.y - props.sourceY) < 0.1
-    && Math.abs(last.x - props.targetX) < 0.1 && Math.abs(last.y - props.targetY) < 0.1;
+  const attached = first && last && Math.abs(first.x - fromX) < 0.1 && Math.abs(first.y - fromY) < 0.1
+    && Math.abs(last.x - toX) < 0.1 && Math.abs(last.y - toY) < 0.1;
   const temporary = props.data?.deferred && !attached
-    ? getSmoothStepPath({ sourceX: props.sourceX, sourceY: props.sourceY, targetX: props.targetX,
-      targetY: props.targetY, sourcePosition: Position.Right, targetPosition: Position.Left, borderRadius: 0 }) : null;
+    ? getSmoothStepPath({ sourceX: fromX, sourceY: fromY, targetX: toX, targetY: toY,
+      sourcePosition: Position.Right, targetPosition: Position.Left, borderRadius: 0 }) : null;
   const middle = points[Math.floor(points.length / 2)];
   return <BaseEdge id={props.id} path={temporary?.[0] ?? pathOf(points)} markerEnd={props.markerEnd}
     style={props.style} label={props.label} labelX={temporary?.[1] ?? middle?.x} labelY={temporary?.[2] ?? middle?.y}
-    labelStyle={{ fill: "var(--text-secondary)", fontSize: 11 }}
+    labelStyle={{ fill: "var(--text-secondary)", fontSize: "var(--type-label)" }}
     labelBgStyle={{ fill: "var(--surface)" }} interactionWidth={16} />;
 });
 const nodeTypes = { card: GraphCard };
@@ -136,14 +171,19 @@ function DiagramScene({ topology, manifest, runtime, selected, onSelect, query, 
     const place = () => {
       if (!fitPending.current || !element.clientWidth || !element.clientHeight) return;
       fitPending.current = false;
-      const camera = getViewportForBounds(flow.getNodesBounds(nodes), element.clientWidth, element.clientHeight, 0.02, 1, 0.15);
-      // A long pipeline fitted into a narrow panel becomes unreadable. Start at
-      // its entrance at a readable scale; "Весь граф" explicitly requests overview.
-      if (camera.zoom < 0.55) {
+      const camera = getViewportForBounds(flow.getNodesBounds(nodes), element.clientWidth, element.clientHeight, MIN_ZOOM, 1, 0.16);
+      // Весь граф, вписанный в узкую панель, — это 40% масштаба и нечитаемые
+      // подписи. Ниже порога читаемости схема не вписывается, а открывается
+      // у входа в конвейер: обзор целиком запрашивают кнопкой отдельно.
+      if (camera.zoom < READABLE_ZOOM) {
         const entrance = nodes.find((node) => node.id === START) ?? nodes[0];
-        if (entrance) void flow.setViewport({ x: 40 - entrance.position.x * 0.85,
-          y: Math.max(60, element.clientHeight * 0.35) - entrance.position.y * 0.85, zoom: 0.85 });
-      } else void flow.setViewport(camera);
+        if (entrance) void flow.setViewport({ x: 48 - entrance.position.x * ENTRANCE_ZOOM,
+          y: Math.max(60, element.clientHeight * 0.34) - entrance.position.y * ENTRANCE_ZOOM, zoom: ENTRANCE_ZOOM });
+        band(element, ENTRANCE_ZOOM);
+      } else {
+        void flow.setViewport(camera);
+        band(element, camera.zoom);
+      }
     };
     place();
     if (!fitPending.current) return;
@@ -153,15 +193,29 @@ function DiagramScene({ topology, manifest, runtime, selected, onSelect, query, 
   }, [initialized, layout, flow, nodes]);
 
   useImperativeHandle(ref, () => ({
-    zoomBy: (delta) => { void flow.zoomTo(Math.max(0.02, Math.min(3, flow.getZoom() + delta))); },
+    zoomBy: (delta) => { void flow.zoomTo(Math.max(MIN_ZOOM, Math.min(3, flow.getZoom() + delta))); },
     reset: () => { void flow.zoomTo(1); },
-    fit: () => { void flow.fitView({ padding: 0.15, minZoom: 0.02, maxZoom: 1 }); },
+    fit: () => { void flow.fitView({ padding: 0.16, minZoom: MIN_ZOOM, maxZoom: 1 }); },
     arrange: () => setRevision((value) => value + 1),
   }), [flow]);
 
   const boxes = useMemo(() => nodes.map((node) => ({ id: node.id, ...node.position,
     width: node.data.layout.width, height: node.data.layout.height })), [nodes]);
   const routing = useEdgeRoutes(layout, boxes);
+  // Порт как координата: угол карточки плюс смещение из раскладки. Ровно это
+  // место вернул ELK и ровно его считает воркер маршрутов — мерить его третий
+  // раз по DOM значит получить третий ответ.
+  const anchor = useMemo(() => {
+    const placed = new Map(boxes.map((box) => [box.id, box]));
+    const offsets = new Map((layout?.nodes ?? []).flatMap((node) =>
+      node.ports.map((port) => [`${node.id}:${port.id}`, port.y] as [string, number])));
+    return (id: string, handle: string, side: "source" | "target"): Point | undefined => {
+      const box = placed.get(id);
+      if (!box) return undefined;
+      return { x: side === "source" ? box.x + box.width : box.x,
+        y: box.y + (offsets.get(`${id}:${handle}`) ?? box.height / 2) };
+    };
+  }, [boxes, layout]);
   const traversed = useMemo(() => {
     const path = executionPath(runtime), pairs = traversedEdges([START, ...path]);
     if (runtime.runStatus === "completed" && path.length) pairs.add(edgeKey(path[path.length - 1], END));
@@ -175,7 +229,9 @@ function DiagramScene({ topology, manifest, runtime, selected, onSelect, query, 
     return {
       ...edge, type: "routed", selectable: false, focusable: false,
       data: { points: routing.routes?.[edge.id] ?? edge.points, boxes,
-        deferred: routing.deferred && !routing.error },
+        deferred: routing.deferred && !routing.error,
+        from: anchor(edge.source, edge.sourceHandle, "source"),
+        to: anchor(edge.target, edge.targetHandle, "target") },
       label: linked ? source?.data : undefined,
       className: `canvas-edge${source?.conditional ? " conditional" : ""}${passed ? " traversed" : ""}${linked ? " linked" : ""}`,
       style: { stroke: color, strokeWidth: passed || linked ? 2 : 1.5,
@@ -183,7 +239,7 @@ function DiagramScene({ topology, manifest, runtime, selected, onSelect, query, 
         opacity: selected && !linked && !passed ? 0.25 : 1 },
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
     };
-  }), [layout, topology.edges, traversed, selected, boxes, routing.routes, routing.deferred, routing.error]);
+  }), [layout, topology.edges, traversed, selected, boxes, anchor, routing.routes, routing.deferred, routing.error]);
   const needle = query.trim().toLowerCase();
   const decorated = useMemo(() => nodes.map((node) => {
     const info = manifest.nodes?.[node.id], status = diagramStatus(runtime, node.id);
@@ -211,13 +267,17 @@ function DiagramScene({ topology, manifest, runtime, selected, onSelect, query, 
       onNodesChange={onNodesChange}
       onNodeClick={(_, node) => onSelect(selected === node.id ? null : node.id)}
       onPaneClick={() => { onSelect(null); container.current?.focus({ preventScroll: true }); }}
-      onMove={(_, viewport) => onZoom(viewport.zoom)}
-      minZoom={0.02} maxZoom={3} panOnDrag={[0, 1]} panOnScroll
+      onMove={(_, viewport) => { onZoom(viewport.zoom); band(container.current, viewport.zoom); }}
+      minZoom={MIN_ZOOM} maxZoom={3} panOnDrag={[0, 1]} panOnScroll
       zoomOnScroll={false} zoomActivationKeyCode={["Control", "Meta"]} zoomOnPinch
       zoomOnDoubleClick={false} nodeDragThreshold={4} autoPanOnNodeDrag
       selectNodesOnDrag={false}
       nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
       multiSelectionKeyCode={null} selectionKeyCode={null}
+      // Знак React Flow снят штатным флагом библиотеки: полотно — рабочая
+      // область продукта, и подпись чужого продукта в её углу читается как
+      // часть схемы. Лицензия пакета это разрешает (MIT).
+      proOptions={{ hideAttribution: true }}
       ariaLabelConfig={{ "node.a11yDescription.default": "Enter — открыть узел. Стрелки — переместить выбранный узел.",
         "minimap.ariaLabel": "Навигация по графу" }}
     >
