@@ -8,9 +8,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from playwright.sync_api import sync_playwright
-
 import browser_smoke as smoke
+from playwright.sync_api import sync_playwright
 
 TITLES = {
     "__start__": "Старт", "context": "Контекст", "requirements": "Системные требования",
@@ -26,9 +25,9 @@ CHAIN = ["__start__", "context", "requirements", "gate_api", "api", "gate_data",
          "gate_architecture", "architecture", "gate_review", "review", "remember",
          "prepare_publish", "approve", "publish", "__end__"]
 LARGE_IDS = ["__start__", "context", *[f"stage_{i}" for i in range(76)], "__end__"]
-LARGE_EDGES = [{"source": a, "target": b} for a, b in zip(LARGE_IDS, LARGE_IDS[1:])]
+LARGE_EDGES = [{"source": a, "target": b} for a, b in zip(LARGE_IDS, LARGE_IDS[1:], strict=False)]
 LARGE_EDGES += [{"source": f"stage_{i}", "target": f"stage_{i-3}", "conditional": True} for i in range(5, 76, 7)]
-EDGES = [{"source": a, "target": b} for a, b in zip(CHAIN, CHAIN[1:])]
+EDGES = [{"source": a, "target": b} for a, b in zip(CHAIN, CHAIN[1:], strict=False)]
 EDGES += [{"source": "requirements", "target": "tools", "conditional": True},
           {"source": "tools", "target": "requirements", "conditional": True},
           {"source": "tools", "target": "over_budget", "conditional": True},

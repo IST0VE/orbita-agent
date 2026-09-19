@@ -522,10 +522,12 @@ def regressions(call, js, until, click, shell):
         "document.querySelector('.menu-item[data-active=true]') === document.activeElement"
     ), "Highlight and focus disagree"
     key("Enter", 13, text="\r")
-    until("!!document.querySelector('.settings')")
-    assert js(
-        "document.querySelector('.settings-nav-item[aria-current=page]').textContent.includes('Оформление')"
-    ), "Enter executed a different menu item than the focused one"
+    # Страница появляется раньше, чем эффект SettingsPage применит выбранный
+    # раздел: первый кадр ещё показывает «Модель». Ждём сам переход в
+    # «Оформление»; неверный пункт меню по-прежнему завершит проверку ошибкой.
+    until(
+        "document.querySelector('.settings-nav-item[aria-current=page]')?.textContent.includes('Оформление')"
+    )
     close_settings()
 
     # В порядке обхода стоит ровно один пункт: Tab уводит фокус из меню и
