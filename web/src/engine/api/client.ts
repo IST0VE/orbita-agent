@@ -172,6 +172,35 @@ export async function mutateResource(
 }
 
 /**
+ * Заявка на паузу: ждёт ли тред остановки.
+ *
+ * Состояние заявки живёт на сервере, а не в браузере: заявку берёт узел
+ * графа, и узнать, взял ли он её, можно только у сервера. Вкладку могли
+ * закрыть, перезагрузить или открыть вторую — во всех трёх случаях правда
+ * одна и та же и лежит в одном месте.
+ */
+export type PauseStatus = { thread_id: string; pending: boolean; requested_at: string };
+
+async function pauseRequest(apiUrl: string, method: string, threadId: string): Promise<PauseStatus> {
+  if (!threadId) throw new Error("пауза адресуется треду: тред ещё не создан");
+  const response = await authorizedFetch(`${apiUrl}/api/ui/pause`, {
+    method,
+    headers: headers(),
+    body: JSON.stringify({ thread_id: threadId }),
+  });
+  if (!response.ok) throw await errorOf(response);
+  return response.json() as Promise<PauseStatus>;
+}
+
+/** Попросить граф остановиться на ближайшей границе шага. */
+export const requestPause = (apiUrl: string, threadId: string) =>
+  pauseRequest(apiUrl, "POST", threadId);
+
+/** Передумать: снять заявку, если её ещё не взяли. */
+export const cancelPause = (apiUrl: string, threadId: string) =>
+  pauseRequest(apiUrl, "DELETE", threadId);
+
+/**
  * Ответ preflight. Поля «дубль» здесь нет намеренно: валидация не выполняет
  * действие и не может знать, дошёл ли следующий запрос до SDK. Ключ возвращается
  * для сверки записи в журнале с запросом, который породил клик.

@@ -54,8 +54,12 @@ MANIFEST["nodes"] = {
     "approve": {"title": "Согласование сохранения", "kind": "approval", "color": "warning"},
     "publish": {"title": "Сохранение новой версии", "kind": "task", "color": "success"},
 }
+# Пауза оператора остаётся у всех конвейеров: остановиться посреди
+# работы можно везде, где есть обращения к модели.
 MANIFEST["interrupts"] = [
-    rule for rule in MANIFEST["interrupts"] if rule["id"] == "publish-approval"
+    rule
+    for rule in MANIFEST["interrupts"]
+    if rule["id"] in {"publish-approval", "operator-pause"}
 ]
 for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":

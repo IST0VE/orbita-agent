@@ -40,7 +40,10 @@ for key, title, widget in (
     MANIFEST["state"].append({"id": key, "path": key, "title": title, "widget": widget,
                               "surface": "right", "empty": "hide"})
     next(s for s in MANIFEST["surfaces"] if s["id"] == "right")["widgets"].append(key)
-MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"] if r["id"] == "publish-approval"]
+# Пауза оператора остаётся у всех конвейеров: остановиться посреди
+# работы можно везде, где есть обращения к модели.
+MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"]
+                          if r["id"] in {"publish-approval", "operator-pause"}]
 MANIFEST["interrupts"] += [
     {"id": "query-approval", "priority": 6, "match": {"path": "action", "equals": "query"},
      "widget": "approval", "resume_schema": {"type": "object", "required": ["decision"],

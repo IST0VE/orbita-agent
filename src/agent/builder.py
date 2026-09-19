@@ -185,14 +185,17 @@ def build_graph(
         following = pipeline.after(role)
         target = f"gate_{following.key}" if following else last_target
 
+        # Ветка остановки есть у каждой роли: паузу оператор берёт где угодно,
+        # а не только на воротах, и остановленный конвейер обязан уйти в
+        # `halted` из того же узла, в котором его остановили. Без этой ветки
+        # последняя роль увела бы остановленный ход в постлюдию — то есть
+        # завела бы задачи по backlog'у, которого не дописали.
+        router = make_role_router(role, pipeline=pipeline, last_target=last_target)
+        branches = {target: target, "halted": "halted"}
         if role.reads_files:
-            builder.add_conditional_edges(
-                role.key,
-                make_role_router(role, pipeline=pipeline, last_target=last_target),
-                {"tools": "tools", target: target},
-            )
+            builder.add_conditional_edges(role.key, router, {**branches, "tools": "tools"})
         else:
-            builder.add_edge(role.key, target)
+            builder.add_conditional_edges(role.key, router, branches)
 
         if following:
             builder.add_node(

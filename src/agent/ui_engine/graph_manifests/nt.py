@@ -57,7 +57,10 @@ for surface in MANIFEST["surfaces"]:
                                "diagnostic_status", "diagnostic_gaps",
                                "maximum_stable_rps", "hypothesis_assessment", "precheck_result",
                                "ranked_services", "baseline_metrics", "timeline"]
-MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"] if r["id"] == "publish-approval"]
+# Пауза оператора остаётся у всех конвейеров: остановиться посреди
+# работы можно везде, где есть обращения к модели.
+MANIFEST["interrupts"] = [r for r in MANIFEST["interrupts"]
+                          if r["id"] in {"publish-approval", "operator-pause"}]
 # Остановка перед выполнением запроса, который составила модель: решение
 # принимает тот же оператор, что и публикацию, и теми же кнопками.
 MANIFEST["interrupts"].append({

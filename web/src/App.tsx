@@ -8,11 +8,13 @@ import { API_URL, loadAssistants, type Assistant } from "./api";
 import { authorizedFetch } from "./auth";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
+  cancelPause,
   loadCapabilities,
   loadManifest,
   loadResource,
   loadUiBundle,
   mutateResource,
+  requestPause,
   validateAction,
   type UiBundle,
 } from "./engine/api/client";
@@ -126,6 +128,16 @@ export function App() {
   const runCancelled = useRef(false);
   const actionPending = useRef(false);
   const [busy, setBusy] = useState(false);
+  /**
+   * Заявка на паузу оставлена, но ещё не взята.
+   *
+   * Отдельно от состояния прогона: прогон в этот момент идёт как шёл, и
+   * сказать про него нечего, кроме того, что он остановится на ближайшей
+   * границе шага. Между нажатием и остановкой проходит целый этап, и молчать
+   * всё это время — значит оставить оператора с кнопкой, которая как будто
+   * не сработала.
+   */
+  const [pauseRequested, setPauseRequested] = useState(false);
   const wasLoading = useRef(false);
   /** Восстановленный тред открывает консоль один раз, а не при каждом кадре. */
   const restored = useRef(false);
@@ -319,6 +331,18 @@ export function App() {
     dispatch({ type: "thread", threadId });
   }, [threadId]);
 
+  /*
+   * Заявка на паузу живёт ровно столько, сколько идёт прогон.
+   *
+   * Кончился он остановкой с вопросом — заявку взял узел; кончился сам —
+   * брать её стало некому, и следующий прогон встал бы на первом же этапе,
+   * хотя просили остановить не его. Снимает заявку на сервере тот, кто её
+   * взял; здесь снимается только отметка на экране.
+   */
+  useEffect(() => {
+    if (!stream.isLoading) setPauseRequested(false);
+  }, [stream.isLoading]);
+
   useEffect(() => {
     if (current) {
       localStorage.setItem(GRAPH_KEY, current.graph_id);
@@ -491,6 +515,17 @@ export function App() {
           runCancelled.current = true;
           stream.stop();
         },
+        // Пауза графа не касается: она оставляет заявку на сервере, а
+        // остановку берёт сам узел перед следующим обращением к модели.
+        // Поэтому здесь нет ни `stream.stop`, ни `stream.submit` — прогон
+        // продолжает идти и кончится сам, остановкой с вопросом.
+        "run.pause": async () => {
+          const thread = runtimeRef.current.threadId ?? threadRef.current;
+          if (!thread) {
+            throw new Error("Пауза адресуется треду: дождитесь, пока прогон его создаст.");
+          }
+          setPauseRequested((await requestPause(apiUrl, thread)).pending);
+        },
         "interrupt.resume": (payload, action) => {
           if (!action.interruptId || action.interruptId !== serverInterrupt?.id) {
             throw new Error("Остановка изменилась. Дождитесь актуальной формы подтверждения.");
@@ -660,6 +695,16 @@ export function App() {
           running={stream.isLoading}
           canStop={Boolean(manifest.capabilities?.stop_run)}
           onStop={() => handleAction({ kind: "run.stop" })}
+          canPause={Boolean(manifest.capabilities?.pause_run)}
+          pauseRequested={pauseRequested}
+          onPause={() => handleAction({ kind: "run.pause" })}
+          onCancelPause={() => {
+            const thread = runtime.threadId ?? threadId;
+            if (!thread) return;
+            cancelPause(apiUrl, thread)
+              .then((status) => setPauseRequested(status.pending))
+              .catch((error: Error) => setActionError(error.message));
+          }}
           onNewThread={newThread}
           newThreadDisabled={locked}
           events={runtime.events.length}

@@ -1031,6 +1031,81 @@ button.file-picker-drop:hover:not(:disabled) {
   color: var(--text-secondary);
 }
 
+/* --------------------------------------------------------------------- */
+/* Пауза оператора                                                        */
+/* --------------------------------------------------------------------- */
+
+/* Карточка паузы делит разметку с подтверждением (`.approve`): это одна и та
+   же остановка с одним и тем же местом на экране. Отличается она главным
+   элементом — там кнопка решения, здесь поле, в которое дописывают. */
+.pause textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+}
+
+.pause-stages {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  font-size: var(--type-dense);
+}
+
+.pause-stages > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+  gap: var(--space-3);
+}
+
+.pause-stages dt {
+  color: var(--text-secondary);
+}
+
+.pause-stages dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pause-notes,
+.operator-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--type-dense);
+}
+
+.pause-notes li,
+.operator-notes li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--accent-orange);
+  border-radius: var(--radius-xs);
+  overflow-wrap: anywhere;
+}
+
+.operator-notes-mark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--type-label);
+}
+
+/* Заявка оставлена, но ещё не взята: кнопка ждёт вместе с оператором. */
+.pause-pending {
+  color: var(--text-brand);
+}
+
 .jira-project {
   display: flex;
   flex-direction: column;

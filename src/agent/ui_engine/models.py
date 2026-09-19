@@ -15,6 +15,10 @@ JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "Jso
 class ManifestCapabilities(TypedDict, total=False):
     new_thread: bool
     stop_run: bool
+    # Прогон можно остановить, не отменяя: граф встанет на ближайшей границе
+    # шага и дождётся оператора (`agent/pause.py`). Отдельно от `stop_run`,
+    # потому что это другое действие: отмена обрывает ход, пауза его держит.
+    pause_run: bool
     resume_interrupt: bool
     history: bool
     retry_node: bool

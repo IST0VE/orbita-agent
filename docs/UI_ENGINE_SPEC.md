@@ -252,6 +252,7 @@ type UiManifest = {
   "capabilities": {
     "new_thread": true,
     "stop_run": true,
+    "pause_run": true,
     "resume_interrupt": true,
     "history": true,
     "retry_node": false
@@ -717,6 +718,8 @@ type WidgetProps = {
 | `chat-input` | Новый human message. |
 | `form` | Форма из JSON Schema. |
 | `approval` | Подтверждение/отклонение с причиной; показывает черновики из тела остановки. |
+| `pause` | Пауза оператора: где встал конвейер, поле для указания, продолжение или остановка. |
+| `operator-notes` | Указания, добавленные оператором на паузах, с этапом каждого. |
 | `draft-list` | Черновики будущих объектов: страница или задача телом, полями запроса и пометкой «создать»/«перезаписать». |
 | `artifact-list` | Результаты этапов. |
 | `document-preview` | Просмотр документа. |
@@ -764,6 +767,7 @@ type WidgetProps = {
 thread.create
 run.start
 run.stop
+run.pause
 run.retry
 thread.fork
 interrupt.resume
@@ -773,6 +777,8 @@ artifact.compare
 publication.open
 resource.refresh
 ```
+
+`run.pause` отличается от остальных системных действий тем, что не адресован SDK. Он оставляет заявку на сервере (`POST /api/ui/pause`, снимается `DELETE`), а остановку берёт сам граф перед следующим обращением к модели: прогон продолжает идти и кончается обычным `interrupt()` с правилом `operator-pause`. Отмена прогона (`run.stop`) и пауза — разные действия: первая обрывает ход, вторая его замораживает.
 
 Action содержит `id`, `kind`, label, permission, confirmation policy, input schema и visibility condition. Frontend отправляет action только через `ActionDispatcher`, который проверяет capability, текущий runtime status и CSRF/auth requirements.
 

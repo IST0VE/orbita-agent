@@ -104,6 +104,15 @@ export type ActionKind =
   | "thread.create"
   | "run.start"
   | "run.stop"
+  /**
+   * Пауза: остановить прогон, не отменяя его.
+   *
+   * Не то же самое, что `run.stop`. Отмена обрывает ход, и начатый этап
+   * оплачивается заново; пауза оставляет заявку, граф встаёт на ближайшей
+   * границе шага и ждёт оператора — с готовым состоянием и возможностью
+   * дописать в него то, чего не хватило.
+   */
+  | "run.pause"
   | "run.retry"
   | "thread.fork"
   | "interrupt.resume"
@@ -134,6 +143,7 @@ export type UiManifest = {
   capabilities?: {
     new_thread?: boolean;
     stop_run?: boolean;
+    pause_run?: boolean;
     resume_interrupt?: boolean;
     history?: boolean;
     retry_node?: boolean;

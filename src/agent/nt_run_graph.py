@@ -16,7 +16,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import confluence, nodes, tool_compat, tools
+from agent import confluence, nodes, pause, tool_compat, tools
 from agent.cost import charge, cost_summary, extract_usage
 from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
@@ -161,10 +161,24 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         if state.get("planning_steps", 0) >= steps or budget_gate(state) == "over_budget":
             return {"decision": {"action": "finish"}, "last_error": "Достигнут лимит планирования или стоимости",
                     "stage": "plan_next"}
+        # Пауза оператора. Стоит ДО try: `interrupt()` поднимает исключение, а
+        # `except Exception` ниже превратило бы остановку в «модель недоступна»
+        # и увело бы кампанию в отчёт вместо ожидания оператора.
+        paused = pause.checkpoint(state, config, stage="plan_next", title="Планирование НТ")
+        if halt := paused.get("halt"):
+            return {**paused, "decision": {"action": "finish"}, "stage": "plan_next",
+                    "last_error": "Остановлено оператором на паузе: "
+                                  + (halt.get("reason") or "причина не указана")}
+        notes = [*(state.get("notes") or []), *paused.get("notes", [])]
         prefix = PROMPT + "\nJSON Schema:\n" + canonical(Plan.model_json_schema())
         prefix += "\nCapabilities:\n" + canonical(state["capabilities"])
         prefix += f"\nВыполнено попыток: {state['attempt']}; максимум: {runs}."
         history = state["run_history"]
+        # Указания оператора — отдельным ходом человека в конце переписки:
+        # внутрь уже собранного хода их класть нельзя, там пары «вызов
+        # инструмента — ответ».
+        if block := pause.notes_block(notes):
+            history = [*history, HumanMessage(content=block.strip())]
         try:
             messages = [SystemMessage(content=prefix), *nodes.trim_history(history)]
             response = (llm.invoke(messages) if llm is not None else
@@ -179,7 +193,7 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
                 except ValueError:
                     decision = {}
             money = charge(usage, state=state)
-            return {"run_history": [*history, response], "decision": decision,
+            return {**paused, "run_history": [*history, response], "decision": decision,
                     "planning_steps": state["planning_steps"] + 1,
                     "usage": usage, "spend": money,
                     "cost": cost_summary(_merge_usage(state.get("usage"), usage),

@@ -6,6 +6,7 @@ const SYSTEM_ACTIONS = new Set<ActionKind>([
   "thread.create",
   "run.start",
   "run.stop",
+  "run.pause",
   "run.retry",
   "thread.fork",
   "interrupt.resume",
@@ -15,6 +16,11 @@ const SYSTEM_ACTIONS = new Set<ActionKind>([
   "publication.open",
   "resource.refresh",
 ]);
+// Действия, которые перед отправкой проходят серверный preflight. `run.pause`
+// в списке нет намеренно: у него нет payload, который стоило бы проверять, а
+// собственный роут паузы и так требует токен и сверяет тред. Второй запрос
+// ради проверки пустого тела задержал бы ровно то действие, у которого весь
+// смысл в том, чтобы успеть до следующего вызова модели.
 const MUTATING_ACTIONS = new Set<ActionKind>([
   "thread.create",
   "run.start",
@@ -56,6 +62,12 @@ export class ActionDispatcher {
     const status = this.runtime().runStatus;
     if (kind === "run.stop") {
       return this.manifest.capabilities?.stop_run === true && ["queued", "running"].includes(status);
+    }
+    // Пауза — заявка, а не команда графу, и потому доступна ровно там же, где
+    // остановка: пока ход идёт. Заявка на законченный прогон дождалась бы
+    // следующего и остановила бы его в самом начале.
+    if (kind === "run.pause") {
+      return this.manifest.capabilities?.pause_run === true && ["queued", "running"].includes(status);
     }
     if (kind === "interrupt.resume") {
       return this.manifest.capabilities?.resume_interrupt === true && status === "interrupted";

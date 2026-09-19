@@ -153,6 +153,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
         "capabilities": {
             "new_thread": True,
             "stop_run": True,
+            "pause_run": True,
             "resume_interrupt": True,
             "history": False,
             "retry_node": False,
@@ -225,6 +226,18 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "empty": "show",
             },
             {
+                # Что оператор дописал на паузах. Стоит первым в колонке:
+                # документ этапа читают, держа в голове, о чём его просили,
+                # и просьба, спрятанная ниже результата, читается уже поздно.
+                "id": "notes",
+                "path": "notes",
+                "title": "Указания оператора",
+                "widget": "operator-notes",
+                "surface": "right",
+                "order": 5,
+                "empty": "hide",
+            },
+            {
                 # Итог, проблемы и следующее действие — до всего остального.
                 # Подробности никуда не делись, они ниже и раскрываются по
                 # запросу; наверху остаётся решение, ради которого открывали экран.
@@ -256,6 +269,26 @@ def base_manifest(pipeline: Pipeline) -> dict:
             },
         ],
         "interrupts": [
+            {
+                # Пауза оператора. Стоит первой и с наибольшим приоритетом:
+                # остальные остановки запланированы конвейером, эта приходит
+                # снаружи и может застать любую из них между собой и этапом.
+                "id": "operator-pause",
+                "priority": 30,
+                "match": {"path": "action", "equals": "pause"},
+                "widget": "pause",
+                "resume_schema": {
+                    "type": "object",
+                    "required": ["decision"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "decision": {"enum": ["continue", "stop"]},
+                        # Столько же разрешает `pause.MAX_NOTE`: два потолка
+                        # на одно поле разошлись бы.
+                        "note": {"type": "string", "maxLength": 4000},
+                    },
+                },
+            },
             {
                 "id": "stage-approval",
                 "priority": 20,
@@ -295,7 +328,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "widgets": ["task", "document", "artifacts", "published"],
             },
             {"id": "main", "order": 20, "widgets": ["messages"]},
-            {"id": "right", "order": 30, "widgets": ["summary", "cost", "publication"]},
+            {"id": "right", "order": 30, "widgets": ["notes", "summary", "cost", "publication"]},
             {"id": "bottom", "order": 40, "widgets": ["timeline"], "collapsible": True},
             {"id": "modal", "order": 50, "widgets": ["interrupt"]},
         ],
@@ -303,6 +336,10 @@ def base_manifest(pipeline: Pipeline) -> dict:
             {"id": "new-thread", "kind": "thread.create", "label": "Новый тред"},
             {"id": "start-run", "kind": "run.start", "label": "Запустить"},
             {"id": "stop-run", "kind": "run.stop", "label": "Остановить", "confirm": True},
+            # Пауза рядом с остановкой и намеренно без подтверждения: она
+            # ничего не теряет. Отмену прогона подтверждают потому, что
+            # начатый этап после неё придётся оплачивать заново.
+            {"id": "pause-run", "kind": "run.pause", "label": "Пауза"},
             {
                 "id": "resume-interrupt",
                 "kind": "interrupt.resume",

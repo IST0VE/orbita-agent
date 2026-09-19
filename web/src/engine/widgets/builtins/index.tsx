@@ -24,6 +24,10 @@ import {
   MessagesWidget,
 } from "./conversation";
 import {
+  OperatorNotesWidget,
+  PauseWidget,
+} from "./pause";
+import {
   FilePickerWidget,
   TaskPickerWidget,
 } from "./pickers";
@@ -69,6 +73,7 @@ export const BUILTIN_WIDGETS: WidgetDefinition[] = [
   definition("status", StatusWidget), definition("messages", MessagesWidget),
   definition("chat-input", ChatInputWidget, ["input"], true), definition("form", FormWidget, ["input", "edit", "interrupt"]),
   definition("approval", ApprovalWidget, ["interrupt"]), definition("artifact-list", ArtifactListWidget),
+  definition("pause", PauseWidget, ["interrupt"]), definition("operator-notes", OperatorNotesWidget),
   definition("draft-list", DraftListWidget, ["view"], true),
   definition("document-preview", DocumentPreviewWidget), definition("document-diff", DocumentDiffWidget),
   definition("file-list", FileListWidget), definition("task-picker", TaskPickerWidget, ["input"], true),

@@ -14,7 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent import config as cfg
-from agent import drafts, inputs, nodes, outgoing, publishers, update_plan, update_roles
+from agent import drafts, inputs, nodes, outgoing, pause, publishers, update_plan, update_roles
 from agent.cost import charge, cost_summary, extract_usage
 from agent.routes import budget_gate
 from agent.runtime import options
@@ -105,6 +105,22 @@ def make_propose_node(llm: Any = None):
     def propose(state: State, config: RunnableConfig) -> dict:
         if budget_gate(state) == "over_budget":
             return failed("Бюджет треда исчерпан до предложения изменений.")
+        # Пауза оператора: у этого графа один вызов модели, и это
+        # единственная его граница, на которой ещё можно что-то добавить.
+        # Остановка на ней уходит той же веткой, что и любой другой отказ
+        # этого графа, — через `error` в END (см. `build_graph`).
+        paused = pause.checkpoint(
+            state, config, stage="changes", title="Предложение изменений"
+        )
+        if halt := paused.get("halt"):
+            return {
+                **paused,
+                **failed(
+                    "Правка остановлена оператором на паузе. "
+                    f"Причина: {halt.get('reason') or 'не указана'}."
+                ),
+            }
+        notes = [*(state.get("notes") or []), *paused.get("notes", [])]
         source = state["source"]
         payload = {
             "request": state["task"],
@@ -115,12 +131,18 @@ def make_propose_node(llm: Any = None):
         answer = model.invoke(
             [
                 SystemMessage(content=update_roles.PROMPT),
-                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+                # Указания оператора — в конец сообщения, как и везде: префикс
+                # роли обязан остаться неподвижным.
+                HumanMessage(
+                    content=json.dumps(payload, ensure_ascii=False)
+                    + pause.notes_block(notes)
+                ),
             ]
         )
         usage = extract_usage(answer)
         money = charge(usage, state=state)
         return {
+            **paused,
             "proposal": nodes.text_of(answer),
             "usage": usage,
             "spend": money,

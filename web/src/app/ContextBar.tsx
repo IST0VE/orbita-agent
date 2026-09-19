@@ -18,6 +18,7 @@ import {
   FolderOpen,
   PanelLeft,
   PanelRight,
+  Pause,
   Plus,
   ScrollText,
   Square,
@@ -33,6 +34,10 @@ export function ContextBar({
   running,
   canStop,
   onStop,
+  canPause,
+  pauseRequested,
+  onPause,
+  onCancelPause,
   onNewThread,
   newThreadDisabled,
   events,
@@ -55,6 +60,12 @@ export function ContextBar({
   /** Сценарий объявил, что прогон можно остановить. */
   canStop: boolean;
   onStop: () => void;
+  /** Сценарий объявил, что прогон можно поставить на паузу. */
+  canPause: boolean;
+  /** Заявка оставлена, но граф до ближайшей границы шага ещё не дошёл. */
+  pauseRequested: boolean;
+  onPause: () => void;
+  onCancelPause: () => void;
   onNewThread: () => void;
   newThreadDisabled: boolean;
   events: number;
@@ -92,6 +103,35 @@ export function ContextBar({
           <StatusDot tone={RUN_TONES[runStatus]} />
           {RUN_LABELS[runStatus]}
         </span>
+
+        {/*
+          Пауза стоит перед остановкой: она мягче и нужна чаще. Остановка
+          обрывает ход, и начатый этап придётся оплачивать заново; пауза
+          доводит этап до конца, замораживает тред и ждёт, что оператор
+          допишет. Пока заявка не взята, кнопка показывает именно это —
+          ожидание, а не остановку, — и позволяет передумать.
+        */}
+        {running && canPause ? (
+          pauseRequested ? (
+            <button
+              className="btn-ghost btn-sm pause-pending"
+              title="Заявка оставлена: граф остановится перед следующим обращением к модели. Нажмите, чтобы отменить"
+              onClick={onCancelPause}
+            >
+              <Pause size={14} aria-hidden="true" />
+              Пауза запрошена
+            </button>
+          ) : (
+            <button
+              className="btn-ghost btn-sm"
+              title="Остановить прогон на ближайшей границе шага: можно будет дописать и продолжить"
+              onClick={onPause}
+            >
+              <Pause size={14} aria-hidden="true" />
+              Пауза
+            </button>
+          )
+        ) : null}
 
         {/* Остановка стоит рядом с состоянием прогона: останавливают ход,
             а не поле ввода, и смотрят при этом сюда. */}

@@ -34,7 +34,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from agent import config as cfg
-from agent import inputs, jira_writer, publishers, settings_io
+from agent import inputs, jira_writer, pause, publishers, settings_io
 from agent.security import ApiSecurityMiddleware, auth_error
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
@@ -543,6 +543,50 @@ async def validate_ui_action(request: Request) -> JSONResponse:
     return JSONResponse({"valid": True, "idempotency_key": key})
 
 
+async def ui_pause(request: Request) -> JSONResponse:
+    """
+    Заявка на паузу: остановить идущий конвейер на ближайшей границе шага.
+
+    Единственный роут, который вмешивается в идущий прогон, — и он не трогает
+    ни граф, ни состояние треда. Он оставляет заявку на доске (`pause.py`), а
+    остановку берёт сам узел перед следующим обращением к модели. Писать в
+    состояние треда снаружи, пока по нему идут узлы, значило бы гонку
+    с чекпоинтером; читать доску узлу — обычная проверка перед тратой денег.
+
+    POST — попросить паузу, DELETE — передумать, GET — узнать, ждёт ли тред.
+    Ответ у всех трёх одинаковый: заявка либо есть, либо нет.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    if request.method == "GET":
+        thread_id = request.query_params.get("thread_id", "")
+    else:
+        try:
+            body = await _json_body(request)
+        except RequestBodyTooLarge as exc:
+            return _error(str(exc), 413, error_code="ui_action_too_large")
+        except ValueError as exc:
+            return _error(str(exc), error_code="ui_action_invalid")
+        thread_id = str(body.get("thread_id", ""))
+    if not thread_id:
+        return _error(
+            "thread_id is required",
+            400,
+            error_code="ui_pause_context_missing",
+        )
+    if request.method == "GET":
+        return JSONResponse(pause.board.status(thread_id))
+    if request.method == "DELETE":
+        return JSONResponse(pause.board.cancel(thread_id))
+    try:
+        status = pause.board.request(thread_id)
+    except ValueError as exc:
+        return _error(str(exc), 400, error_code="ui_pause_invalid")
+    _LOG.info("ui pause requested", extra={"ui_thread_id": thread_id})
+    return JSONResponse(status)
+
+
 async def get_ui_events(request: Request) -> JSONResponse:
     """Bounded replay window for events emitted through the optional adapter."""
     if denied := _auth_error(request):
@@ -572,6 +616,7 @@ app = Starlette(
         Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),
         Route("/api/ui/resources/{resource_id}", get_ui_resource, methods=["GET", "POST"]),
         Route("/api/ui/actions/validate", validate_ui_action, methods=["POST"]),
+        Route("/api/ui/pause", ui_pause, methods=["GET", "POST", "DELETE"]),
         Route("/api/ui/runs/{run_id}/events", get_ui_events, methods=["GET"]),
     ]
 )

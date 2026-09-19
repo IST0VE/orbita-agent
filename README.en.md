@@ -78,6 +78,8 @@ Put each task in its own subfolder under `input/`, on the backend machine. The b
 
 Generated stage documents are not necessarily published files. Check the publication result and destination. Normal publication and Jira creation require approval by default. The update workflow always requires approval before saving its new revision.
 
+A running pipeline can be **paused**. The pause button leaves a request; the graph finishes the current step, stops before the next model call and waits. In the pause card you can add what was missing — a constraint, a clarification, a format requirement — and continue from the same checkpoint, or stop the pipeline and keep whatever documents are already written. The addition goes to the end of the message for this and every following stage. A pause is not a cancellation: a cancelled run starts over and is paid for again.
+
 `PUBLISH_TARGET=auto` selects Confluence when required settings are present, otherwise files. It does not fall back to files after a Confluence HTTP failure. The historical `CONFLUENCE_PUBLISH` switch disables all document publication, including files.
 
 ## Docker and persistence

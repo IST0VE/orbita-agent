@@ -549,3 +549,43 @@ test("redaction applies manifest rules and keeps untouched objects by reference"
   const same = { messages: [{ content: "hello" }] };
   assert.equal(redact(same, [{ path: "cost.total", mode: "remove" }]), same);
 });
+
+/*
+ * Пауза оператора.
+ *
+ * Действие своё, не `run.stop`: оно не трогает граф, а оставляет заявку на
+ * сервере. Поэтому проверяются его ворота — когда кнопка доступна — и то,
+ * что оно не идёт через preflight: лишний запрос задержал бы ровно то
+ * действие, у которого весь смысл в том, чтобы успеть до следующего вызова
+ * модели.
+ */
+function pausingManifest(pauseRun: boolean): UiManifest {
+  return {
+    ...fallbackManifest("demo"),
+    capabilities: { new_thread: true, stop_run: true, pause_run: pauseRun, resume_interrupt: true },
+    actions: [{ id: "pause-run", kind: "run.pause", label: "Пауза" }],
+  };
+}
+
+test("pause is offered while the run is going and nowhere else", async () => {
+  const runtime = createRuntimeSnapshot("assistant", "demo");
+  const preflight: unknown[] = [];
+  const build = (manifest: UiManifest, status: typeof runtime.runStatus) =>
+    new ActionDispatcher(manifest, null, () => ({ ...runtime, runStatus: status }), {
+      "run.pause": () => undefined,
+    }, async (body) => {
+      preflight.push(body);
+      return { valid: true, idempotency_key: "test" };
+    });
+
+  assert.equal(build(pausingManifest(true), "running").can("run.pause"), true);
+  // Прогон кончился — заявку брать некому: она дождалась бы следующего и
+  // остановила бы его в самом начале.
+  assert.equal(build(pausingManifest(true), "completed").can("run.pause"), false);
+  assert.equal(build(pausingManifest(true), "interrupted").can("run.pause"), false);
+  // Сценарий паузы не объявил — кнопки нет, даже если прогон идёт.
+  assert.equal(build(pausingManifest(false), "running").can("run.pause"), false);
+
+  assert.equal(await build(pausingManifest(true), "running").dispatch({ kind: "run.pause" }), true);
+  assert.deepEqual(preflight, []);
+});

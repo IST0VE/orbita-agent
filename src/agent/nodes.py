@@ -31,6 +31,7 @@ from agent import (
     inputs,
     knowledge,
     memory,
+    pause,
     providers,
     roles,
     sources,
@@ -181,6 +182,29 @@ def make_role_node(
     """
 
     def role_node(state: State, config: RunnableConfig) -> dict:
+        # Остановленный конвейер больше не платит за модель. Проверка стоит
+        # первой строкой узла и потому работает в любом графе: у собранных
+        # общим сборщиком остановку перехватит роутер и уведёт в `halted`, у
+        # конвейеров со своей топологией (НТ) ветки `halted` нет — и роль,
+        # которая не смотрит на `halt` сама, честно сходила бы в модель после
+        # того, как оператор сказал «хватит».
+        if state.get("halt"):
+            return {}
+
+        # Пауза оператора: единственная остановка конвейера, о которой заранее
+        # не договаривались. Стоит перед сборкой сообщения, а не после: смысл
+        # паузы в том, чтобы дописанное оператором попало в ЭТОТ запрос, а не
+        # в следующий. Заявки нет — не стоит ничего (`pause.checkpoint`).
+        paused = pause.checkpoint(
+            state, config, stage=role.key, title=role.title, pipeline=pipeline
+        )
+        if paused.get("halt"):
+            return paused
+        # Указание из только что снятой паузы в состоянии ещё не лежит: оно
+        # уедет туда этим же обновлением. Роль обязана увидеть его сразу —
+        # иначе первый же ответ на паузу пришёл бы на этап позже, чем его дали.
+        notes = [*(state.get("notes") or []), *paused.get("notes", [])]
+
         # Из чего собран префикс, знает конвейер: у аналитики он зависит от
         # режима базы знаний, у разбора схем — нет. Узлу важно одно: внутри
         # треда префикс не меняется, иначе кеш не засчитает совпадение.
@@ -222,12 +246,23 @@ def make_role_node(
                         )
                     ),
                 ]
+            # Указания, добавленные оператором на паузах, — отдельным ходом
+            # человека в конце переписки. Дописывать их внутрь уже собранного
+            # хода нельзя: это разорвало бы пару «вызов инструмента — ответ».
+            if block := pause.notes_block(notes):
+                history = [*history, HumanMessage(content=block.strip())]
         else:
             # Остальным сообщение собирается заново из задачи и документов
             # предыдущих этапов. Переписка аналитика с файлами им не нужна:
-            # их вход — его документ, а не то, как он его добывал.
+            # их вход — его документ, а не то, как он его добывал. Указания
+            # оператора приписываются к нему в конец — туда же, куда нода
+            # контекста кладёт справку и список файлов, и ровно по той же
+            # причине.
             history = [
-                HumanMessage(content=pipeline.brief(role, task_of(state), state.get("artifacts")))
+                HumanMessage(
+                    content=pipeline.brief(role, task_of(state), state.get("artifacts"))
+                    + pause.notes_block(notes)
+                )
             ]
 
         # SystemMessage подставляется здесь и НЕ хранится в state.messages —
@@ -269,6 +304,10 @@ def make_role_node(
         turn = extract_usage(response)
         money = charge(turn, state=state)
         update = {
+            # Приписка с паузы уезжает в состояние тем же обновлением, что и
+            # ответ роли: до него она жила только в локальной переменной, и
+            # следующий этап не увидел бы её вовсе.
+            **paused,
             "messages": [response],
             "usage": turn,
             "spend": money,
@@ -414,6 +453,11 @@ def make_gate_node(role: roles.Role, pipeline: Pipeline = roles.PIPELINE):
     previous = pipeline.before(role)
 
     def gate_node(state: State, config: RunnableConfig) -> dict:
+        # Уже остановленный конвейер подтверждать нечего: решение оператор
+        # принял на паузе, и второй вопрос про тот же документ — это вопрос,
+        # на который он только что ответил.
+        if state.get("halt"):
+            return {}
         if not cfg.pipeline_require_approval():
             return {}
 
