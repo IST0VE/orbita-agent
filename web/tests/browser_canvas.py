@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import browser_smoke as smoke
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 TITLES = {
     "__start__": "Старт", "context": "Контекст", "requirements": "Системные требования",
@@ -150,6 +150,9 @@ def main():
             # Fit then zoom by a toolbar click, keeping all tests in public UI.
             page.get_by_role("button", name="Вписать граф", exact=True).click()
             node = page.locator('.react-flow__node[data-id="requirements"]')
+            # fitView применяется асинхронно. hover ждёт стабильной карточки
+            # и попадания указателя в неё, прежде чем мы читаем координаты.
+            node.hover()
             original_position = node.get_attribute("style")
             rect = node.bounding_box()
             assert rect
@@ -159,9 +162,10 @@ def main():
             page.mouse.down()
             page.mouse.move(sx + 35, sy + 65, steps=12)
             page.mouse.up()
-            page.wait_for_timeout(100)
+            expect(node, "Dragging a node did not change its position").not_to_have_attribute(
+                "style", original_position,
+            )
             moved_position = node.get_attribute("style")
-            assert moved_position != original_position, "Dragging a node did not change its position"
             assert page.locator(".node-details").count() == 0, "Dragging opened node details"
             assert page.locator(".react-flow__edge-path").evaluate_all("els => els.map(e=>e.getAttribute('d'))") != paths_before
 
@@ -230,6 +234,7 @@ def main():
             assert page.locator('.react-flow__node').count() == len(LARGE_IDS)
             page.wait_for_timeout(250)
             large_node = page.locator('.react-flow__node[data-id="context"]')
+            large_node.hover()
             large_before = large_node.get_attribute('style')
             rect = large_node.bounding_box()
             assert rect
@@ -238,8 +243,9 @@ def main():
             page.mouse.down()
             page.mouse.move(x+50, y+70, steps=12)
             page.mouse.up()
-            page.wait_for_timeout(400)
-            assert large_node.get_attribute('style') != large_before
+            expect(large_node, "Dragging a large-graph node did not change its position").not_to_have_attribute(
+                "style", large_before,
+            )
             assert any('routing.worker' in url for url in workers), workers
             assert page.locator('.react-flow__edge-path').count() == len(LARGE_EDGES)
             page.screenshot(path=str(smoke.ARTIFACTS / "canvas-large.png"))
