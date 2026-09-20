@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Orbita catches requirement, API and architecture inconsistencies before merge." />
+  <meta name="theme-color" content="#f5f0e8" />
+  <meta property="og:title" content="Orbita — System Analysis CI" />
+  <meta property="og:description" content="Requirements → Architecture → APIs → Code. Continuously verified." />
+  <meta property="og:type" content="website" />
+  <title>Orbita — System Analysis CI</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="page-glow page-glow-a"></div>
+  <div class="page-glow page-glow-b"></div>
+
+  <header class="nav-shell">
+    <nav class="nav">
+      <a class="brand" href="#top" aria-label="Orbita home">
+        <span class="brand-mark" aria-hidden="true">
+          <span class="orbit orbit-a"></span>
+          <span class="orbit orbit-b"></span>
+          <span class="brand-core"></span>
+        </span>
+        <span>ORBITA</span>
+      </a>
+
+      <div class="nav-links">
+        <a href="#product"><span data-lang="en">Product</span><span data-lang="ru" hidden>Продукт</span></a>
+        <a href="#workflow"><span data-lang="en">How it works</span><span data-lang="ru" hidden>Как работает</span></a>
+        <a href="#pricing"><span data-lang="en">Pricing</span><span data-lang="ru" hidden>Цены</span></a>
+      </div>
+
+      <div class="nav-actions">
+        <button class="lang-switch" id="langSwitch" type="button" aria-label="Switch language">RU</button>
+        <a class="btn btn-small btn-ghost" href="https://github.com/IST0VE/orbita-agent" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="btn btn-small btn-dark" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20pilot&body=We%20want%20to%20try%20Orbita%20on%20one%20repository." target="_blank" rel="noreferrer">
+          <span data-lang="en">Request pilot</span><span data-lang="ru" hidden>Запросить пилот</span>
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero section">
+      <div class="hero-copy reveal">
+        <div class="eyebrow">
+          <span class="status-dot"></span>
+          <span data-lang="en">EARLY ACCESS · SYSTEM ANALYSIS CI</span>
+          <span data-lang="ru" hidden>РАННИЙ ДОСТУП · SYSTEM ANALYSIS CI</span>
+        </div>
+
+        <h1>
+          <span data-lang="en">Catch architecture drift <em>before merge.</em></span>
+          <span data-lang="ru" hidden>Ловите расхождения в архитектуре <em>до merge.</em></span>
+        </h1>
+
+        <p class="hero-lead">
+          <span data-lang="en">Orbita checks every engineering change against requirements, API contracts and architecture — then shows the impact directly in your pull request.</span>
+          <span data-lang="ru" hidden>Orbita проверяет каждое инженерное изменение по требованиям, API-контрактам и архитектуре — и показывает impact прямо в pull request.</span>
+        </p>
+
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20pilot&body=We%20want%20to%20try%20Orbita%20on%20one%20repository." target="_blank" rel="noreferrer">
+            <span data-lang="en">Run on one repository</span><span data-lang="ru" hidden>Запустить на одном репозитории</span>
+            <span class="arrow">↗</span>
+          </a>
+          <a class="btn btn-link" href="https://github.com/IST0VE/orbita-agent/pull/8" target="_blank" rel="noreferrer">
+            <span data-lang="en">See a live PR review</span><span data-lang="ru" hidden>Посмотреть живой PR review</span>
+            <span class="arrow">→</span>
+          </a>
+        </div>
+
+        <div class="hero-trust">
+          <span data-lang="en">Deterministic checks first.</span>
+          <span data-lang="ru" hidden>Сначала детерминированные проверки.</span>
+          <span class="dot-sep">•</span>
+          <span data-lang="en">AI only where semantics matter.</span>
+          <span data-lang="ru" hidden>AI только там, где нужна семантика.</span>
+          <span class="dot-sep">•</span>
+          <span data-lang="en">Self-hosting path for enterprise.</span>
+          <span data-lang="ru" hidden>Self-hosted контур для enterprise.</span>
+        </div>
+      </div>
+
+      <div class="hero-demo reveal reveal-delay">
+        <div class="demo-window">
+          <div class="window-top">
+            <div class="window-dots"><i></i><i></i><i></i></div>
+            <div class="window-title">pull/482 · order-cancellation</div>
+            <div class="window-state">Orbita Review</div>
+          </div>
+
+          <div class="review-head">
+            <div>
+              <div class="review-kicker">ORBITA SYSTEM ANALYSIS REVIEW</div>
+              <h3><span class="review-badge">2</span> inconsistencies found</h3>
+            </div>
+            <span class="review-status">CHECK FAILED</span>
+          </div>
+
+          <div class="changed-row">
+            <span class="file-pill">M&nbsp; openapi/orders.yaml</span>
+            <span class="file-pill">M&nbsp; docs/order-flow.md</span>
+          </div>
+
+          <div class="finding finding-major">
+            <div class="finding-top">
+              <span class="severity">MAJOR</span>
+              <code>REQ-481</code>
+            </div>
+            <p>Cancellation is defined through <code>POST /orders/{id}/cancel</code>, but the endpoint was removed from the API contract.</p>
+            <div class="impact-path">
+              <span>REQ-481</span><b>→</b><span>order-service</span><b>→</b><span>billing</span><b>→</b><span>3 tests</span>
+            </div>
+          </div>
+
+          <div class="finding finding-minor">
+            <div class="finding-top">
+              <span class="severity">MINOR</span>
+              <code>DOC-DRIFT</code>
+            </div>
+            <p>Architecture documentation still references the previous synchronous cancellation flow.</p>
+          </div>
+
+          <div class="review-foot">
+            <div class="check-row"><span class="check ok">✓</span><span>Tests</span></div>
+            <div class="check-row"><span class="check ok">✓</span><span>Security</span></div>
+            <div class="check-row"><span class="check bad">×</span><span>Orbita Architecture</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ticker" aria-label="Integrations">
+      <div class="ticker-track">
+        <span>GitHub</span><i></i><span>GitLab</span><i></i><span>Jira</span><i></i><span>Confluence</span><i></i><span>OpenAPI</span><i></i><span>AsyncAPI</span><i></i><span>Architecture Docs</span>
+      </div>
+    </section>
+
+    <section class="section problem-section" id="product">
+      <div class="section-heading reveal">
+        <span class="section-index">01</span>
+        <div>
+          <div class="eyebrow eyebrow-plain"><span data-lang="en">THE GAP</span><span data-lang="ru" hidden>ПРОБЛЕМА</span></div>
+          <h2>
+            <span data-lang="en">Your code has CI.<br />Your architecture usually doesn’t.</span>
+            <span data-lang="ru" hidden>У кода есть CI.<br />У архитектуры — обычно нет.</span>
+          </h2>
+        </div>
+      </div>
+
+      <div class="problem-grid">
+        <article class="problem-card reveal">
+          <div class="card-num">01</div>
+          <h3><span data-lang="en">Requirements drift</span><span data-lang="ru" hidden>Дрейф требований</span></h3>
+          <p><span data-lang="en">A requirement changes, but API contracts, tests or architecture docs stay behind.</span><span data-lang="ru" hidden>Требование изменилось, а API, тесты или архитектурная документация остались прежними.</span></p>
+        </article>
+        <article class="problem-card reveal">
+          <div class="card-num">02</div>
+          <h3><span data-lang="en">Hidden impact</span><span data-lang="ru" hidden>Скрытый impact</span></h3>
+          <p><span data-lang="en">One endpoint affects services, events and teams nobody remembered during review.</span><span data-lang="ru" hidden>Один endpoint затрагивает сервисы, события и команды, о которых забыли на review.</span></p>
+        </article>
+        <article class="problem-card reveal">
+          <div class="card-num">03</div>
+          <h3><span data-lang="en">Manual architecture review</span><span data-lang="ru" hidden>Ручное архитектурное review</span></h3>
+          <p><span data-lang="en">Senior engineers repeatedly reconstruct the same context from Jira, docs and repositories.</span><span data-lang="ru" hidden>Сеньоры снова и снова вручную собирают контекст из Jira, документации и репозиториев.</span></p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section workflow-section" id="workflow">
+      <div class="workflow-copy reveal">
+        <div class="eyebrow eyebrow-plain"><span data-lang="en">HOW ORBITA WORKS</span><span data-lang="ru" hidden>КАК РАБОТАЕТ ORBITA</span></div>
+        <h2>
+          <span data-lang="en">Deterministic where possible.<br /><em>AI where useful.</em></span>
+          <span data-lang="ru" hidden>Детерминированно, где возможно.<br /><em>AI — где нужен смысл.</em></span>
+        </h2>
+        <p>
+          <span data-lang="en">Orbita builds an engineering graph from artifacts it can prove, runs policy checks, calculates change impact, and only then sends a small focused context to an LLM for semantic review.</span>
+          <span data-lang="ru" hidden>Orbita строит инженерный граф из доказуемых связей, запускает правила, считает impact и только потом отдаёт небольшой релевантный контекст LLM для смыслового review.</span>
+        </p>
+      </div>
+
+      <div class="pipeline reveal">
+        <div class="pipeline-node"><div class="node-icon">Δ</div><div><strong>PR diff</strong><span>Changed artifacts</span></div></div>
+        <div class="pipeline-line"></div>
+        <div class="pipeline-node"><div class="node-icon">⌘</div><div><strong>Engineering graph</strong><span>Requirements · APIs · docs</span></div></div>
+        <div class="pipeline-line"></div>
+        <div class="pipeline-node"><div class="node-icon">✓</div><div><strong>Rules + impact</strong><span>Reproducible checks</span></div></div>
+        <div class="pipeline-line"></div>
+        <div class="pipeline-node ai-node"><div class="node-icon">✦</div><div><strong>Semantic AI</strong><span>Only when needed</span></div></div>
+        <div class="pipeline-line"></div>
+        <div class="pipeline-node"><div class="node-icon">↗</div><div><strong>PR verdict</strong><span>Evidence, impact, fix</span></div></div>
+      </div>
+    </section>
+
+    <section class="section proof-section">
+      <div class="proof-card reveal">
+        <div class="proof-copy">
+          <div class="eyebrow eyebrow-plain"><span data-lang="en">WHAT YOU GET</span><span data-lang="ru" hidden>ЧТО ПОЛУЧАЕТЕ</span></div>
+          <h2>
+            <span data-lang="en">A map of what changes — not another chat window.</span>
+            <span data-lang="ru" hidden>Карту изменений — а не ещё одно окно чата.</span>
+          </h2>
+          <p>
+            <span data-lang="en">Every finding carries evidence: what changed, what is connected, why the rule fired and what should be reviewed next.</span>
+            <span data-lang="ru" hidden>Каждая находка содержит доказательства: что изменилось, с чем связано, почему сработало правило и что проверить дальше.</span>
+          </p>
+        </div>
+
+        <div class="graph-visual" aria-label="Engineering graph example">
+          <div class="graph-node node-req"><small>Requirement</small><strong>REQ-481</strong></div>
+          <div class="graph-edge edge-1"></div>
+          <div class="graph-node node-api"><small>API</small><strong>POST /cancel</strong></div>
+          <div class="graph-edge edge-2"></div>
+          <div class="graph-node node-service"><small>Service</small><strong>orders</strong></div>
+          <div class="graph-edge edge-3"></div>
+          <div class="graph-node node-event"><small>Event</small><strong>order.cancelled</strong></div>
+          <div class="graph-edge edge-4"></div>
+          <div class="graph-node node-test"><small>Tests</small><strong>3 impacted</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section pricing-section" id="pricing">
+      <div class="section-heading reveal">
+        <span class="section-index">02</span>
+        <div>
+          <div class="eyebrow eyebrow-plain"><span data-lang="en">EARLY ACCESS</span><span data-lang="ru" hidden>РАННИЙ ДОСТУП</span></div>
+          <h2><span data-lang="en">Start with one repository.</span><span data-lang="ru" hidden>Начните с одного репозитория.</span></h2>
+        </div>
+      </div>
+
+      <div class="pricing-grid">
+        <article class="price-card reveal">
+          <div class="price-label">PILOT</div>
+          <div class="price"><span>$0</span><small>14 days</small></div>
+          <p><span data-lang="en">Prove whether Orbita catches anything useful in your real engineering flow.</span><span data-lang="ru" hidden>Проверить, находит ли Orbita полезные проблемы именно в вашем процессе.</span></p>
+          <ul>
+            <li><span>✓</span><span data-lang="en">1 repository</span><span data-lang="ru" hidden>1 репозиторий</span></li>
+            <li><span>✓</span><span data-lang="en">PR reviews</span><span data-lang="ru" hidden>PR reviews</span></li>
+            <li><span>✓</span><span data-lang="en">Impact graph</span><span data-lang="ru" hidden>Impact graph</span></li>
+            <li><span>✓</span><span data-lang="en">Rule tuning</span><span data-lang="ru" hidden>Настройка правил</span></li>
+          </ul>
+          <a class="btn btn-outline full" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20pilot&body=We%20want%20to%20try%20Orbita%20on%20one%20repository." target="_blank" rel="noreferrer">
+            <span data-lang="en">Request pilot</span><span data-lang="ru" hidden>Запросить пилот</span>
+          </a>
+        </article>
+
+        <article class="price-card price-card-featured reveal">
+          <div class="recommended"><span data-lang="en">EARLY ACCESS</span><span data-lang="ru" hidden>РАННИЙ ДОСТУП</span></div>
+          <div class="price-label">TEAM</div>
+          <div class="price"><span>$399</span><small>/ month</small></div>
+          <p><span data-lang="en">Continuous system-analysis checks for product and platform teams.</span><span data-lang="ru" hidden>Непрерывные проверки системного анализа для продуктовых и платформенных команд.</span></p>
+          <ul>
+            <li><span>✓</span><span data-lang="en">Up to 10 repositories</span><span data-lang="ru" hidden>До 10 репозиториев</span></li>
+            <li><span>✓</span><span data-lang="en">Custom policy rules</span><span data-lang="ru" hidden>Кастомные policy rules</span></li>
+            <li><span>✓</span><span data-lang="en">Jira / Confluence context</span><span data-lang="ru" hidden>Контекст Jira / Confluence</span></li>
+            <li><span>✓</span><span data-lang="en">Optional semantic AI review</span><span data-lang="ru" hidden>Опциональный AI semantic review</span></li>
+          </ul>
+          <a class="btn btn-dark full" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20Team%20early%20access&body=We%20want%20to%20discuss%20Orbita%20Team." target="_blank" rel="noreferrer">
+            <span data-lang="en">Join early access</span><span data-lang="ru" hidden>Получить ранний доступ</span>
+          </a>
+        </article>
+
+        <article class="price-card reveal">
+          <div class="price-label">ENTERPRISE</div>
+          <div class="price"><span>Custom</span><small>annual</small></div>
+          <p><span data-lang="en">For regulated environments and organization-wide engineering governance.</span><span data-lang="ru" hidden>Для регулируемых контуров и контроля инженерных изменений на уровне организации.</span></p>
+          <ul>
+            <li><span>✓</span><span data-lang="en">Self-hosted / VPC</span><span data-lang="ru" hidden>Self-hosted / VPC</span></li>
+            <li><span>✓</span><span data-lang="en">SSO / RBAC / audit log</span><span data-lang="ru" hidden>SSO / RBAC / audit log</span></li>
+            <li><span>✓</span><span data-lang="en">Company policy packs</span><span data-lang="ru" hidden>Корпоративные policy packs</span></li>
+            <li><span>✓</span><span data-lang="en">Private model endpoint</span><span data-lang="ru" hidden>Внутренний model endpoint</span></li>
+          </ul>
+          <a class="btn btn-outline full" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20Enterprise&body=We%20want%20to%20discuss%20enterprise%20deployment." target="_blank" rel="noreferrer">
+            <span data-lang="en">Discuss deployment</span><span data-lang="ru" hidden>Обсудить внедрение</span>
+          </a>
+        </article>
+      </div>
+
+      <p class="pricing-note reveal">
+        <span data-lang="en">Early-access pricing is a validation offer, not a permanent public price list.</span>
+        <span data-lang="ru" hidden>Цены раннего доступа — предложение для валидации, а не финальный публичный прайс.</span>
+      </p>
+    </section>
+
+    <section class="section cta-section">
+      <div class="cta-card reveal">
+        <div>
+          <div class="eyebrow eyebrow-light">
+            <span data-lang="en">ONE REPOSITORY. ONE REAL PR.</span>
+            <span data-lang="ru" hidden>ОДИН РЕПОЗИТОРИИЙ. ОДИН РЕАЛЬНЫЙ PR.</span>
+          </div>
+          <h2>
+            <span data-lang="en">See what your architecture review is missing.</span>
+            <span data-lang="ru" hidden>Посмотрите, что пропускает ваше архитектурное review.</span>
+          </h2>
+          <p>
+            <span data-lang="en">No slide deck. Give Orbita one engineering package and one pull request. Judge the findings.</span>
+            <span data-lang="ru" hidden>Без презентаций. Дайте Orbita один инженерный пакет и один pull request. Оцените находки.</span>
+          </p>
+        </div>
+        <a class="btn btn-light" href="https://github.com/IST0VE/orbita-agent/issues/new?title=Orbita%20pilot&body=We%20want%20to%20try%20Orbita%20on%20one%20repository." target="_blank" rel="noreferrer">
+          <span data-lang="en">Request a pilot</span><span data-lang="ru" hidden>Запросить пилот</span>
+          <span class="arrow">↗</span>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <a class="brand footer-brand" href="#top">
+      <span class="brand-mark" aria-hidden="true">
+        <span class="orbit orbit-a"></span>
+        <span class="orbit orbit-b"></span>
+        <span class="brand-core"></span>
+      </span>
+      <span>ORBITA</span>
+    </a>
+    <div>
+      <span data-lang="en">Requirements → Architecture → APIs → Code. Continuously verified.</span>
+      <span data-lang="ru" hidden>Requirements → Architecture → APIs → Code. Непрерывно проверяются.</span>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/IST0VE/orbita-agent" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="https://github.com/IST0VE/orbita-agent/pull/8" target="_blank" rel="noreferrer">Live PR</a>
+    </div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
