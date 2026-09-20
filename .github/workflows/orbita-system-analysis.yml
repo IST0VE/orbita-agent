@@ -1,0 +1,55 @@
+name: Orbita System Analysis
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: PR architecture review
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - run: pip install -r requirements.txt
+
+      - name: Collect changed files
+        run: |
+          mkdir -p .tmp
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" > .tmp/orbita-changed.txt
+
+      - name: Build Orbita review
+        id: orbita
+        continue-on-error: true
+        run: |
+          python -m agent.system_ci_cli pr-review input/partial-refund-package \
+            --changed-file-list .tmp/orbita-changed.txt \
+            --fail-on major \
+            --output .tmp/orbita-pr-review.md
+
+      - name: Add job summary
+        if: always()
+        run: cat .tmp/orbita-pr-review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update PR comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python scripts/upsert_orbita_pr_comment.py .tmp/orbita-pr-review.md
+
+      - name: Enforce Orbita verdict
+        if: steps.orbita.outcome == 'failure'
+        run: exit 1
