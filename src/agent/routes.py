@@ -140,7 +140,12 @@ def make_no_input_node(admission: Admission):
     """Отказ вместо прогона. Модель не вызывается, деньги не тратятся."""
 
     def no_input_node(state: State, config: RunnableConfig) -> dict:
-        return {"messages": [AIMessage(content=admission(state, config))]}
+        reason = admission(state, config)
+        # Этот прогон начался мимо ноды контекста, поэтому остановку прошлого
+        # прогона снимает он сам: иначе итог хода назвал бы её причиной отказа.
+        # Отказ же помечается: публиковать страницу, на которой только он,
+        # и спрашивать на это согласие оператора незачем (`publish_nodes`).
+        return {"messages": [AIMessage(content=reason)], "halt": {}, "refused": reason}
 
     return no_input_node
 
@@ -172,7 +177,17 @@ def make_gate_router(role: roles.Role):
 
 
 def over_budget_node(state: State, pipeline: Pipeline = roles.PIPELINE) -> dict:
-    """Сообщение вместо вызова модели. Денег не тратит."""
+    """
+    Сообщение вместо вызова модели. Денег не тратит.
+
+    Отказ по входу прошлого прогона (`refused`) здесь снимается: с этого узла
+    прогон может и начаться, минуя ноду контекста, и тогда публикация приняла
+    бы чужой отказ за свой.
+    """
+    return {**_over_budget_message(state, pipeline), "refused": ""}
+
+
+def _over_budget_message(state: State, pipeline: Pipeline) -> dict:
     limit = cfg.budget_usd_per_thread()
     left = [role.title for role in pipeline.pending(state.get("artifacts"))]
     remaining = f" Не выполнены этапы: {', '.join(left)}." if left else ""

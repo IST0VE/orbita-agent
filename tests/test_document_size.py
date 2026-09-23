@@ -157,4 +157,5 @@ def test_questions_and_answers_are_always_published():
 
     assert "<h2>Вопрос оператора</h2>" in body
     assert "<h2>Ответ агента</h2>" in body
-    assert "<h2>Расход токенов по треду</h2>" in body
+    # Расход — учёт прогона, а не его результат: на страницу он не попадает.
+    assert "Расход токенов" not in body

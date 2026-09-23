@@ -162,16 +162,6 @@ def test_switching_model_changes_the_price_without_touching_env(
         assert cfg.price_per_mtok()["cache_miss"] == pytest.approx(0.0)
 
 
-def test_usage_table_shows_cache_write_only_when_present(anthropic_prices):
-    from agent.graph import _usage_table
-
-    with_write = _usage_table({"cache_hit": 10, "cache_write": 5, "calls": 1})
-    without_write = _usage_table({"cache_hit": 10, "calls": 1})
-
-    assert "Записано в кеш, токенов" in with_write
-    assert "Записано в кеш, токенов" not in without_write
-
-
 # --------------------------------------------------------------------------
 # Сводка для интерфейсов
 #

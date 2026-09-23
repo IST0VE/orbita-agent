@@ -156,7 +156,7 @@ def test_thread_still_reaches_the_end(monkeypatch: pytest.MonkeyPatch):
     result = app.invoke({"messages": [HumanMessage("второй")]}, config=CONFIG)
 
     assert result["publication"]["status"] == "disabled"
-    assert "<h2>Расход токенов по треду</h2>" in result["document"]
+    assert "<h2>Задача</h2>" in result["document"]
 
 
 def test_tool_loop_is_gated_too(monkeypatch: pytest.MonkeyPatch):

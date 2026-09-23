@@ -130,7 +130,12 @@ def build_graph(
     # висеть в топологии без входящих и исходящих рёбер. В Studio и в
     # собственном интерфейсе это отдельная коробка, которая не может
     # выполниться никогда, — обещание вызова, которого граф не делает.
-    builder.add_node("context", partial(context_node, external_sources=pipeline.key == "agent"))
+    # Конвейеры документов правят выпущенное на следующем ходе треда, а не
+    # пишут заново: см. `context_node` и `make_role_node` (revisions).
+    builder.add_node(
+        "context",
+        partial(context_node, external_sources=pipeline.key == "agent", revisions=True),
+    )
     if pipeline.has_tools:
         builder.add_node("tools", ToolNode(list(pipeline.tools or TOOLS)))
     builder.add_node("over_budget", partial(over_budget_node, pipeline=pipeline))
@@ -142,7 +147,7 @@ def build_graph(
     for role in pipeline.roles:
         builder.add_node(
             role.key,
-            make_role_node(role, unstable_prefix, llm, pipeline=pipeline),
+            make_role_node(role, unstable_prefix, llm, pipeline=pipeline, revisions=True),
         )
 
     # Ворота бюджета на входе в тред ведут через ноду контекста: справка и

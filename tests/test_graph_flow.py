@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -313,8 +316,25 @@ def test_document_carries_every_stage(monkeypatch: pytest.MonkeyPatch):
     for role in roles.ROLES:
         assert f"<h2>{role.number}. {role.title}</h2>" in document
     assert "<h2>Задача</h2>" in document
-    assert "<h2>Расход токенов по треду</h2>" in document
-    assert "Cache hit rate" in document
+
+
+def test_published_pages_carry_no_spend(monkeypatch: pytest.MonkeyPatch):
+    """
+    Расход прогона — вызовы, токены, доля кеша, деньги — это учёт, а не
+    результат. На страницы он не уезжает ни постранично, ни в документе треда
+    целиком, а в состоянии для интерфейса остаётся.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "1")
+    monkeypatch.setenv("PUBLISH_TARGET", "file")
+
+    state = run(*PIPELINE)
+
+    written = [p.read_text(encoding="utf-8") for p in Path(os.environ["PUBLISH_DIR"]).glob("*")]
+    assert len(written) == len(roles.ROLES)
+    for text in [*written, state["document"]]:
+        for leaked in ("Расход токенов", "Вызовов LLM", "Cache hit rate", "Стоимость", "$"):
+            assert leaked not in text
+    assert state["usage"]["calls"] == len(roles.ROLES)
 
 
 def test_every_stage_gets_its_own_page(monkeypatch: pytest.MonkeyPatch):
@@ -335,7 +355,7 @@ def test_every_stage_gets_its_own_page(monkeypatch: pytest.MonkeyPatch):
 def test_the_whole_document_says_the_task_once(monkeypatch: pytest.MonkeyPatch):
     """
     Документ треда собирается заново, а не склейкой пяти страниц. На страницах
-    задача и расход повторяются намеренно — их открывают по отдельной ссылке, —
+    задача повторяется намеренно — их открывают по отдельной ссылке, —
     но человек, которому документ показывают перед публикацией, читает его
     подряд, и пять одинаковых шапок там только мешают.
     """
@@ -345,7 +365,6 @@ def test_the_whole_document_says_the_task_once(monkeypatch: pytest.MonkeyPatch):
     document = run(*PIPELINE)["document"]
 
     assert document.count("<h2>Задача</h2>") == 1
-    assert document.count("<h2>Расход токенов по треду</h2>") == 1
     assert document.count("Страница собрана автоматически") == 1
     # А сами этапы — все пять.
     assert sum(f"<h2>{r.number}. {r.title}</h2>" in document for r in roles.ROLES) == 5

@@ -168,9 +168,13 @@ def notes_block(notes: list | None) -> str:
     if not items:
         return ""
     lines = "\n".join(f"- {text}" for text in items)
+    # Источников у указаний два: пауза посреди прогона и следующее сообщение
+    # в треде, где документы уже выпущены (`nodes.context_node`). Для роли
+    # разницы между ними нет — это одно и то же уточнение задачи.
     return (
-        "\n\nУказания оператора, полученные во время прогона. Учти их наравне "
-        "с задачей; при расхождении с ней побеждает указание.\n" + lines + "\n"
+        "\n\nУказания оператора к задаче — даны на паузе или следующим сообщением "
+        "в треде, по порядку. Учти их наравне с задачей; при расхождении с ней "
+        "побеждает указание, а из двух указаний — более позднее.\n" + lines + "\n"
     )
 
 
@@ -234,15 +238,18 @@ def _update(answer: Any, *, stage: str) -> dict:
         }
     if not decision["note"]:
         return {}
-    return {
-        "notes": [
-            {
-                "stage": stage,
-                "text": decision["note"],
-                "at": _now().isoformat(timespec="seconds"),
-            }
-        ]
-    }
+    return {"notes": [note(stage, decision["note"])]}
+
+
+def note(stage: str, text: str) -> dict:
+    """
+    Одно указание оператора в том виде, в каком оно лежит в `notes`.
+
+    Пишут их двое — пауза и нода контекста, когда следующее сообщение в треде
+    правит уже выпущенные документы, — и форма у них обязана быть одна:
+    читает их один и тот же `notes_block`.
+    """
+    return {"stage": stage, "text": text, "at": _now().isoformat(timespec="seconds")}
 
 
 def checkpoint(

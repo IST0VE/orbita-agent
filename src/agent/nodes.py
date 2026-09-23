@@ -159,11 +159,33 @@ def without_tool_calls(message: Any) -> Any:
     )
 
 
+def revision_block(previous: str) -> str:
+    """
+    Прошлая версия документа роли — чтобы править его, а не писать заново.
+
+    Нужна на следующем ходе треда, где документы уже выпущены: оператор прислал
+    указание («поправь раздел про коды ошибок»), и роль, не видящая своего
+    прошлого документа, написала бы новый с нуля — со всеми расхождениями
+    с тем, что человек уже прочитал и одобрил. Блок уезжает в КОНЕЦ сообщения,
+    перед указаниями: префикс роли остаётся неподвижным.
+    """
+    if not previous:
+        return ""
+    return (
+        "\n\n# Предыдущая версия этого документа\n\n"
+        "Документ уже выпускался в этом треде. Не пиши его заново: внеси указания "
+        "оператора и изменения предыдущих этапов, всё остальное сохрани как есть. "
+        "Верни документ целиком, а не список правок.\n\n" + previous
+    )
+
+
 def make_role_node(
     role: roles.Role,
     unstable_prefix: bool = False,
     llm: Any = None,
     pipeline: Pipeline = roles.PIPELINE,
+    *,
+    revisions: bool = False,
 ):
     """
     Узел одного этапа конвейера.
@@ -179,6 +201,11 @@ def make_role_node(
     llm — готовая модель вместо собранной из окружения. Нужна тестам, чтобы
     прогнать граф целиком на подделке, без ключа и без сети. Инструменты к ней
     не привязываются: что передали, то и вызывается.
+
+    revisions — следующий ход треда правит выпущенные документы, а не пишет
+    новые (см. `context_node`): роль получает задачу треда и свою прошлую
+    версию. Включает его общий сборщик конвейеров; у графов НТ следующее
+    сообщение — это новый анализ, и там флаг выключен.
     """
 
     def role_node(state: State, config: RunnableConfig) -> dict:
@@ -223,6 +250,13 @@ def make_role_node(
         used = int(state.get("tool_turns") or 0)
         asking = role.reads_files and (limit <= 0 or used < limit)
 
+        # Документ этой роли с прошлого хода треда. На первом ходе его нет, а
+        # внутри хода роль пишет документ один раз — значит, найденный здесь
+        # остался от предыдущего хода и его надо править, а не писать заново.
+        previous = (
+            ((state.get("artifacts") or {}).get(role.key) or "").strip() if revisions else ""
+        )
+
         if role.reads_files:
             # Роль с инструментами ведёт переписку: её вопрос к файлам и ответы
             # файлов обязаны остаться в истории, иначе следующий заход в ноду
@@ -230,7 +264,19 @@ def make_role_node(
             # прошлые прогоны конвейера этой роли не нужны, а тащить их значило
             # бы платить за них на каждом вызове.
             turns = split_turns(state.get("messages") or [])
-            history = trim_history(turns[-1] if turns else [])
+            turn = turns[-1] if turns else []
+            history = trim_history(turn)
+            # Ход, начатый указанием к уже выпущенным документам, начинается
+            # не задачей: первым сообщением в нём стоит «поправь раздел …».
+            # Задача треда встаёт перед ним, иначе роль видела бы правку без
+            # предмета правки.
+            task = task_of(state)
+            opening = next(
+                (operator_question(text_of(m)) for m in turn if getattr(m, "type", "") == "human"),
+                "",
+            )
+            if revisions and task and opening and opening != task:
+                history = [HumanMessage(content=f"# Задача треда\n\n{task}"), *history]
             if not asking:
                 # Предупреждение уезжает в КОНЕЦ переписки, а не в префикс:
                 # префикс обязан остаться побайтово тем же, иначе последний
@@ -246,21 +292,23 @@ def make_role_node(
                         )
                     ),
                 ]
-            # Указания, добавленные оператором на паузах, — отдельным ходом
+            # Прошлая версия документа и указания оператора — отдельными ходами
             # человека в конце переписки. Дописывать их внутрь уже собранного
             # хода нельзя: это разорвало бы пару «вызов инструмента — ответ».
-            if block := pause.notes_block(notes):
-                history = [*history, HumanMessage(content=block.strip())]
+            for block in (revision_block(previous), pause.notes_block(notes)):
+                if block:
+                    history = [*history, HumanMessage(content=block.strip())]
         else:
             # Остальным сообщение собирается заново из задачи и документов
             # предыдущих этапов. Переписка аналитика с файлами им не нужна:
-            # их вход — его документ, а не то, как он его добывал. Указания
-            # оператора приписываются к нему в конец — туда же, куда нода
-            # контекста кладёт справку и список файлов, и ровно по той же
-            # причине.
+            # их вход — его документ, а не то, как он его добывал. Прошлая
+            # версия документа и указания оператора приписываются в конец —
+            # туда же, куда нода контекста кладёт справку и список файлов,
+            # и ровно по той же причине.
             history = [
                 HumanMessage(
                     content=pipeline.brief(role, task_of(state), state.get("artifacts"))
+                    + revision_block(previous)
                     + pause.notes_block(notes)
                 )
             ]
@@ -330,7 +378,13 @@ def make_role_node(
 
 
 
-def context_node(state: State, config: RunnableConfig, *, external_sources: bool = False) -> dict:
+def context_node(
+    state: State,
+    config: RunnableConfig,
+    *,
+    external_sources: bool = False,
+    revisions: bool = False,
+) -> dict:
     """
     Подставить в КОНЕЦ задачи список файлов, справку из базы знаний и то, что
     помним по проекту.
@@ -352,10 +406,26 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
     первой на каждом прогоне, и это единственное место, которое знает, что
     начался новый ход оператора: потолок ограничивает прогон, а не тред,
     иначе второй запрос в том же треде достался бы роли без инструментов.
+
+    По той же причине снимается остановка оператора (`halt`). Она относится
+    к прогону, в котором её дали: оставленная в треде, она уводила бы каждый
+    следующий запрос прямиком в `halted`, ни разу не спросив модель, — тред
+    после одной остановки становился бы мёртвым.
+
+    revisions — следующее сообщение в треде, где документы уже выпущены, это
+    указание к ним, а не новая задача. Задача треда остаётся прежней, а
+    сообщение уезжает в `notes` — туда же, куда указания с паузы, и тем же
+    путём доходит до каждой роли. Без этого «поправь раздел про коды ошибок»
+    становилось задачей само по себе: пять ролей писали пять документов по
+    одной фразе, не видя ни исходной задачи, ни прежних документов, и
+    перезаписывали ими страницы треда. Новая задача — это новый тред: по
+    первому сообщению считается и заголовок страниц. Графам НТ флаг не
+    передаётся: там следующее сообщение — новый анализ.
     """
     # Счётчик обнуляется на любом исходе ноды: не состоявшаяся подстановка —
-    # это всё равно начало нового прогона.
-    fresh = {"tool_turns": 0}
+    # это всё равно начало нового прогона. Отказ по входу прошлого прогона
+    # (`refused`) снимается тем же доводом, что и остановка.
+    fresh = {"tool_turns": 0, "halt": {}, "refused": ""}
     messages = state.get("messages") or []
     last = messages[-1] if messages else None
     if last is None or getattr(last, "type", "") != "human":
@@ -371,6 +441,10 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
         return fresh  # справка уже подставлена: повторный вход в ноду
 
     task = operator_question(question)
+    update: dict = {**fresh, "task": task}
+    if revisions and state.get("task") and state.get("artifacts"):
+        update["task"] = state["task"]
+        update["notes"] = [pause.note("followup", task)]
 
     blocks = []
     if external_sources:
@@ -391,12 +465,8 @@ def context_node(state: State, config: RunnableConfig, *, external_sources: bool
 
     addition = "".join(block for block in blocks if block)
     if not addition:
-        return {**fresh, "task": task}
-    return {
-        **fresh,
-        "task": task,
-        "messages": [HumanMessage(content=question + addition, id=last.id)],
-    }
+        return update
+    return {**update, "messages": [HumanMessage(content=question + addition, id=last.id)]}
 
 
 def remember_node(state: State, config: RunnableConfig) -> dict:
@@ -459,6 +529,10 @@ def make_gate_node(role: roles.Role, pipeline: Pipeline = roles.PIPELINE):
         if state.get("halt"):
             return {}
         if not cfg.pipeline_require_approval():
+            return {}
+        # Режим `first`: спрашивают только про первый документ — на нём стоят
+        # все остальные, и ошибка в нём дороже всего (PIPELINE_APPROVAL_STAGES).
+        if cfg.pipeline_approval_stages() == "first" and previous != pipeline.first:
             return {}
 
         artifact = ((state.get("artifacts") or {}).get(previous.key) or "").strip()

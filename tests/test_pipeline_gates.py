@@ -194,3 +194,35 @@ def test_gate_stays_silent_when_the_previous_stage_produced_nothing(gates_on):
 
     assert model.calls == 2  # первые ворота пропустили, вторые остановили
     assert interrupt_of(result)["stage"] == "api"
+
+
+# --------------------------------------------------------------------------
+# Одна остановка вместо четырёх
+# --------------------------------------------------------------------------
+def test_first_mode_asks_only_about_the_first_document(
+    gates_on, monkeypatch: pytest.MonkeyPatch
+):
+    """
+    `PIPELINE_APPROVAL_STAGES=first`: оператор подтверждает первый документ —
+    на нём стоят все остальные, — и дальше конвейер идёт без остановок.
+    """
+    monkeypatch.setenv("PIPELINE_APPROVAL_STAGES", "first")
+    model = Counting()
+    app = app_with(model)
+
+    paused = start(app)
+    assert interrupt_of(paused)["stage"] == roles.FIRST.key
+    assert model.calls == 1
+
+    done = app.invoke(Command(resume=True), config=CONFIG)
+
+    assert "__interrupt__" not in done
+    assert model.calls == len(roles.ROLES)
+    assert set(done["artifacts"]) == set(roles.KEYS)
+
+
+def test_unknown_approval_mode_is_refused(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PIPELINE_APPROVAL_STAGES", "second")
+
+    with pytest.raises(cfg.ConfigError, match="PIPELINE_APPROVAL_STAGES"):
+        cfg.pipeline_approval_stages()

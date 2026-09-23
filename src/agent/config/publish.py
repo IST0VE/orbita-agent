@@ -83,3 +83,25 @@ def pipeline_require_approval() -> bool:
     `Command(resume=...)`, без кнопок в коде.
     """
     return env_bool("PIPELINE_REQUIRE_APPROVAL", False)
+
+
+PIPELINE_APPROVAL_STAGES_MODES = ("all", "first")
+
+
+def pipeline_approval_stages() -> str:
+    """
+    На каких воротах спрашивать оператора, если PIPELINE_REQUIRE_APPROVAL включён.
+
+    `all` — перед каждым следующим этапом, как было всегда. `first` — только
+    после первого документа. Именно он дороже всего обходится неверно понятым:
+    на нём стоят все остальные этапы, а три-четыре остановки за прогон
+    превращают конвейер в переписку. Одна остановка там, где ошибка ещё
+    стоит один вызов, а не пять, — разумная середина.
+    """
+    mode = env_str("PIPELINE_APPROVAL_STAGES", "all").lower()
+    if mode not in PIPELINE_APPROVAL_STAGES_MODES:
+        raise ConfigError(
+            f"PIPELINE_APPROVAL_STAGES={mode!r}: поддерживаются "
+            + ", ".join(PIPELINE_APPROVAL_STAGES_MODES)
+        )
+    return mode

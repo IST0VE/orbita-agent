@@ -7,10 +7,16 @@
 модуля равна нулю, и так и должно остаться.
 
 Два вида результата. Документ прогона — вся история одним текстом, с задачей
-в шапке и таблицей расхода в конце. Документы этапов — по одному на роль,
+в шапке. Документы этапов — по одному на роль,
 каждый самостоятельный: за контрактом API приходят к странице API, а не
 к истории проекта, поэтому задача повторяется в шапке каждого. Дублирование
 намеренное.
+
+Расхода — вызовов, токенов, доли кеша, денег — в документах нет. Это учёт
+прогона, а не его результат: читателю страницы в wiki он ничего не говорит о
+системе, а стоимость работы уезжала бы наружу вместе с каждой публикацией.
+Расход остаётся в состоянии треда (`usage`, `spend`, `cost`) и виден в
+интерфейсе и в консоли.
 
 Здесь же — вопрос оператора без того, что мы к нему дописали
 (`operator_question`). Он лежит рядом с `text_of` и `task_of` не случайно:
@@ -29,7 +35,6 @@ from langchain_core.runnables import RunnableConfig
 
 from agent import config as cfg
 from agent import confluence, jira, render, roles
-from agent.cost import hit_rate, spent_usd
 from agent.pipeline import Pipeline
 from agent.state import State
 
@@ -95,26 +100,15 @@ def page_title(state: State, config: RunnableConfig, role: roles.Role | None = N
     # Маска нужна и здесь: заголовок виден в списке страниц пространства и
     # в имени файла на диске — то есть ровно там, где данные заказчика заметнее
     # всего. Шаблоны стабильны, поэтому upsert по заголовку не ломается.
-    topic = confluence.mask_text(_title_topic(text_of(first))[:limit]) if first else ""
+    # Первое сообщение нода контекста уже дополнила списком файлов и справкой:
+    # в заголовок идёт только то, что написал оператор, иначе короткий запрос
+    # уезжал в wiki с хвостом «--- Файлы задачи … (подставлен автоматически)».
+    topic = (
+        confluence.mask_text(_title_topic(operator_question(text_of(first)))[:limit])
+        if first
+        else ""
+    )
     return f"{cfg.agent_name()}: {topic or 'задача без описания'} [{thread_id}]{stage}"
-
-
-def _usage_table(usage: dict, renderer: render.Renderer | None = None, spend: dict | None = None) -> str:
-    rows = [
-        ("Вызовов LLM", usage.get("calls", 0)),
-        ("Вход из кеша, токенов", usage.get("cache_hit", 0)),
-        ("Вход пересчитан, токенов", usage.get("cache_miss", 0)),
-    ]
-    # Запись в кеш есть не у всех провайдеров — пустой строки в таблице быть
-    # не должно, иначе на DeepSeek она вечно висит с нулём.
-    if usage.get("cache_write", 0):
-        rows.append(("Записано в кеш, токенов", usage["cache_write"]))
-    rows += [
-        ("Выход, токенов", usage.get("output", 0)),
-        ("Cache hit rate", f"{hit_rate(usage):.1f}%"),
-        ("Стоимость", f"${spent_usd({'usage': usage, 'spend': spend}):.6f}"),
-    ]
-    return (renderer or render.STORAGE).table(rows)
 
 
 def _markup(text: str, renderer: render.Renderer) -> str:
@@ -197,20 +191,20 @@ def document_header(
     каждом рендере, и если бы оно попадало в хеш, режим `changed` считал бы
     документ изменившимся всегда.
 
-    Модель берётся из конфигурации сервера, как и при вызове LLM.
+    Модели в шапке нет по той же причине, что и расхода в теле: это сведения
+    о том, как документ собирался, а не о системе, которую он описывает.
     """
     stamp = datetime.now().isoformat(timespec="seconds")
-    model = cfg.model_name()
     return (renderer or render.STORAGE).paragraph(
-        f"Страница собрана автоматически {pipeline.byline} {cfg.agent_name()} "
-        f"(модель {model}). Обновлено: {stamp}. "
+        f"Страница собрана автоматически {pipeline.byline} {cfg.agent_name()}. "
+        f"Обновлено: {stamp}. "
         "Правки руками затрёт следующий прогон треда."
     )
 
 
 def render_body(state: State, renderer: render.Renderer | None = None) -> str:
     """
-    Тело страницы без шапки: ходы и таблица расходов.
+    Тело страницы без шапки: ходы треда.
 
     На странице остаются последние CONFLUENCE_MAX_TURNS ходов целиком, всё
     более раннее сворачивается в один свёрнутый блок с указателем вопросов.
@@ -232,9 +226,6 @@ def render_body(state: State, renderer: render.Renderer | None = None) -> str:
         parts.append(_hidden_turns_block(hidden, renderer))
     for turn in turns:
         parts += _render_turn(turn, renderer)
-
-    parts.append(renderer.heading("Расход токенов по треду"))
-    parts.append(_usage_table(state.get("usage") or {}, renderer, state.get("spend")))
     return renderer.join(parts)
 
 
@@ -286,14 +277,12 @@ def _stage_section(role: roles.Role, state: State, renderer: render.Renderer) ->
 def render_stage_body(
     role: roles.Role, state: State, renderer: render.Renderer | None = None
 ) -> str:
-    """Тело документа этапа: задача, документ роли и расход по треду."""
+    """Тело документа этапа: задача и документ роли."""
     renderer = renderer or render.STORAGE
     parts = [
         renderer.heading("Задача"),
         _markup(task_of(state), renderer),
         *_stage_section(role, state, renderer),
-        renderer.heading("Расход токенов по треду"),
-        _usage_table(state.get("usage") or {}, renderer, state.get("spend")),
     ]
     return renderer.join(parts)
 
@@ -304,19 +293,17 @@ def render_pipeline_body(
     pipeline: Pipeline = roles.PIPELINE,
 ) -> str:
     """
-    Все этапы одним документом: задача, документы по порядку, расход.
+    Все этапы одним документом: задача и документы по порядку.
 
     Нужен там, где документ читают целиком, а не по ссылке на конкретный этап:
     в окне подтверждения и в состоянии треда для интерфейса. Склейка готовых
-    страниц там не годится — задача и таблица расходов повторились бы пять раз,
-    и человек, которому это показывают перед публикацией, читал бы одно и то же.
+    страниц там не годится — задача повторилась бы пять раз, и человек,
+    которому это показывают перед публикацией, читал бы одно и то же.
     """
     renderer = renderer or render.STORAGE
     parts = [renderer.heading("Задача"), _markup(task_of(state), renderer)]
     for role in pipeline.done(state.get("artifacts")):
         parts += _stage_section(role, state, renderer)
-    parts.append(renderer.heading("Расход токенов по треду"))
-    parts.append(_usage_table(state.get("usage") or {}, renderer, state.get("spend")))
     return renderer.join(parts)
 
 

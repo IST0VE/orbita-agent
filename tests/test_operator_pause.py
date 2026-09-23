@@ -219,6 +219,30 @@ def test_stop_on_pause_halts_the_pipeline_and_publishes_what_is_ready(
     assert result["publication"]["pages"]
 
 
+def test_next_request_in_a_stopped_thread_runs_again():
+    """
+    Остановка относится к прогону, в котором её дали, а не к треду.
+
+    Оставленная в треде, она уводила каждый следующий запрос прямиком в
+    `halted`: оператор, остановивший конвейер из-за неверно понятой задачи и
+    написавший исправленную, получал в ответ ту же остановку и ни одного
+    документа.
+    """
+    model = Recording()
+    app = app_with(model)
+    pause.board.request(THREAD)
+    start(app)
+    stopped = app.invoke(Command(resume={"decision": "stop", "note": "не та задача"}), CONFIG)
+    assert stopped["halt"] and model.calls == 0
+
+    again = app.invoke({"messages": [HumanMessage("Исправленная задача: импорт товаров.")]}, CONFIG)
+
+    assert not again.get("halt")
+    assert model.calls == len(roles.ROLES)
+    assert set(again["artifacts"]) >= set(roles.KEYS)
+    assert "остановлен оператором" not in again["messages"][-1].content
+
+
 # --------------------------------------------------------------------------
 # Доска заявок
 # --------------------------------------------------------------------------

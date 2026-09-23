@@ -77,3 +77,17 @@ def test_thread_without_human_message_still_has_a_title():
 def test_missing_thread_id_falls_back():
     title = page_title(state(HumanMessage("вопрос")), {})
     assert title.endswith("[no-thread]")
+
+
+def test_title_leaves_out_the_context_added_to_the_question():
+    """
+    Нода контекста дописывает к первому сообщению список файлов задачи. Короткий
+    запрос помещался в потолок заголовка целиком — и страница уезжала в wiki
+    с хвостом «--- Файлы задачи … (подставлен автоматически)».
+    """
+    question = "Документация по схеме"
+    added = question + "\n\n---\nФайлы задачи «diagram» (подставлен автоматически). a.drawio"
+    assert page_title(state(HumanMessage(added)), CONFIG) == page_title(
+        state(HumanMessage(question)), CONFIG
+    )
+    assert "Файлы задачи" not in page_title(state(HumanMessage(added)), CONFIG)

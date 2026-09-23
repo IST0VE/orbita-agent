@@ -192,8 +192,6 @@ def test_runner_http_requires_explicit_approval_at_both_boundaries(approved, end
 
 
 def test_legacy_spend_migrates_once_and_survives_a_price_change(monkeypatch):
-    from agent import documents, render
-
     for name in ['CACHE_HIT', 'CACHE_MISS', 'CACHE_WRITE', 'OUTPUT']:
         monkeypatch.setenv('PRICE_' + name + '_PER_MTOK', '1')
     state = {'usage': {'cache_miss': 490000, 'calls': 10}, 'spend': _merge_spend(None, {})}
@@ -205,7 +203,6 @@ def test_legacy_spend_migrates_once_and_survives_a_price_change(monkeypatch):
     state['spend'] = _merge_spend(state['spend'], cost.charge(turn, state=state))
     assert cost.spent_usd(state) == pytest.approx(.52)
     assert state['spend']['estimated_calls'] == 10
-    assert '$0.520000' in documents._usage_table(state['usage'], render.MARKDOWN, state['spend'])
 
 
 def test_legacy_thread_stops_at_budget_after_migration(monkeypatch):

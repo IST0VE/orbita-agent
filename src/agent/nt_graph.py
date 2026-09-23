@@ -23,6 +23,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
@@ -99,6 +100,24 @@ def pending_calls(state: State) -> list[dict]:
 
 def investigation_route(state: State) -> str:
     return "approve_tools" if pending_calls(state) else "final_analysis"
+
+
+def accounted(result: dict) -> dict:
+    """
+    Что узел роли насчитал и что оператор дописал на паузе.
+
+    Узлы НТ берут из ответа роли не всё обновление, а выборку, и выборка обязана
+    включать деньги (`spend`) и указания паузы (`notes`). Без первого подграф
+    анализа внутри `nt_run` возвращал родителю нулевое приращение расхода, без
+    второго указание оператора доживало только до одного вызова модели.
+    """
+    return {key: result[key] for key in ("usage", "spend", "cost", "notes") if key in result}
+
+
+def stopped(halt: dict) -> dict:
+    """Остановка оператором на паузе: модель больше не зовётся, отчёт собирается по фактам."""
+    return failure("INVESTIGATION_STOPPED", "operator stopped the analysis on pause: "
+                   + (halt.get("reason") or "no reason given"))
 
 
 def build_graph(llm: Any = None, *, sources: Sources | None = None,
@@ -227,10 +246,15 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             return {"stage": "understand_task"}
         try:
             result = understand_role({**state, "task": state.get("task_description", "")}, config)
+            if halt := result.get("halt"):
+                # Остановка на паузе: дальше отчёт собирается по фактам, без модели.
+                # Узел исследования увидит `halt` и не пойдёт в неё сам.
+                return {"halt": halt, "stage": "understand_task",
+                        "source_errors": [*state.get("source_errors", []), stopped(halt)]}
             response = result["messages"][-1]
             values = validated_extraction(nodes.text_of(response), state.get("task_description", ""))
             update = {**{k: v for k, v in values.items() if not state.get(k)},
-                      "usage": result["usage"], "cost": result["cost"], "stage": "understand_task"}
+                      **accounted(result), "stage": "understand_task"}
             update["requested_inputs"] = {**state.get("requested_inputs", {}),
                                           **{k: v for k, v in values.items() if not state.get(k)}}
             resolved, invalid = validate_fields({k: v for k, v in {**state, **update}.items() if k in INPUT_FIELDS})
@@ -245,6 +269,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                     update["context_sources"] = [*state.get("context_sources", []),
                         {"kind": "load_testing", "id": resolved["test_id"], "text": _json(card)}]
             return update
+        except GraphBubbleUp:
+            # Пауза оператора — это `interrupt()`, то есть исключение. Поймать
+            # его здесь значило бы выдать остановку за отказ модели и уйти мимо
+            # оператора дальше по графу.
+            raise
         except Exception as exc:
             log.warning("nt_llm_failed node=understand_task run_id=%s test_id=%s",
                         state.get("run_id"), state.get("test_id"), exc_info=True)
@@ -401,6 +430,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
 
     def investigate(state: State, config: RunnableConfig) -> dict:
         history = state.get("investigation_history") or []
+        if state.get("halt"):
+            # Оператор остановил анализ на паузе раньше, чем дошло до
+            # исследования: улики остаются, модель больше не зовётся.
+            return {"stage": "investigate", "investigation_history": settled(history),
+                    "stop_reason": "operator_stopped"}
         if (state.get("iteration", 0) >= state.get("max_iterations", 4)
                 or time.time() >= state.get("deadline_at", 0) or budget_gate(state) == "over_budget"
                 or not state.get("evidence")):
@@ -425,6 +459,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
                 result = finish_investigation({**state, "task": _json(final_input), "messages": history}, config)
             else:
                 result = investigate_role({**state, "messages": history}, config)
+            if halt := result.get("halt"):
+                return {"halt": halt, "stage": "investigate",
+                        "investigation_history": settled(history),
+                        "stop_reason": "operator_stopped",
+                        "source_errors": [*state.get("source_errors", []), stopped(halt)]}
             response = result["messages"][-1]
             final_empty = final_turn and not nodes.text_of(response).strip()
             if final_empty:
@@ -434,10 +473,14 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             if len(calls) > 3:
                 response = nodes.without_tool_calls(response)
                 response = response.model_copy(update={"content": "{}"})
-            return {"usage": result["usage"], "cost": result["cost"], "stage": "investigate",
+            return {**accounted(result), "stage": "investigate",
                     "stop_reason": "investigation_limit" if final_empty else "",
                     "source_errors": _error(state, "INVESTIGATION_SKIPPED", "last turn must return a final response") if final_empty else state.get("source_errors", []),
                     "investigation_history": [*history, response], "iteration": state.get("iteration", 0) + 1}
+        except GraphBubbleUp:
+            # Пауза оператора и подтверждения — управление ходом, а не отказ
+            # модели: см. `understand_task`.
+            raise
         except Exception as exc:
             log.warning("nt_llm_failed node=investigate run_id=%s test_id=%s iteration=%s",
                         state.get("run_id"), state.get("test_id"), state.get("iteration", 0),

@@ -198,6 +198,7 @@ const PUBLICATION_LABELS: Record<string, { text: string; tone: Tone }> = {
   unchanged: { text: "документ не изменился", tone: "muted" },
   disabled: { text: "публикация выключена", tone: "muted" },
   postponed: { text: "публикация отложена", tone: "muted" },
+  nothing: { text: "публиковать нечего", tone: "muted" },
   skipped: { text: "не хватает настроек", tone: "warn" },
   rejected: { text: "оператор отклонил", tone: "warn" },
   stale: { text: "план изменился — подтвердите заново", tone: "warn" },

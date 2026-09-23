@@ -118,7 +118,7 @@ def test_the_file_is_markdown_not_storage_format():
     text = files()[0].read_text(encoding="utf-8")
     assert text.startswith("# Orbita: Вопрос оператора [t-1]")
     assert "## Вопрос оператора" in text
-    assert "| Метрика | Значение |" in text
+    assert "Расход токенов" not in text  # учёт прогона на страницу не уезжает
     assert "<h2>" not in text
 
 

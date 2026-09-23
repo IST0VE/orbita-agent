@@ -158,6 +158,12 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
 
     def plan_next(state: State, config: RunnableConfig):
         steps, runs = limits()
+        if halt := state.get("halt"):
+            # Оператор остановил кампанию на паузе внутри подграфа анализа:
+            # следующий эксперимент планировать уже некому.
+            return {"decision": {"action": "finish"}, "stage": "plan_next",
+                    "last_error": "Остановлено оператором на паузе: "
+                                  + (halt.get("reason") or "причина не указана")}
         if state.get("planning_steps", 0) >= steps or budget_gate(state) == "over_budget":
             return {"decision": {"action": "finish"}, "last_error": "Достигнут лимит планирования или стоимости",
                     "stage": "plan_next"}
@@ -449,10 +455,16 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         money = {k: max(0.0, v - (state.get("spend") or {}).get(k, 0))
                  for k, v in (analysis.get("spend") or {}).items()
                  if isinstance(v, (int, float))}
-        return {"run_analysis": compact, "artifacts": artifacts, "usage": usage, "spend": money,
-                "cost": cost_summary(_merge_usage(state.get("usage"), usage),
-                                     _merge_spend(state.get("spend"), money)),
-                "stage": "analyze"}
+        update = {"run_analysis": compact, "artifacts": artifacts, "usage": usage, "spend": money,
+                  "cost": cost_summary(_merge_usage(state.get("usage"), usage),
+                                       _merge_spend(state.get("spend"), money)),
+                  "stage": "analyze"}
+        # Остановка на паузе внутри анализа относится ко всей кампании:
+        # подграф свой ход закончил, а следующий прогон родитель спланировал бы
+        # уже после того, как оператор сказал «хватит».
+        if analysis.get("halt"):
+            update["halt"] = analysis["halt"]
+        return update
 
     async def analyze(state: State, config: RunnableConfig):
         try:

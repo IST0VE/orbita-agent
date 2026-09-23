@@ -204,7 +204,7 @@ def test_substitution_happens_once_per_question(monkeypatch: pytest.MonkeyPatch)
 
     assert first["messages"][0].id == "m-1"  # правка, а не новая реплика
     # Справка не наращивается: сообщения нода второй раз не трогает. Счётчик
-    # ходов в инструменты она обнуляет всегда — это новый прогон, а не
-    # повторная подстановка.
+    # ходов в инструменты, остановку и отказ по входу она снимает всегда — это новый
+    # прогон, а не повторная подстановка.
     assert "messages" not in again and "task" not in again
-    assert again == {"tool_turns": 0}
+    assert again == {"tool_turns": 0, "halt": {}, "refused": ""}

@@ -127,6 +127,9 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("MEMORY_ENABLED", kind="bool"),
     Setting("MEMORY_MAX_FACTS", kind="int", minimum=0),
     Setting("MEMORY_NAMESPACE", kind="text"),
+    Setting(
+        "PIPELINE_APPROVAL_STAGES", kind="choice", choices=cfg.PIPELINE_APPROVAL_STAGES_MODES
+    ),
     Setting("PIPELINE_REQUIRE_APPROVAL", kind="bool"),
     Setting("POSTGRES_URI", kind="text", secret=True),
     Setting("PRICE_CACHE_HIT_PER_MTOK", kind="float", minimum=0.0),

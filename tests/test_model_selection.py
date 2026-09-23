@@ -216,13 +216,18 @@ def test_server_model_change_does_not_reuse_stale_client(fake_factories, monkeyp
     assert len(fake_factories) == 2
 
 
-def test_document_header_uses_server_model(monkeypatch):
+def test_document_header_names_no_model(monkeypatch):
+    """
+    Модель — сведения о том, как документ собирался, а не о системе, которую
+    он описывает. В шапку не попадает ни серверная, ни присланная клиентом.
+    """
     from agent.documents import document_header
 
     monkeypatch.setenv("LLM_MODEL", "qwen3.8-flash-next")
     header = document_header({"configurable": {"model": "qwen3.6-35b-a3b-fp8"}})
-    assert "qwen3.8-flash-next" in header
+    assert "qwen3.8-flash-next" not in header
     assert "qwen3.6-35b-a3b-fp8" not in header
+    assert "модель" not in header
 
 
 def test_studio_schema_does_not_offer_model_override():

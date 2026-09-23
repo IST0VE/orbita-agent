@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 import responses
@@ -407,6 +409,35 @@ def test_empty_input_costs_nothing():
     assert not state.get("artifacts")
     assert not state["usage"]  # счётчиков нет вовсе: считать было нечего
     assert "Раскладывать нечего" in state["messages"][-1].content
+
+
+def test_a_refusal_is_not_offered_for_publication(folder, monkeypatch: pytest.MonkeyPatch):
+    """
+    Отказ по входу — не документ. С подтверждением публикации граф раньше
+    останавливался и просил одобрить страницу, на которой был только текст
+    «раскладывать нечего». Теперь публикация пропускается без вопроса, а
+    следующий, настоящий прогон того же треда публикуется как обычно.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "1")
+    monkeypatch.setenv("PUBLISH_TARGET", "file")
+    monkeypatch.setenv("PUBLISH_REQUIRE_APPROVAL", "1")
+    app = jira_graph.build_graph(
+        llm=GenericFakeChatModel(messages=iter(ANSWERS))
+    ).compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "jira-refused"}}
+
+    refused = app.invoke({"messages": [HumanMessage(SHORT)]}, config)
+
+    assert "__interrupt__" not in refused
+    assert refused["publication"]["status"] == "nothing"
+    published = Path(os.environ["PUBLISH_DIR"])
+    assert not published.exists() or not any(published.iterdir())
+
+    config["configurable"]["input_dir"] = TASK_DIR
+    real = app.invoke({"messages": [HumanMessage(SHORT)]}, config)
+
+    assert real["__interrupt__"][0].value["action"] in {"jira", "publish"}
+    assert not real.get("refused")
 
 
 def test_analysis_in_a_file_is_enough(folder):

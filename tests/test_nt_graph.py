@@ -610,3 +610,84 @@ def test_discovery_lists_scoped_metrics_with_task_hints_first():
     assert {item["metric"] for item in result["metrics"]} == {
         "jvm_gc_pause_seconds", "http_requests_total", "app_queue_depth"}
     assert "units are not verified" in result["note"]
+
+
+# --------------------------------------------------------------------------
+# Пауза оператора посреди анализа
+#
+# Узлы НТ зовут роль внутри `try`, а пауза — это `interrupt()`, то есть
+# исключение. Пойманное общим `except`, оно выдавало себя за отказ модели:
+# кнопка «Пауза» обрывала исследование с LLM_UNAVAILABLE в отчёте, а «Стоп»
+# на ней не останавливал ничего.
+# --------------------------------------------------------------------------
+class Recording:
+    """Подделка модели: помнит, сколько раз её звали и что приехало в конце запроса."""
+
+    def __init__(self):
+        self.calls, self.tails = 0, []
+
+    def invoke(self, messages):
+        self.calls += 1
+        self.tails.append(str(messages[-1].content))
+        return AIMessage(content='{"hypotheses": [], "recommendations": []}',
+                         usage_metadata={"input_tokens": 1_000_000, "output_tokens": 0,
+                                         "total_tokens": 1_000_000})
+
+
+def paused_run(thread):
+    from agent import pause
+
+    sources, _ = setup_source()
+    llm = Recording()
+    app = nt_graph.build_graph(llm, sources=sources).compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": thread, "publish": False}}
+    # Тред у каждого теста свой: заявку снимает узел, который её взял, а
+    # не взятая по ошибке не заденет соседей по процессной доске.
+    pause.board.request(thread)
+    state = app.invoke({**INPUT, "messages": [HumanMessage("Анализ НТ")]}, config)
+    return app, config, llm, state
+
+
+def test_pause_during_investigation_waits_for_the_operator():
+    app, config, llm, state = paused_run("nt-pause-wait")
+    payload = state["__interrupt__"][0].value
+    assert payload["action"] == "pause" and payload["stage"] == "investigate"
+    assert llm.calls == 0
+
+    final = app.invoke(Command(resume={"decision": "continue", "note": "проверь очередь"}), config)
+
+    assert llm.calls == 1 and "проверь очередь" in llm.tails[-1]
+    assert [note["text"] for note in final["notes"]] == ["проверь очередь"]
+    assert "LLM_UNAVAILABLE" not in json.dumps(final["source_errors"])
+
+
+def test_stop_on_pause_ends_the_analysis_without_the_model():
+    app, config, llm, _ = paused_run("nt-pause-stop")
+
+    final = app.invoke(Command(resume={"decision": "stop", "note": "хватит"}), config)
+
+    assert llm.calls == 0
+    assert final["stop_reason"] == "operator_stopped"
+    errors = json.dumps(final["source_errors"], ensure_ascii=False)
+    assert "INVESTIGATION_STOPPED" in errors and "хватит" in errors
+    assert "LLM_UNAVAILABLE" not in errors
+    assert final["artifacts"]["report"]  # детерминированный отчёт собран
+
+
+def test_analysis_calls_are_added_to_the_thread_spend(monkeypatch):
+    """
+    Подграф анализа внутри `nt_run` возвращает родителю приращение `spend`.
+    Когда узлы НТ его не записывали, приращение было нулевым, и стоимость
+    проведения НТ не включала анализ.
+    """
+    monkeypatch.setenv("PRICE_CACHE_HIT_PER_MTOK", "0")
+    monkeypatch.setenv("PRICE_CACHE_MISS_PER_MTOK", "1")
+    monkeypatch.setenv("PRICE_CACHE_WRITE_PER_MTOK", "0")
+    monkeypatch.setenv("PRICE_OUTPUT_PER_MTOK", "0")
+    sources, _ = setup_source()
+    parent = {"usd": 5.0, "naive_usd": 5.0, "priced_calls": 2, "unpriced_calls": 0}
+    state = nt_graph.build_graph(Recording(), sources=sources).compile().invoke(
+        {**INPUT, "messages": [HumanMessage("Анализ НТ")], "spend": parent},
+        {"configurable": {"publish": False}})
+    assert state["spend"]["usd"] == pytest.approx(6.0)
+    assert state["spend"]["priced_calls"] == 3

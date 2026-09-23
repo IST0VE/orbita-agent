@@ -284,3 +284,47 @@ def test_the_document_is_signed_by_the_pipeline_that_made_it(
     state = run(*ANSWERS)
 
     assert diagram_roles.PIPELINE.byline in state["document"]
+
+
+def test_nothing_is_taken_when_no_folder_is_chosen(folder):
+    """
+    Папка не выбрана — схема не выбрана. Раньше пустое имя папки означало
+    корень всех задач, и конвейер документировал первую попавшуюся схему из
+    чужой задачи (здесь — из `folder`), выдавая её за запрошенную.
+    """
+    state = run(answer(diagram_roles.FIRST), conf=config(task=""))
+
+    assert state.get("usage", {}).get("calls", 0) == 0
+    assert "папка задачи не выбрана" in state["messages"][-1].content
+    assert not state.get("diagram")
+
+
+def test_several_diagrams_without_a_choice_are_refused(folder):
+    """Первая по алфавиту — не выбор оператора: схем две, какую разбирать, не сказано."""
+    (folder / "вторая.drawio").write_text(DIAGRAM, encoding="utf-8")
+
+    state = run(answer(diagram_roles.FIRST))
+
+    assert state.get("usage", {}).get("calls", 0) == 0
+    message = state["messages"][-1].content
+    assert "схем несколько" in message
+    assert "поток.drawio" in message and "вторая.drawio" in message
+
+
+def test_a_follow_up_does_not_replace_the_task(folder):
+    """
+    Узел разбора раньше сам клал в `task` последнее сообщение — и на следующем
+    ходе треда правка «уточни подписи» становилась задачей всех четырёх ролей.
+    Задачу пишет нода контекста, и на правке это задача треда.
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    app = drawio_graph.build_graph(
+        llm=GenericFakeChatModel(messages=iter(ANSWERS * 2))
+    ).compile(checkpointer=InMemorySaver())
+    app.invoke({"messages": [HumanMessage(QUESTION)]}, config())
+
+    second = app.invoke({"messages": [HumanMessage("Уточни подписи к связям.")]}, config())
+
+    assert second["task"] == QUESTION
+    assert [note["text"] for note in second["notes"]] == ["Уточни подписи к связям."]

@@ -204,6 +204,26 @@ def test_nested_analysis_interrupt_is_not_swallowed_or_load_repeated():
     assert result["run_analysis"]["analysis_result"] == "PASSED"
 
 
+def test_stop_inside_nested_analysis_ends_the_campaign():
+    """
+    «Стоп» на паузе внутри подграфа анализа относится ко всей кампании.
+    Подграф свой ход заканчивает отчётом, а родитель, не узнав об остановке,
+    звал бы модель планировать следующий эксперимент.
+    """
+    def stopped(result):
+        return {**analyzer(result), "halt": {"stage": "investigate", "point": "before",
+                                             "reason": "хватит"}}
+
+    runner = FakeRunner()
+    model = GenericFakeChatModel(messages=iter([write(), decision("ready"), decision("finish")]))
+    app = build_graph(model, runner=runner, analyzer=stopped, auto_approve=True,
+                      poll_seconds=0).compile()
+    result = invoke(app)
+    assert result["usage"]["calls"] == 2  # третьего планирования не было
+    assert "Остановлено оператором на паузе: хватит" in result["artifacts"]["report"]
+    assert len(result["runs"]) == 2
+
+
 def test_failed_revision_cannot_launch_previous_candidate():
     runner = FakeRunner()
     result = invoke(graph(runner, write(), write({**PLAN, "target": "unknown"}, "bad"),

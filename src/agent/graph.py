@@ -74,7 +74,7 @@ from __future__ import annotations
 # Реэкспорт. `agent.graph` — общий вход в код графа, и почти всё, что здесь
 # перечислено, в самом этом модуле не используется: «не используется здесь» —
 # это и есть определение фасада, поэтому F401 выключен на файл целиком.
-# Приватные имена в списке (`_merge_usage`, `_usage_table`) — не оговорка:
+# Приватные имена в списке (`_merge_usage`, `_merge_artifacts`) — не оговорка:
 # на них ссылаются тесты, и молча увести их в другой модуль значило бы
 # сломать вызывающих ради чистоты списка.
 # ruff: noqa: F401
@@ -91,7 +91,6 @@ from agent.cost import (
 )
 from agent.documents import (
     CONTEXT_SEPARATOR,
-    _usage_table,
     document_header,
     operator_question,
     page_title,
