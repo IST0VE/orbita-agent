@@ -27,9 +27,18 @@ Orbita helps analysts turn tasks, files and connected Jira/Confluence sources in
 
 Five workflows share a pipeline builder; `update`, `nt` and `nt_run` have dedicated graphs using shared Orbita components. Select workflows individually; `nt_run` also invokes `nt` internally after the main load test. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the completed-test analysis workflow, including load plateaus, diagnostic completeness and comparable-run checks. Live test control is outside this workflow. The SLA verdict is computed from the server-owned metric map; when explicitly enabled, the model may compose a query for a metric outside that map — the code validates it, the operator approves execution, and the resulting series is evidence only.
 
-For new load tests, follow [NT execution setup](docs/NT_RUN.md): a separate local runner and k6 are required. The runner's `completed` status, k6 measurements and the historical SLA verdict are separate results. Model-written conclusions do not override `analysis_result`. See the [testbed walkthrough](docs/NT_RUN_TESTBED.md) for reproducible commands and limitations of simulated telemetry.
+For new load tests, follow [NT execution setup](docs/NT_RUN.md): the runner and k6 start with the one-command Docker setup; without Docker, run the runner separately. The runner's `completed` status, k6 measurements and the historical SLA verdict are separate results. Model-written conclusions do not override `analysis_result`. See the [testbed walkthrough](docs/NT_RUN_TESTBED.md) for reproducible commands and limitations of simulated telemetry.
 
-## Run the complete local application
+## One-command start
+
+You only need [Docker Desktop](https://docs.docker.com/desktop/) (on Linux, Docker Engine with the Compose plugin).
+
+1. Copy `.env.example` to `.env` and put your model key into `LLM_API_KEY`. For another provider, also change `LLM_PROVIDER` and `LLM_MODEL`.
+2. From the repository root, run `.\up.cmd` on Windows (or double-click `up.cmd`) or `./up.sh` on Linux/macOS.
+
+The script fills empty `API_ADMIN_TOKEN` and `NT_RUNNER_TOKEN` with random values, builds the images, starts the backend, the web UI and the load-test runner with k6, waits until they are healthy and opens **http://localhost:8080**. On first visit the UI asks for the API token — that is `API_ADMIN_TOKEN` from `.env`. Run the same command again after editing `.env`; stop with `docker compose down`. See the [deployment guide](docs/DEPLOYMENT.md), in Russian.
+
+## Run the complete local application without Docker
 
 Use Python 3.11–3.13 and Node.js 22 to match CI. You need a working model API key. Jira, Confluence, PostgreSQL and LangSmith are optional for this setup.
 
@@ -84,9 +93,9 @@ A running pipeline can be **paused**. The pause button leaves a request; the gra
 
 ## Docker and persistence
 
-The shipped Compose file runs the backend and PostgreSQL; it does not include the frontend or mount your input folder. Follow the [deployment guide](docs/DEPLOYMENT.md) for the complete setup and volume mapping.
+The shipped Compose file runs the backend on `127.0.0.1:2024`, the built web UI with an API proxy on `127.0.0.1:8080` and the `nt_run` runner with k6, reachable only from the backend. PostgreSQL starts only with the `demo` profile: the server does not use it. The repository `input/` folder is mounted into the backend; documents, the Jira journal and development-server threads live on named volumes. Follow the [deployment guide](docs/DEPLOYMENT.md) for volume mapping, backup and restore.
 
-`CHECKPOINT_BACKEND=postgres` applies to the custom Python runtime and demo, not to `langgraph dev` storage. Recreating the default backend container does not guarantee preservation of its development-server threads.
+`CHECKPOINT_BACKEND=postgres` applies to the custom Python runtime and demo, not to `langgraph dev` storage, which has its own `threads` volume.
 
 ## Development
 

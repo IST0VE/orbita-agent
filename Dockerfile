@@ -8,6 +8,11 @@
 #
 # База инструментов и опубликованные документы лежат на томе (/data), поэтому
 # пересоздание контейнера не стирает ни аккаунты, ни собранные страницы.
+# k6 для runner нагрузочного тестирования (сервис `runner` в Compose). Версия —
+# та же, что проверена с генератором сценариев; бинарник статический и
+# переносится в образ на Debian как есть.
+FROM grafana/k6:1.6.1 AS k6
+
 FROM python:3.12-slim
 
 # PYTHONUNBUFFERED — чтобы логи сервера появлялись в `docker compose logs`
@@ -19,21 +24,29 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Зависимости ставятся до копирования остального кода: слой с ними меняется
-# редко и переиспользуется между сборками.
-COPY pyproject.toml README.md LICENSE requirements.lock ./
-COPY packages ./packages
-COPY src ./src
 # Сначала зафиксированный набор, потом сами пакеты без повторного разрешения:
 # иначе установка образа сегодня и через месяц даёт разные версии, и уязвимая
 # транзитивная зависимость приезжает молча. Обновляется файл явно —
 # scripts/write_lock.py, см. комментарий в самом requirements.lock.
-RUN pip install -r requirements.lock \
-    && pip install --no-deps ./packages/costmeter \
+#
+# Слой с зависимостями зависит только от requirements.lock и переживает
+# правки кода: пересборка после изменения src/ или README занимает секунды,
+# а не две минуты переустановки всего набора. Поэтому lock копируется и
+# ставится отдельно, до остального кода.
+COPY requirements.lock ./
+RUN pip install -r requirements.lock
+
+COPY pyproject.toml README.md LICENSE ./
+COPY packages ./packages
+COPY src ./src
+RUN pip install --no-deps ./packages/costmeter \
     && pip install --no-deps "."
 
 COPY langgraph.json run_demo.py ./
 COPY .env.example ./
+# Runner НТ — тот же код агента с отдельной точкой входа; k6 он запускает сам.
+COPY scripts/serve_nt_runner.py ./scripts/
+COPY --from=k6 /usr/bin/k6 /usr/local/bin/k6
 
 # Данные — на томах. Пути в образе остаются значением по умолчанию, но решает
 # их не образ: `env_file` в Compose перекрывает ENV, поэтому в docker-compose.yml
@@ -41,9 +54,10 @@ COPY .env.example ./
 ENV PUBLISH_DIR=/data/published \
     AGENT_INPUT_DIR=/data/input \
     JIRA_JOURNAL_PATH=/data/jira-operations.sqlite3
-# `.langgraph_api` — собственное хранилище тредов сервера разработки. Каталог
-# создаётся здесь, чтобы том монтировался на готовое место с нужным владельцем.
-RUN mkdir -p /data/published /data/input /app/.langgraph_api
+# `.langgraph_api` — собственное хранилище тредов сервера разработки,
+# `/data/nt-runs` — журнал и файлы прогонов runner. Каталоги создаются здесь,
+# чтобы тома монтировались на готовое место с нужным владельцем.
+RUN mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api
 
 # Даже учебный сервер не должен выполнять разбор пользовательских файлов и
 # HTTP-запросы от root. /app остаётся доступен на запись из-за runtime-файлов

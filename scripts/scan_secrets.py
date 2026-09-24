@@ -90,6 +90,10 @@ BEARER_FIXTURES = {
 
 MAX_BYTES = 2_000_000
 
+# Synthetic provider key used to prove retry logs never expose credentials.
+# Keep the exception scoped to its exact file and value, including history.
+API_KEY_FIXTURES = {"tests/test_llm_retry.py": {"sk-private-test-key"}}
+
 
 class Finding:
     """Где нашли и что именно. Значения нет — оно и не печатается."""
@@ -122,6 +126,7 @@ def scan_text(text: str, path: str, *, object_id: str | None = None) -> list[Fin
     """Исключения проверяются по пути; Git-объект добавляется только к месту находки."""
     where = f"{path}@{object_id[:10]}" if object_id is not None else path
     bearer_fixtures = BEARER_FIXTURES.get(path, set())
+    api_key_fixtures = API_KEY_FIXTURES.get(path, set())
     found: list[Finding] = []
     rules = _rules()
     for number, line in enumerate(text.splitlines(), start=1):
@@ -129,6 +134,8 @@ def scan_text(text: str, path: str, *, object_id: str | None = None) -> list[Fin
             for match in pattern.finditer(line):
                 if (kind == "bearer-token"
                         and match.group(0).split(None, 1)[-1] in bearer_fixtures):
+                    continue
+                if kind == "openai-key" and match.group(0) in api_key_fixtures:
                     continue
                 if _real(kind, match.group(0), line):
                     found.append(Finding(where, number, kind))

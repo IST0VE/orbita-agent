@@ -544,6 +544,9 @@ def regressions(call, js, until, click, shell):
     REJECT_RUN = True
     draft = "AUDIT IMPORTANT UNSENT DRAFT"
     composer = ".task-composer textarea"
+    # The header/menu can mount before the asynchronously loaded workspace.
+    # Wait for the actual input, not merely for the menu to close.
+    until(f"!!document.querySelector({json.dumps(composer)})", seconds=30)
     fill(composer, draft)
     until("!document.querySelector('.composer-submit').disabled")
     js("document.querySelector('.composer-submit').click()")

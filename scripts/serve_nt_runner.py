@@ -7,10 +7,31 @@ import os
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 from agent.nt_run.runner import Runner
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def alias_loopback_targets(config, host):
+    """Send loopback targets to `host`; return the rewritten target names.
+
+    Inside a container 127.0.0.1 is the container itself, so a target written
+    for a runner on the host would load nothing but the runner. The rewrite
+    happens before the runner reads the config: capabilities, the approval
+    preview and k6 all see the same, real address.
+    """
+    changed = []
+    for name, target in config["targets"].items():
+        parts = urlsplit(target["url"])
+        if parts.hostname in LOOPBACK_HOSTS:
+            netloc = host + (f":{parts.port}" if parts.port else "")
+            target["url"] = urlunsplit(parts._replace(netloc=netloc))
+            changed.append(name)
+    return changed
 
 
 def make_handler(runner, token):
@@ -79,11 +100,31 @@ def main():
     parser.add_argument("--config", default="config/nt-runner.json")
     parser.add_argument("--root", default=".nt-runs")
     parser.add_argument("--port", type=int, default=8077)
+    # Loopback by default: the control API starts load tests. Docker Compose
+    # passes 0.0.0.0 and does not publish the port, so only the backend on the
+    # Compose network reaches it — still with the bearer token.
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--k6-binary", metavar="PATH",
+                        help="Overrides k6_binary from the config: the image has its own k6, "
+                             "while a personal config usually names a host path.")
+    parser.add_argument("--loopback-alias", metavar="HOST",
+                        help="Rewrite localhost/127.0.0.1/::1 targets to HOST, "
+                             "e.g. host.docker.internal when the runner is in a container.")
     parser.add_argument("--release", metavar="TEST_ID",
                         help="Recovery for a worker that vanished: mark the test failed and unblock "
                              "the runner. Run it only after checking that no k6 process survives.")
     args = parser.parse_args()
-    runner = Runner(Path(args.root), json.loads(Path(args.config).read_text(encoding="utf-8")))
+    config_path = Path(args.config)
+    if not config_path.is_file():
+        parser.error(f"runner config {config_path} not found; "
+                     "copy config/nt-runner.example.json and list your targets")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if args.k6_binary:
+        config["k6_binary"] = args.k6_binary
+    if args.loopback_alias:
+        for name in alias_loopback_targets(config, args.loopback_alias):
+            print(f"target {name}: {config['targets'][name]['url']}", flush=True)
+    runner = Runner(Path(args.root), config)
     if args.release:
         # Recovery is a local operator command on purpose: the control API never offers it.
         released = runner.release_lost_job(args.release)
@@ -93,8 +134,8 @@ def main():
     token = os.getenv("NT_RUNNER_TOKEN", "")
     if len(token) < 16:
         parser.error("NT_RUNNER_TOKEN must contain at least 16 characters")
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(runner, token))
-    print(f"k6 runner: http://127.0.0.1:{args.port}; artifacts: {runner.root}", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(runner, token))
+    print(f"k6 runner: http://{args.host}:{args.port}; artifacts: {runner.root}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

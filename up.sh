@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orbita одной командой: проверяет .env, дописывает недостающие секреты,
-# собирает и поднимает Compose (Postgres, агент, веб-интерфейс), ждёт, пока всё
-# ответит, и открывает интерфейс в браузере.
+# собирает и поднимает Compose (агент, веб-интерфейс, runner НТ с k6), ждёт,
+# пока всё ответит, и открывает интерфейс в браузере.
 #
 #     ./up.sh                из корня репозитория
 #     ./up.sh --no-browser   не открывать браузер
@@ -25,36 +25,42 @@ fail() {
 
 # Последнее значение ключа в .env — как у Compose и python-dotenv.
 env_get() {
-  local line value
+  local line value double_quoted single_quoted
   line=$(grep -E "^[[:space:]]*$1[[:space:]]*=" .env | tail -n 1 | tr -d '\r') || true
   [ -n "$line" ] || return 0
   value=${line#*=}
   value=$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-  case $value in
-    \"*\") value=${value#\"}; value=${value%\"} ;;
-    \'*\') value=${value#\'}; value=${value%\'} ;;
-    *) value=$(printf '%s' "$value" | sed -e 's/[[:space:]]#.*$//') ;;
-  esac
+  double_quoted='^"([^"]*)"[[:space:]]*(#.*)?$'
+  single_quoted="^'([^']*)'[[:space:]]*(#.*)?$"
+  if [[ $value =~ $double_quoted ]] || [[ $value =~ $single_quoted ]]; then
+    value=${BASH_REMATCH[1]}
+  else
+    value=$(printf '%s' "$value" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')
+  fi
   printf '%s' "$value"
 }
 
-# Пустая строка ключа заполняется на месте, отсутствующая дописывается в конец.
+# Обновляется последнее вхождение ключа: именно его читает Compose.
 # Запись через `cat >`, а не `mv`: у .env остаются его права доступа.
 env_set() {
   local tmp
   tmp=$(mktemp)
   awk -v BINMODE=3 -v k="$1" -v v="$2" '
-    { line = $0; cr = ""; if (sub(/\r$/, "", line)) cr = "\r" }
-    !done && line ~ ("^[ \t]*" k "[ \t]*=[ \t]*$") { print k "=" v cr; done = 1; next }
-    { print }
-    END { if (!done) print k "=" v }
+    { lines[NR] = $0; if ($0 ~ ("^[ \t]*" k "[ \t]*=")) last = NR }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (i == last) print k "=" v (lines[i] ~ /\r$/ ? "\r" : "")
+        else print lines[i]
+      }
+      if (!last) print k "=" v
+    }
   ' .env > "$tmp"
   cat "$tmp" > .env
   rm -f "$tmp"
 }
 
 # 43 символа латиницы и цифр: без знаков, которые пришлось бы экранировать
-# в POSTGRES_URI.
+# в .env или в адресе.
 new_secret() {
   LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 43 || true
 }
@@ -68,7 +74,7 @@ if [ ! -f .env ]; then
   echo "Создан .env из .env.example."
 fi
 
-for name in API_ADMIN_TOKEN POSTGRES_PASSWORD; do
+for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN; do
   if [ -z "$(env_get "$name")" ]; then
     secret=$(new_secret)
     [ "${#secret}" -ge 32 ] || fail "Не удалось получить случайные байты из /dev/urandom для $name."
@@ -93,8 +99,26 @@ token=$(env_get API_ADMIN_TOKEN)
 if [ "${#token}" -lt 32 ] || [ "${#token}" -gt 256 ] || ! printf '%s' "$token" | LC_ALL=C grep -qE '^[!-~]+$'; then
   fail "API_ADMIN_TOKEN в .env должен состоять из 32–256 ASCII-символов без пробелов. Очистите значение — скрипт сгенерирует новое."
 fi
-if ! env_get POSTGRES_PASSWORD | LC_ALL=C grep -qE '^[A-Za-z0-9._~-]+$'; then
-  fail "POSTGRES_PASSWORD в .env должен состоять из латиницы, цифр и знаков . _ ~ - : он встраивается в адрес базы. Очистите значение — скрипт сгенерирует новое."
+runner_token=$(env_get NT_RUNNER_TOKEN)
+[ "${#runner_token}" -ge 16 ] || fail "NT_RUNNER_TOKEN в .env должен быть не короче 16 символов. Очистите значение — скрипт сгенерирует новое."
+
+# Runner без списка стендов не стартует. Шаблон разрешает только локальную
+# демо-цель, поэтому запуск с ним безопасен; свои стенды человек вписывает сам.
+if [ ! -f config/nt-runner.json ]; then
+  cp config/nt-runner.example.json config/nt-runner.json
+  echo "Создан config/nt-runner.json из шаблона: впишите в targets свои стенды для НТ."
+fi
+
+# 127.0.0.1 из контейнера — это сам контейнер. Адреса runner и базы Compose
+# задаёт сам, цели runner переводит на хост флаг --loopback-alias, а остальное
+# (Prometheus, Jira, шлюз модели на этой машине) надо поправить в .env.
+loopback=$(tr -d '\r' < .env \
+  | grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*["'\'']?[A-Za-z][A-Za-z0-9+.-]*://(localhost|127\.[0-9.]+|\[::1\])([:/"'\'']|[[:space:]]*$)' \
+  | sed -E 's/^[[:space:]]*([A-Za-z0-9_]+).*/\1/' \
+  | grep -vxE 'NT_RUNNER_URL|POSTGRES_URI' | sort -u | paste -sd, - | sed 's/,/, /g') || true
+if [ -n "$loopback" ]; then
+  printf '\n\033[33mВнимание: в .env адреса на 127.0.0.1/localhost: %s.\n' "$loopback"
+  printf 'Из контейнера они ведут в сам контейнер. Используйте host.docker.internal; для модели нужен HTTPS (docs/DEPLOYMENT.md).\033[0m\n'
 fi
 
 # --------------------------------------------------------------------------
@@ -119,8 +143,8 @@ echo "Собираю образы и поднимаю контейнеры. Пе
 export BUILDX_NO_DEFAULT_ATTESTATIONS=1
 if ! docker compose up -d --build --wait --wait-timeout 600; then
   echo
-  echo "Последние строки журнала агента:"
-  docker compose logs --tail 40 agent || true
+  echo "Последние строки журналов агента и runner:"
+  docker compose logs --tail 30 agent runner || true
   fail "Запуск не удался. Состояние контейнеров: docker compose ps"
 fi
 
@@ -131,6 +155,7 @@ printf '\n\033[32mOrbita запущена: %s\033[0m\n' "$url"
 echo "При первом входе браузер спросит токен API — это значение API_ADMIN_TOKEN из .env."
 echo
 echo "Журнал агента:  docker compose logs -f agent"
+echo "Стенды для НТ:  config/nt-runner.json, после правки — docker compose restart runner"
 echo "Остановить:     docker compose down    (документы и треды остаются на томах)"
 echo "После правки .env запустите ./up.sh снова: контейнеры пересоздадутся."
 

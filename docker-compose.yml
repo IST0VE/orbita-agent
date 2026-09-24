@@ -1,25 +1,31 @@
-# Агент на порту 2024 и Postgres рядом с ним.
+# Orbita целиком: веб-интерфейс на :8080, агент на :2024 и runner НТ с k6.
 #
-#     docker compose up            сервер LangGraph, Studio цепляется к :2024
+#     up.cmd / ./up.sh             то же, что ниже, плюс проверка .env и секретов
+#     docker compose up -d --build --wait
+#                                  интерфейс http://localhost:8080, Studio — :2024
 #     docker compose run --rm demo три хода демо с постоянными чекпоинтами
 #
 # Ключ модели берётся из окружения или из .env рядом с этим файлом; без него
 # сервер поднимется, но на первом же ходе ответит ошибкой авторизации.
 #
-# Что где хранится. Сервер разработки (`langgraph dev`) держит состояние тредов
-# сам, в своей папке внутри контейнера. Postgres здесь — для собственного
-# рантайма: `run_demo.py` и любой свой скрипт получают из него чекпоинтер и
-# store, поэтому долгая память (memory.py) переживает перезапуск контейнеров.
+# Что где хранится. Сервер разработки (`langgraph dev`) держит треды сам, в
+# своей папке — это том `threads`. Postgres ему не нужен и в обычный запуск не
+# входит: он поднимается только с профилем `demo`, где `run_demo.py` берёт из
+# него чекпоинтер и store, чтобы три хода демо переживали перезапуск.
 services:
   postgres:
     image: postgres:16-alpine
+    profiles: ["demo"]
     environment:
       POSTGRES_USER: orbita
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random URL-safe POSTGRES_PASSWORD in .env}
+      # Не `:?`: Compose подставляет переменные во весь файл до выбора профилей,
+      # и обязательный пароль остановил бы обычный запуск, где базы нет. Без
+      # пароля откажется стартовать сам PostgreSQL — и только в профиле demo.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: orbita
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Агент стартует только после того, как база начала отвечать: иначе первый
+    # Демо стартует только после того, как база начала отвечать: иначе первый
     # же setup() упадёт на пустом месте.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orbita -d orbita"]
@@ -29,6 +35,10 @@ services:
 
   agent:
     build: .
+    # Имя образа общее с runner: собирается он один раз, здесь. Две
+    # одинаковые сборки параллельно роняли BuildKit на экспорте (EOF), и
+    # запуск падал через раз — ровно тогда, когда образ менялся.
+    image: orbita-agent:local
     init: true
     cap_drop: ["ALL"]
     security_opt:
@@ -46,8 +56,10 @@ services:
     environment:
       # Пробрасывается, если задан снаружи; иначе значение приедет из .env.
       LLM_API_KEY: ${LLM_API_KEY:-}
-      CHECKPOINT_BACKEND: postgres
-      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+      # Runner — сервис этого же файла. Адрес задан здесь, а не в .env: там
+      # записан 127.0.0.1 для запуска без Docker, а из контейнера это сам агент.
+      NT_RUNNER_URL: http://runner:8077
+      NT_RUNNER_TOKEN: ${NT_RUNNER_TOKEN:?Set a random NT_RUNNER_TOKEN (16+ characters) in .env}
       # Пути хранения задаются здесь, а не в образе. `env_file` перекрывает ENV
       # образа, и строка PUBLISH_DIR=published из личного .env уводила документы
       # в файловую систему контейнера — туда, где их стирает пересоздание.
@@ -66,14 +78,110 @@ services:
       # контейнера стирает историю тредов, а документы в `data` остаются —
       # и выглядит это как выборочная потеря.
       - threads:/app/.langgraph_api
+    # Prometheus, InfluxDB, Jira или модель, запущенные на этой же машине,
+    # доступны из контейнера по host.docker.internal, а не по 127.0.0.1.
+    # Docker Desktop знает это имя сам; строка ниже нужна Docker Engine на Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # `/ok` закрыт тем же токеном, что и весь API. Проверка с токеном заодно
+    # подтверждает, что API_ADMIN_TOKEN задан и принят: с пустым сервер отвечает
+    # 503, и `up --wait` сообщит об этом, а не откроет интерфейс, который
+    # отказывает на каждом запросе.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request as r; r.urlopen(r.Request('http://127.0.0.1:2024/ok', headers={'Authorization': 'Bearer ' + os.environ.get('API_ADMIN_TOKEN', '')}), timeout=5)"
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 180s
+      start_interval: 3s
+
+  # Собранный фронт и прокси к агенту на одном адресе. Порт хоста меняется
+  # переменной ORBITA_WEB_PORT — в окружении или в .env.
+  web:
+    build: ./web
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Та же граница, что у агента: наружу только через reverse proxy с TLS.
+      - "127.0.0.1:${ORBITA_WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
     depends_on:
-      postgres:
+      agent:
         condition: service_healthy
+
+  # Runner нагрузочного тестирования для сценария `nt_run`: тот же образ, своя
+  # точка входа и k6 внутри. Порт наружу не опубликован — управляющий API
+  # запускает нагрузку, и достучаться до него может только агент по сети
+  # Compose, с тем же bearer-токеном.
+  runner:
+    # Образ агента: его собирает сервис agent. Без `never` Compose на чистой
+    # машине сперва пытался скачать локальное имя и печатал «pull access denied».
+    image: orbita-agent:local
+    pull_policy: never
+    # init обязателен: runner запускает воркер k6 отдельным процессом, и без
+    # init его завершившиеся потомки оставались бы зомби.
+    init: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - python
+      - scripts/serve_nt_runner.py
+      - --host
+      - 0.0.0.0
+      - --config
+      - config/nt-runner.json
+      - --root
+      - /data/nt-runs
+      # В личном config/nt-runner.json k6_binary обычно указывает путь на хосте.
+      - --k6-binary
+      - /usr/local/bin/k6
+      # Цели на localhost из того же файла ведут на хост, а не в контейнер.
+      - --loopback-alias
+      - host.docker.internal
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NT_RUNNER_TOKEN: ${NT_RUNNER_TOKEN:?Set a random NT_RUNNER_TOKEN (16+ characters) in .env}
+    volumes:
+      # Список разрешённых стендов правит человек на хосте; после правки —
+      # `docker compose restart runner`.
+      - ./config:/app/config:ro
+      - nt-runs:/data/nt-runs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request as r; r.urlopen(r.Request('http://127.0.0.1:8077/capabilities', headers={'Authorization': 'Bearer ' + os.environ.get('NT_RUNNER_TOKEN', '')}), timeout=5)"
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
 
   # Профиль, а не обычный сервис: `docker compose up` не должен тратить деньги
   # на вызовы модели без явной команды.
   demo:
+    # Standalone `compose run demo` must also work before the first `up`.
+    # A separate tag avoids competing exports when the full profile builds.
     build: .
+    image: orbita-demo:local
+    pull_policy: build
     init: true
     cap_drop: ["ALL"]
     security_opt:
@@ -86,7 +194,7 @@ services:
     environment:
       LLM_API_KEY: ${LLM_API_KEY:-}
       CHECKPOINT_BACKEND: postgres
-      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/orbita
+      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:-}@postgres:5432/orbita
       PUBLISH_DIR: /data/published
       AGENT_INPUT_DIR: /data/input
       JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
@@ -100,6 +208,8 @@ services:
 volumes:
   pgdata:
   data:
+  # Журнал runner и файлы прогонов: сценарий, test.js, summary.json.
+  nt-runs:
   # Треды сервера разработки. Отдельным томом, а не внутри `data`: у него свой
   # формат, своя версия и своя судьба при обновлении образа.
   threads:

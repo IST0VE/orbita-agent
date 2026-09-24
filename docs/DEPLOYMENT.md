@@ -2,27 +2,30 @@
 
 [Документация](README.md) / Развёртывание
 
-**Для локальной работы проще всего два процесса:** Python backend и Vite frontend. Этот путь полностью описан в [первом запуске](GETTING_STARTED.md). Ниже — Docker и вопросы хранения.
-
-Для `nt_run` нужен третий процесс — [локальный runner](NT_RUN.md), а также k6 и доступная цель нагрузки. Штатный Compose их не создаёт. Runner слушает только `127.0.0.1`: backend в отдельном контейнере не сможет обратиться к runner на хосте по этому адресу. Описанный в NT_RUN.md путь предполагает backend и runner на одном хосте вне контейнеров; отдельная схема контейнерного размещения runner в поставку не входит.
+**Быстрее всего — одна команда:** `.\up.cmd` на Windows или `./up.sh` на Linux/macOS поднимает в Docker всё сразу: backend, собранный frontend и runner нагрузочного тестирования с k6. Для разработки удобнее процессы без Docker — Python backend и Vite frontend, см. [первый запуск](GETTING_STARTED.md). Ниже — Docker и вопросы хранения.
 
 ## Что запускает штатный Compose
 
-[`docker-compose.yml`](../docker-compose.yml) содержит PostgreSQL, backend `agent` и отдельный профиль `demo`. **Frontend в Compose отсутствует.** Обычный `docker compose up` не запускает платное демо.
+[`docker-compose.yml`](../docker-compose.yml) содержит backend `agent`, frontend `web`, runner `runner` и отдельный профиль `demo` с PostgreSQL. Обычный `docker compose up` не запускает ни платное демо, ни базу: серверу она не нужна.
 
 | Компонент | Адрес / хранение |
 | :--- | :--- |
-| `agent` | Порт `127.0.0.1:2024`, внутри работает `langgraph dev` |
-| `postgres` | Внутри Compose-сети; порт 5432 на хост не опубликован |
+| `web` | Порт `127.0.0.1:8080`: собранный frontend и прокси API к `agent`, nginx из [`web/nginx.conf`](../web/nginx.conf) |
+| `agent` | Порт `127.0.0.1:2024`, внутри работает `langgraph dev`; к нему же подключается Studio |
+| `runner` | Runner для `nt_run` с k6 внутри; порт на хост не опубликован, агент обращается к `http://runner:8077` |
+| `postgres` | Только с профилем `demo`; порт 5432 на хост не опубликован |
 | `data` | Именованный том на `/data`: документы и журнал операций Jira |
 | `threads` | Именованный том на `/app/.langgraph_api`: треды сервера разработки |
-| `pgdata` | Именованный том данных PostgreSQL |
+| `nt-runs` | Именованный том на `/data/nt-runs` у `runner`: журнал runner, сценарии, `test.js`, `summary.json` |
+| `pgdata` | Именованный том данных PostgreSQL для `demo` |
 | `./input` | Папка репозитория, подключённая к `/data/input` на запись |
-| Frontend | Запускается отдельно на хосте, обычно `localhost:5173` |
+| `./config` | Папка репозитория, подключённая к `runner` только на чтение: `nt-runner.json` со списком стендов |
+
+`web` стартует, когда `agent` прошёл проверку здоровья: запрос к `/ok` с токеном из `API_ADMIN_TOKEN`. Поэтому пустой или короткий токен виден сразу — `agent` остаётся `unhealthy`, и `up --wait` завершается ошибкой, а не открывает интерфейс, который отказывает на каждом запросе. Порт интерфейса меняется переменной `ORBITA_WEB_PORT` в окружении или в `.env`, например `ORBITA_WEB_PORT=8088`.
 
 Пути хранения заданы в `environment` штатного `docker-compose.yml`, а не только в образе. Это не косметика: `env_file` перекрывает `ENV` образа, и строка `PUBLISH_DIR=published` из личного `.env` уводила документы в файловую систему контейнера — туда, где их стирает пересоздание. Значение из `environment` сильнее `env_file`, поэтому дополнительный файл для фиксации путей больше не нужен.
 
-Образ содержит код, серверные зависимости и `.env.example` для описания настроек. Frontend собирается отдельно. `.env` в Compose передаётся как переменные окружения, а не как смонтированный файл.
+Образ `agent` содержит код, серверные зависимости и `.env.example` для описания настроек. Frontend собирается в отдельный образ `web` по [`web/Dockerfile`](../web/Dockerfile): Vite-сборка внутри контейнера, nginx поверх неё. `.env` в Compose передаётся как переменные окружения, а не как смонтированный файл.
 
 <details>
 <summary>Место для схемы вашего стенда</summary>
@@ -31,11 +34,75 @@
 
 </details>
 
-## Полный локальный запуск с backend в Docker
+## Запуск одной командой
+
+| Система | Команда из корня репозитория |
+| :--- | :--- |
+| Windows | `.\up.cmd` или двойной щелчок по `up.cmd` |
+| Linux / macOS | `./up.sh` |
+
+Скрипт ([`scripts/up.ps1`](../scripts/up.ps1) для Windows, [`up.sh`](../up.sh) для остальных) делает по порядку:
+
+1. Если `.env` нет — копирует `.env.example`.
+2. Пустые `API_ADMIN_TOKEN` и `NT_RUNNER_TOKEN` заполняет случайными значениями. Непустые не трогает, но проверяет: токен API — 32–256 ASCII-символов, токен runner — не короче 16.
+3. Останавливается с понятным сообщением, если не задан ключ модели (`LLM_API_KEY` или ключ адаптера, например `DEEPSEEK_API_KEY`) или выбран `LLM_PROVIDER=anthropic`: адаптера Anthropic в штатном образе нет, см. ниже.
+4. Если `config/nt-runner.json` нет — копирует шаблон. Шаблон разрешает только локальную демо-цель; свои стенды впишите в `targets` сами.
+5. Предупреждает, если в `.env` есть адреса на `127.0.0.1`/`localhost`, например `NT_PROMETHEUS_URL`. Подробнее — в разделе [сервисы на этой же машине](#сервисы-на-этой-же-машине).
+6. Проверяет Docker и Compose v2. Если Docker Desktop не запущен, пробует запустить его сам.
+7. Выполняет `docker compose up -d --build --wait` и ждёт, пока `agent`, `web` и `runner` пройдут проверку здоровья. При неудаче печатает последние строки журналов `agent` и `runner`.
+8. Открывает `http://localhost:8080`. Флаг `-NoBrowser` в `up.cmd` или `--no-browser` в `up.sh` отключает это.
+
+При первом входе интерфейс спросит токен API — это значение `API_ADMIN_TOKEN` из `.env`. Токен хранится в сессии вкладки.
+
+Повторный запуск безопасен: скрипт не трогает заполненные значения, а Compose пересобирает и пересоздаёт только изменившееся. Поэтому после правки `.env` или обновления кода достаточно запустить ту же команду. Если ничего не менялось, контейнеры не пересоздаются и идущий прогон продолжается.
+
+То же самое без скрипта — `docker compose up -d --build --wait`, если `.env` уже заполнен вручную. Скрипт при этом выставляет `BUILDX_NO_DEFAULT_ATTESTATIONS=1`. Без этой переменной Docker Desktop прикладывает к каждой сборке аттестацию с новым digest, и даже неизменившийся образ получает новый ID. Compose тогда пересоздаёт `agent` при каждом `--build` и обрывает идущий прогон.
+
+## Runner нагрузочного тестирования
+
+Сервис `runner` — тот же образ, что у агента, с k6 внутри и точкой входа [`scripts/serve_nt_runner.py`](../scripts/serve_nt_runner.py). Он поднимается вместе со всем, поэтому `nt_run` работает сразу после `up.cmd`/`up.sh`, без отдельного процесса на хосте.
+
+- **Адрес и токен.** Агент обращается к `http://runner:8077`: это значение задано в Compose и перекрывает `NT_RUNNER_URL=http://127.0.0.1:8077` из `.env`, который нужен для запуска без Docker. Токен общий — `NT_RUNNER_TOKEN` из `.env`. Порт runner на хост не опубликован: управляющий API запускает нагрузку, и обращаться к нему может только агент по сети Compose.
+- **Стенды.** Список разрешённых целей runner читает из `config/nt-runner.json` на хосте: папка `config` подключена только на чтение. После правки файла выполните `docker compose restart runner`.
+- **k6.** В образе свой k6 той же версии, что проверена с генератором сценариев. Значение `k6_binary` из личного конфига, обычно путь на хосте, в контейнере заменяется флагом `--k6-binary`.
+- **Цели на этой же машине.** Цель вида `http://localhost:8087` из контейнера указывала бы на сам runner. Флаг `--loopback-alias host.docker.internal` переписывает `localhost`, `127.0.0.1` и `[::1]` в целях на адрес хоста ещё при загрузке конфигурации. Поэтому в интерфейсе, в предпросмотре для подтверждения и в k6 виден один и тот же настоящий адрес. Один и тот же `config/nt-runner.json` работает и с Docker, и без него.
+- **Файлы прогонов** лежат в томе `nt-runs`: `docker compose cp runner:/data/nt-runs ./nt-runs-export`.
+- **Восстановление зависшего прогона** — та же команда, что без Docker, но внутри контейнера:
+
+  ```text
+  docker compose exec runner python scripts/serve_nt_runner.py --config config/nt-runner.json --root /data/nt-runs --release <test_id>
+  ```
+
+## Сервисы на этой же машине
+
+Внутри контейнера `127.0.0.1` означает сам контейнер. Для цели runner это исправляет флаг выше. Остальные адреса из `.env` агент берёт как есть. Для сервисов на хосте используйте доступный из контейнера адрес: например, `NT_PROMETHEUS_URL=http://host.docker.internal:9090`. Docker Desktop знает это имя сам; для Docker Engine на Linux его добавляет `extra_hosts` в штатном Compose. На Linux сервис должен слушать доступный контейнеру интерфейс хоста: привязки только к `127.0.0.1` недостаточно.
+
+**Для модели нужен HTTPS.** Простая замена `LLM_API_BASE=http://127.0.0.1:...` на `http://host.docker.internal:...` не работает: валидатор разрешает HTTP только для loopback. Для Docker настройте HTTPS-шлюз с доверенным контейнером сертификатом и укажите его адрес в `LLM_API_BASE`; либо запускайте backend на хосте рядом с HTTP-моделью по [инструкции без Docker](GETTING_STARTED.md). Эти же требования относятся к `OPENAI_BASE_URL`, `DEEPSEEK_API_BASE` и `ANTHROPIC_BASE_URL`.
+
+Для Jira и Confluence тоже используйте HTTPS. HTTP по имени `host.docker.internal` требует явного `JIRA_ALLOW_INSECURE_HTTP=1` или `CONFLUENCE_ALLOW_INSECURE_HTTP=1` и допустим только в доверенной тестовой сети. Скрипт предупреждает об адресах loopback, но не меняет протокол и политику доступа.
+
+## Демо и PostgreSQL
+
+PostgreSQL нужен только `run_demo.py`: это замер кеша по трём ходам, в котором чекпоинты и store переживают перезапуск. Сервер его не использует, поэтому база в обычный запуск не входит.
+
+```text
+docker compose run --rm demo
+```
+
+Команда собирает отдельный образ `orbita-demo:local`, поднимает базу из профиля `demo` и тратит деньги на вызовы модели. Предварительный запуск `agent` не нужен; слои Dockerfile используются из общего кеша. Для неё задайте в `.env` случайный URL-safe `POSTGRES_PASSWORD`. Без пароля PostgreSQL откажется стартовать.
+
+**Пароль запоминается томом.** Образ PostgreSQL применяет `POSTGRES_PASSWORD` только при первом создании тома `pgdata`. Если том остался от прежнего запуска или пароль потом поменяли, база продолжит ждать старый пароль, и демо упадёт с `password authentication failed`. Выровнять пароль базы с `.env` без потери данных можно так (команда для `sh`/`bash`; из PowerShell запускайте её через Git Bash или WSL):
+
+```text
+docker compose --profile demo up -d postgres
+docker compose exec postgres sh -c 'psql -U orbita -d orbita -c "ALTER USER orbita PASSWORD '"'"'$POSTGRES_PASSWORD'"'"'"'
+```
+
+## Пошаговый запуск в Docker
 
 ### 1. Подготовьте `.env`
 
-Создайте его по [инструкции](GETTING_STARTED.md), укажите модель и ключ. Для этого варианта оставьте `PUBLISH_TARGET=file`, `CONFLUENCE_PUBLISH=1`, `PUBLISH_REQUIRE_APPROVAL=1`, `JIRA_CREATE_ISSUES=0`.
+Создайте его по [инструкции](GETTING_STARTED.md), укажите модель и ключ. Для этого варианта оставьте `PUBLISH_TARGET=file`, `CONFLUENCE_PUBLISH=1`, `PUBLISH_REQUIRE_APPROVAL=1`, `JIRA_CREATE_ISSUES=0`. Задайте `API_ADMIN_TOKEN` и отдельный `NT_RUNNER_TOKEN`: без токена runner Compose не запустится. Скопируйте `config/nt-runner.example.json` в `config/nt-runner.json`, если своего файла ещё нет.
 
 Пути хранения в `.env` задавать не нужно и бесполезно: штатный Compose задаёт их сам, и его значения сильнее. Результаты приезжают в том `data` по пути `/data/published`.
 
@@ -50,21 +117,23 @@
 ### 3. Соберите и запустите
 
 ```text
-docker compose up --build -d
+docker compose up -d --build --wait
 docker compose ps
 docker compose logs --tail 100 agent
 ```
 
 Команды выполняются из корня репозитория с основным `docker-compose.yml`. Docker Compose должен поддерживать используемый в штатном файле `env_file.required`; сообщение об неизвестном поле означает несовместимую версию Compose.
 
-Проверьте `http://127.0.0.1:2024/ok`. Затем запустите frontend на хосте:
+`--wait` возвращает управление, когда `agent` и `web` здоровы. Откройте `http://localhost:8080`, выберите папку и выполните первый сценарий.
+
+Frontend из Compose — собранная статика. Если вы правите интерфейс, остановите `web` (`docker compose stop web`) и запустите Vite на хосте: он проксирует API к тому же `127.0.0.1:2024`.
 
 ```powershell
 npm.cmd --prefix web ci
 npm.cmd --prefix web run dev -- --host 127.0.0.1
 ```
 
-На Linux/macOS используйте `npm`. Откройте `http://localhost:5173`, выберите папку и выполните первый сценарий.
+На Linux/macOS используйте `npm`. Vite открывается на `http://localhost:5173`.
 
 Штатный образ устанавливает extras `server,postgres`, но не `anthropic`. Для Anthropic нужен образ с установленным extra `anthropic`; либо используйте локальный запуск с этой зависимостью. Самого изменения `LLM_PROVIDER` для отсутствующего адаптера недостаточно.
 
@@ -88,8 +157,9 @@ docker compose up -d --force-recreate agent
 | Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/` | `/data/published` в томе `data` |
 | Журнал операций Jira | `JIRA_JOURNAL_PATH`, обычно `data/jira-operations.sqlite3` | `/data/jira-operations.sqlite3` в томе `data` |
 | Треды dev-сервера | `.langgraph_api/` рядом с рабочей папкой | `/app/.langgraph_api` в томе `threads` |
-| Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata` |
-| Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | Runner в Compose не входит; сохраняйте его каталог отдельно |
+| Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, только профиль `demo` |
+| Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | `/data/nt-runs` в томе `nt-runs` |
+| Список стендов runner | `config/nt-runner.json` | `./config` хоста → `/app/config`, только чтение |
 | Настройки | `.env` в корне | `.env` на хосте → окружение контейнера |
 
 **PostgreSQL не делает треды `langgraph dev` постоянными.** `CHECKPOINT_BACKEND` используется `run_demo.py` и собственными скриптами через `checkpointer.py`, а dev-сервер держит треды в своей папке. Поэтому она вынесена на отдельный том `threads`: без него пересоздание контейнера стирало историю тредов, оставляя документы на месте, — и выглядело это как выборочная потеря.
@@ -100,31 +170,35 @@ docker compose up -d --force-recreate agent
 
 ## Резервная копия и восстановление
 
-Копируется три тома и один файл настроек. Контейнер при этом можно не останавливать только для документов; для базы и тредов остановите его, иначе копия окажется снятой на середине записи.
+Копируются три тома — `data`, `threads`, `nt-runs` — и файлы настроек `.env` и `config/nt-runner.json`. Если пользуетесь демо, добавьте дамп PostgreSQL. Контейнеры при этом можно не останавливать только для документов; для тредов и журнала runner остановите их, иначе копия окажется снятой на середине записи.
 
 ```text
-docker compose stop agent
+docker compose stop agent runner
 docker run --rm -v claude_langgraph_data:/from -v "$PWD/backup":/to alpine tar czf /to/data.tar.gz -C /from .
 docker run --rm -v claude_langgraph_threads:/from -v "$PWD/backup":/to alpine tar czf /to/threads.tar.gz -C /from .
-docker compose exec -T postgres pg_dump -U orbita orbita > backup/orbita.sql
-docker compose start agent
+docker run --rm -v claude_langgraph_nt-runs:/from -v "$PWD/backup":/to alpine tar czf /to/nt-runs.tar.gz -C /from .
+docker compose --profile demo exec -T postgres pg_dump -U orbita orbita > backup/orbita.sql
+docker compose start agent runner
 ```
 
-Имена томов Compose составляет из имени проекта: проверьте их `docker volume ls`. Восстановление — в обратном порядке, при остановленном `agent`:
+Строка с `pg_dump` нужна, только если база запущена: `docker compose --profile demo up -d postgres`.
+
+Имена томов Compose составляет из имени проекта: проверьте их `docker volume ls`. Восстановление — в обратном порядке, при остановленных `agent` и `runner`:
 
 ```text
-docker compose stop agent
+docker compose stop agent runner
 docker run --rm -v claude_langgraph_data:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/data.tar.gz -C /to"
 docker run --rm -v claude_langgraph_threads:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/threads.tar.gz -C /to"
-docker compose exec -T postgres psql -U orbita orbita < backup/orbita.sql
-docker compose start agent
+docker run --rm -v claude_langgraph_nt-runs:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/nt-runs.tar.gz -C /to"
+docker compose --profile demo exec -T postgres psql -U orbita orbita < backup/orbita.sql
+docker compose start agent runner
 ```
 
 **Права доступа.** Внутри образа процесс работает не от root, а от пользователя `orbita`. Распаковка от root в примере выше сохраняет владельцев из архива, поэтому файлы остаются доступными приложению. Если восстанавливаете копию другим способом, проверьте владельца: `docker compose exec agent ls -ln /data`. Каталог, принадлежащий root, приложение не сможет записать, и публикация будет падать с «не записать».
 
-Копия Markdown не является резервной копией PostgreSQL или тредов, а дамп базы не содержит документов: это три независимых набора данных.
+Копия Markdown не является резервной копией тредов, журнала runner или PostgreSQL, а дамп базы не содержит документов: это независимые наборы данных.
 
-Проверка восстановления — единственное доказательство, что копия рабочая. После пересоздания контейнера (`docker compose up -d --force-recreate`) убедитесь, что на месте документы в `/data/published`, история тредов в интерфейсе, настройки из `.env` и данные runner в его каталоге.
+Проверка восстановления — единственное доказательство, что копия рабочая. После пересоздания контейнера (`docker compose up -d --force-recreate`) убедитесь, что на месте документы в `/data/published`, история тредов в интерфейсе, настройки из `.env` и прогоны runner в `/data/nt-runs`.
 
 ## Забрать результаты и остановить
 
@@ -148,7 +222,7 @@ docker compose stop
 docker compose down
 ```
 
-Не добавляйте `-v`, если хотите сохранить данные томов. Frontend остановите через `Ctrl+C` в его терминале.
+Не добавляйте `-v`, если хотите сохранить данные томов. Frontend из Compose останавливается вместе с остальными; Vite, запущенный на хосте, — через `Ctrl+C` в его терминале.
 
 ## Собранный frontend
 
@@ -162,6 +236,8 @@ npm.cmd --prefix web run build
 - `/api`, `/assistants`, `/threads`, `/runs`, `/info`, `/ok`, `/store` проксировались к backend;
 - потоковые ответы проходили без мешающей буферизации и с достаточным таймаутом;
 - маршруты приложения при необходимости возвращали `index.html`.
+
+Готовый пример такой настройки — [`web/nginx.conf`](../web/nginx.conf), по нему работает сервис `web` штатного Compose.
 
 Dev-прокси описан только в `server.proxy` Vite. **`npm run preview` не заменяет настроенный API-прокси для готовой сборки.** Если задаёте `VITE_API_URL` при сборке, адрес встраивается в frontend; при другом origin нужно отдельно настроить CORS и авторизацию.
 

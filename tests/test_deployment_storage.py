@@ -66,15 +66,19 @@ def test_every_stored_path_lands_on_a_volume_or_the_host():
 
 
 def test_the_dev_server_threads_have_their_own_volume():
-    """Postgres рядом не делает треды `langgraph dev` постоянными."""
+    """Postgres не делает треды `langgraph dev` постоянными — это делает том."""
     assert "threads" in COMPOSE["volumes"]
-    assert COMPOSE["services"]["agent"]["environment"]["CHECKPOINT_BACKEND"] == "postgres"
+    # Сервер базу не использует, поэтому и не зависит от неё; Postgres — для демо.
+    assert "CHECKPOINT_BACKEND" not in COMPOSE["services"]["agent"]["environment"]
+    assert "postgres" not in COMPOSE["services"]["agent"].get("depends_on", {})
+    assert COMPOSE["services"]["demo"]["environment"]["CHECKPOINT_BACKEND"] == "postgres"
+    assert COMPOSE["services"]["postgres"]["profiles"] == ["demo"]
     assert "PostgreSQL не делает треды `langgraph dev` постоянными" in DEPLOYMENT
 
 
 def test_the_image_creates_the_directories_it_declares():
     """Том монтируется на готовое место с нужным владельцем."""
-    assert "mkdir -p /data/published /data/input /app/.langgraph_api" in DOCKERFILE
+    assert "mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api" in DOCKERFILE
     assert "chown -R orbita:orbita /app /data" in DOCKERFILE
 
 

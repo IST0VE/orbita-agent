@@ -100,6 +100,15 @@ def test_a_fixture_is_allowed_only_in_its_named_file():
 
 
 @pytest.mark.parametrize("object_id", [None, "0123456789abcdef0123456789abcdef01234567"])
+def test_provider_key_fixture_requires_exact_path_and_value(object_id):
+    key = "sk-private-test-key"
+    path = "tests/test_llm_retry.py"
+    assert scan.scan_text(key, path, object_id=object_id) == []
+    assert scan.scan_text(key, "tests/other.py", object_id=object_id)
+    assert scan.scan_text(key + "-unexpected", path, object_id=object_id)
+
+
+@pytest.mark.parametrize("object_id", [None, "0123456789abcdef0123456789abcdef01234567"])
 @pytest.mark.parametrize(
     ("path", "token"),
     [
