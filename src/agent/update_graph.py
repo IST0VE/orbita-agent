@@ -14,7 +14,17 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent import config as cfg
-from agent import drafts, inputs, nodes, outgoing, pause, publishers, update_plan, update_roles
+from agent import (
+    drafts,
+    inputs,
+    llm_retry,
+    nodes,
+    outgoing,
+    pause,
+    publishers,
+    update_plan,
+    update_roles,
+)
 from agent.cost import charge, cost_summary, extract_usage
 from agent.routes import budget_gate
 from agent.runtime import options
@@ -128,7 +138,8 @@ def make_propose_node(llm: Any = None):
             "materials": source["materials"],
         }
         model = llm if llm is not None else nodes.model_for(config, ())
-        answer = model.invoke(
+        answer = llm_retry.invoke(
+            model,
             [
                 SystemMessage(content=update_roles.PROMPT),
                 # Указания оператора — в конец сообщения, как и везде: префикс

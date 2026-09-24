@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from email.utils import format_datetime
+from threading import Event, Thread
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -99,6 +102,18 @@ def test_request_larger_than_the_whole_budget_is_refused(
     assert "LLM_MAX_HISTORY_TOKENS" in message
 
 
+def test_oversized_request_does_not_wait_for_other_limits(
+    window: llm_pacing.MinuteBudget, clock: Clock
+) -> None:
+    window.reserve(10, requests=1, budget=100)
+    window.block(120)
+
+    with pytest.raises(llm_pacing.RateLimitTooSmall):
+        window.reserve(101, requests=1, budget=100)
+
+    assert clock.slept == []
+
+
 def test_settle_replaces_the_estimate_with_the_fact(
     window: llm_pacing.MinuteBudget, clock: Clock
 ) -> None:
@@ -109,6 +124,46 @@ def test_settle_replaces_the_estimate_with_the_fact(
     # Будь в окне прежние 90, запрос на 80 ждал бы; по факту там 10.
     window.reserve(80, requests=0, budget=100)
     assert clock.slept == []
+
+
+def test_waiting_caller_allows_usage_and_backoff_updates(clock: Clock) -> None:
+    """Другой ответ обновляет окно во время сна, и ожидающий видит новую паузу."""
+    sleeping, wake, updated = Event(), Event(), Event()
+    results: list[list[float]] = []
+
+    def sleep(seconds: float) -> None:
+        sleeping.set()
+        assert wake.wait(2), "test did not release the waiting request"
+        clock.sleep(seconds)
+
+    window = llm_pacing.MinuteBudget(clock=clock, sleep=sleep)
+    event = window.reserve(90, requests=0, budget=100)
+    waiter = Thread(
+        target=lambda: results.append(window.reserve(20, requests=0, budget=100)),
+        daemon=True,
+    )
+
+    def update() -> None:
+        window.settle(event, 10)
+        window.block(120)
+        updated.set()
+
+    updater = Thread(target=update, daemon=True)
+    waiter.start()
+    try:
+        assert sleeping.wait(1), "request never reached the token limit"
+        updater.start()
+        updated_during_sleep = updated.wait(1)
+    finally:
+        wake.set()
+        waiter.join(2)
+        if updater.ident is not None:
+            updater.join(2)
+
+    assert updated_during_sleep, "a waiting request prevented another response from settling"
+    assert not waiter.is_alive()
+    assert len(results) == 1
+    assert results[0][0] == pytest.approx(1120.0)
 
 
 def test_block_holds_the_next_request(window: llm_pacing.MinuteBudget, clock: Clock) -> None:
@@ -126,12 +181,33 @@ def response_429(retry_after: str | None) -> Exception:
     return error
 
 
-def test_retry_after_is_read_and_capped() -> None:
+def test_retry_after_is_read_without_shortening_the_server_pause() -> None:
     assert llm_pacing.retry_after_s(response_429("42")) == pytest.approx(42.0)
-    # Окно всё равно минутное: ждать дольше, чем оно живёт, незачем.
-    assert llm_pacing.retry_after_s(response_429("600")) == pytest.approx(llm_pacing.WINDOW_S)
-    # Заголовка нет или он датой — ждём окно целиком, а не ноль.
+    assert llm_pacing.retry_after_s(response_429("600")) == pytest.approx(600.0)
+    # Без указания шлюза ждём окно целиком.
     assert llm_pacing.retry_after_s(response_429(None)) == pytest.approx(llm_pacing.WINDOW_S)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "nonsense"])
+def test_invalid_retry_after_uses_a_finite_fallback(value: str) -> None:
+    assert llm_pacing.retry_after_s(response_429(value)) == llm_pacing.WINDOW_S
+
+
+def test_retry_after_accepts_http_dates_and_milliseconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    moment = datetime(2026, 9, 24, 13, 0, tzinfo=UTC)
+    monkeypatch.setattr(llm_pacing.time, "time", lambda: moment.timestamp() - 180)
+    assert llm_pacing.retry_after_s(response_429(format_datetime(moment, usegmt=True))) == 180
+    assert llm_pacing.retry_after_headers_s(
+        {"retry-after-ms": "1250", "retry-after": "60"}
+    ) == 1.25
+    assert llm_pacing.retry_after_headers_s(
+        {"retry-after-ms": "nan", "Retry-After": "90"}
+    ) == 90
+    assert llm_pacing.retry_after_headers_s(
+        {"Retry-After": format_datetime(moment, usegmt=True)}, now=moment.timestamp() + 10
+    ) == 0
+    assert llm_pacing.retry_after_headers_s({"retry-after": "-5"}) == 0
+    assert llm_pacing.retry_after_headers_s({}) is None
 
 
 def test_other_failures_are_not_rate_limits() -> None:
@@ -152,6 +228,36 @@ def test_estimate_counts_the_answer_too(monkeypatch: pytest.MonkeyPatch) -> None
     assert llm_pacing.estimate_tokens([[HumanMessage("привет")]]) >= (
         llm_pacing.DEFAULT_COMPLETION_RESERVE
     )
+
+
+@pytest.mark.parametrize("key", ["max_tokens", "max_completion_tokens", "max_output_tokens"])
+def test_estimate_uses_the_effective_output_limit(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    monkeypatch.setenv("LLM_MAX_TOKENS", "500")
+    messages = [[HumanMessage("привет")]]
+    before = llm_pacing.estimate_tokens(messages)
+    after = llm_pacing.estimate_tokens(messages, invocation_params={key: 5000})
+    assert after - before == 4500
+
+
+@pytest.mark.parametrize("key", ["tools", "functions"])
+def test_estimate_accounts_for_bound_tool_schemas(key: str) -> None:
+    messages = [[HumanMessage("привет")]]
+    tools = [{"type": "function", "function": {"name": "lookup", "description": "я" * 9000}}]
+    before = llm_pacing.estimate_tokens(messages)
+    after = llm_pacing.estimate_tokens(messages, invocation_params={key: tools})
+    assert after - before >= 3000
+
+
+def test_pacer_checks_bound_parameters_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_TOKENS_PER_MINUTE", "2000")
+    pacer = llm_pacing.Pacer()
+    with pytest.raises(llm_pacing.RateLimitTooSmall):
+        pacer.on_chat_model_start(
+            {}, [[HumanMessage("маленький запрос")]], run_id=uuid4(),
+            invocation_params={"max_completion_tokens": 3000},
+        )
 
 
 def test_pacer_queues_and_settles(monkeypatch: pytest.MonkeyPatch, clock: Clock) -> None:

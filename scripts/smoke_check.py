@@ -77,10 +77,11 @@ def show_config() -> None:
 # Модель
 # --------------------------------------------------------------------------
 def check_llm() -> None:
+    from agent import llm_retry
     from agent.providers import build_llm
 
     try:
-        answer = build_llm().invoke("Ответь одним словом: ок")
+        answer = llm_retry.invoke(build_llm(), "Ответь одним словом: ок")
     except Exception as exc:  # класс ошибки у каждого клиента свой
         line(FAIL, "LLM: запрос не прошёл", f"{type(exc).__name__}: {exc}")
         return
@@ -219,14 +220,14 @@ def check_model_calls_tool(query: str) -> None:
     ролям (`nodes.model_for`), поэтому отказ приходит на каждый ход любого
     конвейера, включая те, которым инструменты не нужны.
     """
+    from agent import llm_retry
     from agent.providers import build_llm
     from agent.tools import RESEARCH_TOOLS
 
     try:
-        answer = (
-            build_llm()
-            .bind_tools(RESEARCH_TOOLS)
-            .invoke(f"Найди в Confluence страницы по теме: {query}. Ответ ищи только инструментом.")
+        answer = llm_retry.invoke(
+            build_llm().bind_tools(RESEARCH_TOOLS),
+            f"Найди в Confluence страницы по теме: {query}. Ответ ищи только инструментом.",
         )
     except Exception as exc:
         line(FAIL, "Модель с инструментами: запрос не прошёл", f"{type(exc).__name__}: {exc}")

@@ -106,6 +106,11 @@ def llm_tokens_per_minute() -> int:
     return env_int("LLM_TOKENS_PER_MINUTE", 0, minimum=0)
 
 
+def llm_max_retries() -> int:
+    """Повторы одного вызова через общую очередь, без повторного запуска узла."""
+    return env_int("LLM_MAX_RETRIES", 2, minimum=0)
+
+
 def llm_kwargs() -> dict:
     """
     Аргументы конструктора чат-модели, кроме `model`.
@@ -126,7 +131,7 @@ def llm_kwargs() -> dict:
     """
     kwargs: dict = {
         "temperature": llm_temperature(),
-        "max_retries": env_int("LLM_MAX_RETRIES", 2, minimum=0),
+        "max_retries": llm_max_retries(),
     }
 
     api_key = env_opt("LLM_API_KEY")

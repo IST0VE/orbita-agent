@@ -17,7 +17,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from openai import BadRequestError
 
 from agent import config as cfg
-from agent import providers
+from agent import llm_retry, providers
 from agent.runtime import options
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ def parse_response(response: AIMessage, tools, *, allow_tools: bool) -> AIMessag
 def invoke(model_for, messages: list, config, tools, *, allow_tools: bool) -> AIMessage:
     """Try native once; use ordinary chat on a positively identified rejection."""
     if not tools:
-        return model_for(config, tools).invoke(messages)
+        return llm_retry.invoke(model_for(config, tools), messages)
     mode = cfg.llm_tool_mode()
     chosen = options(config)
     key = (
@@ -173,7 +173,7 @@ def invoke(model_for, messages: list, config, tools, *, allow_tools: bool) -> AI
     )
     if mode == "native" or (mode == "auto" and key not in _PROMPT_ENDPOINTS):
         try:
-            return model_for(config, tools).invoke(messages)
+            return llm_retry.invoke(model_for(config, tools), messages)
         except BadRequestError as exc:
             if mode != "auto" or not _unsupported(exc):
                 raise
@@ -181,7 +181,7 @@ def invoke(model_for, messages: list, config, tools, *, allow_tools: bool) -> AI
             logger.warning(
                 "Native tool calling unavailable; using text tool protocol (LLM_TOOL_MODE=prompt)."
             )
-    response = model_for(config, ()).invoke(
-        prompt_messages(messages, tools, allow_tools=allow_tools)
+    response = llm_retry.invoke(
+        model_for(config, ()), prompt_messages(messages, tools, allow_tools=allow_tools)
     )
     return parse_response(response, tools, allow_tools=allow_tools)

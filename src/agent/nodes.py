@@ -30,6 +30,7 @@ from agent import config as cfg
 from agent import (
     inputs,
     knowledge,
+    llm_retry,
     memory,
     pause,
     providers,
@@ -338,7 +339,7 @@ def make_role_node(
 
         def ask(messages: list) -> Any:
             if llm is not None:
-                return llm.invoke(messages)
+                return llm_retry.invoke(llm, messages)
             return tool_compat.invoke(model_for, messages, config, tools, allow_tools=asking)
 
         response = ask(messages)

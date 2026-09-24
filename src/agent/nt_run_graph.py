@@ -16,7 +16,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import confluence, nodes, pause, tool_compat, tools
+from agent import confluence, llm_retry, nodes, pause, tool_compat, tools
 from agent.cost import charge, cost_summary, extract_usage
 from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
@@ -187,7 +187,7 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
             history = [*history, HumanMessage(content=block.strip())]
         try:
             messages = [SystemMessage(content=prefix), *nodes.trim_history(history)]
-            response = (llm.invoke(messages) if llm is not None else
+            response = (llm_retry.invoke(llm, messages) if llm is not None else
                         tool_compat.invoke(nodes.model_for, messages, config, toolset, allow_tools=True))
             usage = extract_usage(response)
             decision = {}

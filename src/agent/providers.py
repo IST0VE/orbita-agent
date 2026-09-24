@@ -10,9 +10,10 @@ langchain-anthropic не нужен, и ставить его ради стро�
 Пакета нет — ошибка скажет, что именно поставить.
 
 Имена аргументов у фабрик общие (`api_key`, `base_url`, `temperature`,
-`max_tokens`, `timeout`, `max_retries`): LangChain принимает их как псевдонимы
+`max_tokens`, `timeout`): LangChain принимает их как псевдонимы
 во всех трёх классах, как бы ни назывались поля внутри. Поэтому маппинг здесь
-не нужен — словарь из `config.llm_kwargs()` уходит в конструктор как есть.
+не нужен. Исключение — `max_retries`: SDK-повторы отключены, чтобы повторы
+через `llm_retry.invoke` проходили общую очередь RPM/TPM.
 
 Про кеш при смене провайдера. `extract_usage()` в graph.py сначала ищет
 специфичные для DeepSeek поля prompt_cache_hit_tokens / prompt_cache_miss_tokens,
@@ -127,7 +128,9 @@ def build_llm(
         # до отправки, пока в минутном окне шлюза не освободится место. Вешается
         # он здесь, на клиента, а не на вызовы: звать модель в проекте умеют
         # больше десяти мест, и каждое из них обошло бы обёртку.
-        kwargs = dict(cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer])
+        # Retries must re-enter the callback. SDK-internal retries bypass it
+        # and can exceed TPM/RPM; application calls use llm_retry.invoke.
+        kwargs = dict(cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer], max_retries=0)
         client = _FACTORIES[name](model_name, kwargs)
         _CLIENTS[key] = client
     return client

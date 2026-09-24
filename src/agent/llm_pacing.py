@@ -7,10 +7,9 @@
 подряд, без пауз, и каждый следующий ход тащит с собой всю переписку. Десяток
 ходов за полминуты — и шлюз отвечает 429, хотя задача маленькая.
 
-Отбивается это дорого. Клиент провайдера переживает такой отказ сам: у него
-есть `LLM_MAX_RETRIES` и заголовок `retry-after`, по которому он честно ждёт
-минуту. Но ждёт он молча и в середине прогона, а когда попытки кончаются —
-роняет весь прогон вместе с уже написанными и оплаченными документами.
+Отбивается это дорого. Повторы ограничены `LLM_MAX_RETRIES` и ждут паузу
+из заголовка `retry-after`, но когда попытки кончаются, ошибка всё равно
+прерывает прогон. Поэтому повторы дополняются очередью перед моделью.
 
 Поэтому здесь не повтор, а ритм: запрос ждёт своей очереди ДО отправки, пока в
 минутном окне не освободится место. Окно скользящее и общее на процесс: лимит
@@ -29,10 +28,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import time
 from collections import deque
 from collections.abc import Callable
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Any
 from uuid import UUID
@@ -89,6 +92,13 @@ class MinuteBudget:
 
     def _delay(self, tokens: float, requests: int, budget: int, now: float) -> float:
         """Сколько ждать, чтобы запрос поместился в окно. 0 — можно слать."""
+        if budget and tokens > budget:
+            raise RateLimitTooSmall(
+                f"запрос к модели ({tokens:.0f} токенов) больше минутного бюджета шлюза "
+                f"({budget}, LLM_TOKENS_PER_MINUTE): пауза его не спасёт. Подрежьте историю "
+                "(LLM_MAX_HISTORY_TOKENS) или уменьшите объём чтения источников "
+                "(CONFLUENCE_READ_MAX_CHARS, JIRA_READ_MAX_CHARS, *_SEARCH_LIMIT)."
+            )
         if self._blocked_until > now:
             return self._blocked_until - now
         used_requests, used_tokens = self._prune(now)
@@ -103,34 +113,26 @@ class MinuteBudget:
             freed += spent
             if used_tokens - freed + tokens <= budget:
                 return moment + WINDOW_S - now
-        # Дошли до конца очереди — значит, и в пустом окне запрос не помещается.
-        # Ждать нечего: через минуту он будет ровно таким же.
-        raise RateLimitTooSmall(
-            f"запрос к модели ({tokens:.0f} токенов) больше минутного бюджета шлюза "
-            f"({budget}, LLM_TOKENS_PER_MINUTE): пауза его не спасёт. Подрежьте историю "
-            "(LLM_MAX_HISTORY_TOKENS) или уменьшите объём чтения источников "
-            "(CONFLUENCE_READ_MAX_CHARS, JIRA_READ_MAX_CHARS, *_SEARCH_LIMIT)."
-        )
+        return self._events[-1][0] + WINDOW_S - now
 
     def reserve(self, tokens: float, *, requests: int, budget: int) -> list[float]:
         """
         Занять место в окне, при необходимости дождавшись его.
 
-        Ожидание проходит под тем же замком, что и учёт: иначе два узла графа,
-        увидев одно и то же свободное место, заняли бы его оба и получили 429
-        вдвоём. Шлюз считает по ключу, а ключ у графов общий.
+        Проверка и запись атомарны, но сон отпускает замок: ответы других
+        запросов должны обновлять usage и паузу шлюза даже во время ожидания.
+        После сна место проверяется заново, прежде чем занять его.
         """
-        with self._lock:
-            while True:
+        while True:
+            with self._lock:
                 now = self._clock()
                 delay = self._delay(tokens, requests, budget, now)
                 if delay <= 0:
-                    break
-                logger.info("Пауза перед вызовом модели %.1f с: минутный лимит шлюза", delay)
-                self._sleep(delay)
-            event = [self._clock(), float(tokens)]
-            self._events.append(event)
-            return event
+                    event = [now, float(tokens)]
+                    self._events.append(event)
+                    return event
+            logger.info("Пауза перед вызовом модели %.1f с: минутный лимит шлюза", delay)
+            self._sleep(delay)
 
     def settle(self, event: list[float], tokens: float) -> None:
         """Заменить оценку фактом из `usage`: дальше окно считает по правде."""
@@ -159,6 +161,33 @@ def reset(window: MinuteBudget | None = None) -> None:
     _budget = window or MinuteBudget()
 
 
+def retry_after_headers_s(headers: Any, *, now: float | None = None) -> float | None:
+    """Пауза из HTTP-заголовков; None означает, что сервер её не указал."""
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+
+    for name, divisor in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        raw = getter(name)
+        if raw is None:
+            raw = getter(name.title())
+        try:
+            seconds = float(raw) / divisor
+        except (TypeError, ValueError, OverflowError):
+            if name != "retry-after" or not isinstance(raw, str):
+                continue
+            try:
+                moment = parsedate_to_datetime(raw)
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=UTC)
+                seconds = moment.timestamp() - (time.time() if now is None else now)
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+        if math.isfinite(seconds):
+            return max(seconds, 0.0)
+    return None
+
+
 def retry_after_s(error: BaseException) -> float:
     """
     Сколько шлюз просит подождать после 429, в секундах. 0 — это не 429.
@@ -172,24 +201,32 @@ def retry_after_s(error: BaseException) -> float:
     status = getattr(error, "status_code", None) or getattr(response, "status_code", None)
     if status != 429:
         return 0.0
-    # Заголовки приходят то словарём, то объектом клиента; общий у них `get`.
-    headers = getattr(response, "headers", None)
-    getter = getattr(headers, "get", None)
-    raw = (getter("retry-after") or getter("Retry-After")) if getter else None
-    try:
-        asked = float(raw)
-    except (TypeError, ValueError):
-        # Заголовка нет или он датой: окно всё равно минутное, ждём его целиком.
-        asked = WINDOW_S
-    return min(max(asked, 0.0), WINDOW_S)
+    asked = retry_after_headers_s(getattr(response, "headers", None))
+    return WINDOW_S if asked is None else asked
 
 
-def estimate_tokens(batches: list[list[Any]]) -> float:
+def estimate_tokens(
+    batches: list[list[Any]], *, invocation_params: dict | None = None
+) -> float:
     """Вход запроса в токенах плюс резерв на ответ: шлюз считает оба."""
     prompt = sum(
         count_tokens_approximately(batch, chars_per_token=CHARS_PER_TOKEN) for batch in batches
     )
-    reserve = cfg.env_int("LLM_MAX_TOKENS", 0, minimum=0) or DEFAULT_COMPLETION_RESERVE
+    params = invocation_params or {}
+    for name in ("tools", "functions"):
+        if params.get(name):
+            schema = json.dumps(params[name], ensure_ascii=False, default=str)
+            prompt += math.ceil(len(schema) / CHARS_PER_TOKEN) * len(batches)
+    reserve = next(
+        (
+            params[name]
+            for name in ("max_completion_tokens", "max_output_tokens", "max_tokens")
+            if isinstance(params.get(name), int) and params[name] > 0
+        ),
+        None,
+    )
+    if reserve is None:
+        reserve = cfg.env_int("LLM_MAX_TOKENS", 0, minimum=0) or DEFAULT_COMPLETION_RESERVE
     return prompt + reserve
 
 
@@ -238,7 +275,11 @@ class Pacer(BaseCallbackHandler):
         limit = cfg.llm_tokens_per_minute()
         if not requests and not limit:
             return
-        event = budget().reserve(estimate_tokens(messages), requests=requests, budget=limit)
+        event = budget().reserve(
+            estimate_tokens(messages, invocation_params=kwargs.get("invocation_params")),
+            requests=requests,
+            budget=limit,
+        )
         with self._lock:
             self._pending[run_id] = event
 
