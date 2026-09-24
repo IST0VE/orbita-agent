@@ -2,7 +2,7 @@
 
 [Документация](README.md) / Развёртывание
 
-**Быстрее всего — одна команда:** `.\up.cmd` на Windows или `./up.sh` на Linux/macOS поднимает в Docker всё сразу: backend, собранный frontend и runner нагрузочного тестирования с k6. Для разработки удобнее процессы без Docker — Python backend и Vite frontend, см. [первый запуск](GETTING_STARTED.md). Ниже — Docker и вопросы хранения.
+**Быстрее всего — одна команда:** `.\up.cmd` на Windows или `./up.sh` на Linux/macOS поднимает в Docker всё сразу: backend, собранный frontend и runner нагрузочного тестирования с k6. Для разработки удобнее процессы без Docker — Python backend и Vite frontend, см. [первый запуск](GETTING_STARTED.md). Пошагово с нуля, на машине только с Docker, — [новая машина](NEW_MACHINE.md). Ниже — Docker и вопросы хранения.
 
 ## Что запускает штатный Compose
 

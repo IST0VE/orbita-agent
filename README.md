@@ -114,6 +114,7 @@ flowchart LR
 | Повторить конкретный сценарий                                             | [Рабочие сценарии](docs/WORKFLOWS.md)                            |
 | Настроить модель, бюджет и публикацию                                | [Конфигурация](docs/CONFIGURATION.md)                                            |
 | Подключить Jira и Confluence                                                              | [Интеграции](docs/INTEGRATIONS.md)                                                 |
+| Поднять на новой машине, где есть только Docker                  | [Новая машина](docs/NEW_MACHINE.md)                                             |
 | Развернуть в Docker и сохранить данные                                    | [Развёртывание](docs/DEPLOYMENT.md)                                             |
 | Найти причину ошибки                                                               | [Диагностика](docs/TROUBLESHOOTING.md)                                            |
 | Изменять код и добавлять сценарии                                       | [Архитектура](docs/ARCHITECTURE.md) · [Разработка](docs/DEVELOPMENT.md) |

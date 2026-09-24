@@ -36,7 +36,7 @@ You only need [Docker Desktop](https://docs.docker.com/desktop/) (on Linux, Dock
 1. Copy `.env.example` to `.env` and put your model key into `LLM_API_KEY`. For another provider, also change `LLM_PROVIDER` and `LLM_MODEL`.
 2. From the repository root, run `.\up.cmd` on Windows (or double-click `up.cmd`) or `./up.sh` on Linux/macOS.
 
-The script fills empty `API_ADMIN_TOKEN` and `NT_RUNNER_TOKEN` with random values, builds the images, starts the backend, the web UI and the load-test runner with k6, waits until they are healthy and opens **http://localhost:8080**. On first visit the UI asks for the API token — that is `API_ADMIN_TOKEN` from `.env`. Run the same command again after editing `.env`; stop with `docker compose down`. See the [deployment guide](docs/DEPLOYMENT.md), in Russian.
+The script fills empty `API_ADMIN_TOKEN` and `NT_RUNNER_TOKEN` with random values, builds the images, starts the backend, the web UI and the load-test runner with k6, waits until they are healthy and opens **http://localhost:8080**. On first visit the UI asks for the API token — that is `API_ADMIN_TOKEN` from `.env`. Run the same command again after editing `.env`; stop with `docker compose down`. See the [deployment guide](docs/DEPLOYMENT.md), in Russian; a step-by-step walkthrough for a fresh machine with only Docker is in [NEW_MACHINE.md](docs/NEW_MACHINE.md), also in Russian.
 
 ## Run the complete local application without Docker
 
