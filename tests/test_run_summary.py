@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import drafts, publishers
+from agent import drafts, publishers, roles
 from agent.summary import summary_of
 
 
@@ -31,6 +31,50 @@ def test_a_clean_run_says_what_to_check():
     assert "Документов этапов: 2" in summary["outcome"]
     assert summary["problems"] == []
     assert "Проверьте документы" in summary["next"][0]
+
+
+def test_a_stage_without_a_document_is_a_problem():
+    """
+    Прогон дошёл до конца, но этап не выпустил документа. Словарь документов
+    об этом молчит — пропавший этап не оставляет в нём ничего, — поэтому
+    недостающие считаются по конвейеру.
+    """
+    summary = summary_of(
+        {
+            "artifacts": {"requirements": "…", "data": "…", "architecture": "…", "review": "…"},
+            "publication": {"status": "created", "pages": [{}, {}, {}, {}]},
+        },
+        roles.PIPELINE,
+    )
+
+    api = roles.PIPELINE.by_key("api").title
+    assert "Документов этапов: 4 из 5" in summary["outcome"]
+    assert summary["problems"] == [f"Не выполнены этапы: {api}"]
+    assert any("Повторите ход" in item for item in summary["next"])
+
+
+def test_a_complete_pipeline_has_no_missing_stages():
+    summary = summary_of({"artifacts": {key: "…" for key in roles.KEYS}}, roles.PIPELINE)
+
+    assert "Документов этапов: 5 из 5" in summary["outcome"]
+    assert summary["problems"] == []
+
+
+def test_a_refused_run_does_not_list_every_stage():
+    """Отказ по входу этапов не запускал: причина уже стоит в треде."""
+    summary = summary_of({"refused": "не выбрана папка задачи"}, roles.PIPELINE)
+
+    assert summary["problems"] == []
+
+
+def test_a_halted_pipeline_keeps_its_own_next_step():
+    summary = summary_of(
+        {"artifacts": {"requirements": "…"}, "halt": {"stage": "api", "reason": "стоп"}},
+        roles.PIPELINE,
+    )
+
+    assert any(item.startswith("Не выполнены этапы:") for item in summary["problems"])
+    assert not any("Повторите ход" in item for item in summary["next"])
 
 
 def test_a_stale_plan_is_a_problem_with_a_next_step():

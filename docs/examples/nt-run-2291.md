@@ -1,8 +1,6 @@
-# Orbita: Проведи анализ НТ по NT-123. test_id=nt-run-2291 previous_test_id=nt-run-2187 [01a08f85-ba74-72e3-91d5-6860c02cbc04]
+# Orbita: Проведи анализ НТ по NT-123. test_id=nt-run-2291 previous_test_id=nt-run-2187 [01a0cfef-130b-7bf3-85fb-227dcbc2764a]
 
-> **Исторический пример до `nt-analysis-v3`.** Это анализ уже выполненного теста графом `nt`, а не запуск нагрузки через `nt_run`. В отчёте отсутствуют текущие разделы полноты диагностики, фаз нагрузки и политики анализа; числа и confidence не являются эталоном текущих расчётов. [Текущая инструкция и ограничения стенда](../NT.md#локальный-стенд-и-исторические-примеры).
-
-Страница собрана автоматически агентом анализа нагрузочного тестирования Orbita (модель deepseek-v4-flash). Обновлено: 2026-09-11T12:12:21. Правки руками затрёт следующий прогон треда.
+Страница собрана автоматически агентом анализа нагрузочного тестирования Orbita. Обновлено: 2026-09-24T08:02:20. Правки руками затрёт следующий прогон треда.
 
 ## Задача
 
@@ -45,11 +43,49 @@ previous_test_id=nt-run-2187
 }
 ```
 
+## Execution
+
+COMPLETED
+
+Выполнение теста и вердикт SLA — разные вещи: прерванный тест не получает PASSED, а завершившийся не обязан в SLA укладываться.
+
 ## Result
 
 FAILED
 
-Вердикт вычислен кодом по доступным SLA. Проверяются максимумы временных рядов за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста.
+| поле | значение |
+| --- | --- |
+| сервис | order-service |
+| окружение | nt01 / nt01 |
+| период | 2026-09-10T15:45:00+00:00 — 2026-09-10T16:06:00+00:00 (1260 с) |
+| источники | prometheus |
+| проверено метрик | error_rate, p95, p99 |
+| чем измерен | максимумы рядов за период целиком, не плато |
+| симулированные источники | prometheus |
+| устойчивая RPS | None (INCONCLUSIVE) |
+
+Причины:
+
+- order-service/error_rate: пик 0.03695006130634469 при пороге 0.01
+
+- order-service/p95: пик 2466.350097129284 при пороге 500.0
+
+- order-service/p99: пик 4747.1012303043335 при пороге 1200.0
+
+Вердикт вычислен кодом по доступным SLA и не меняется формулировками модели. Проверяются максимумы временных рядов за заданный период; p95/p99 ряда не являются перцентилями всех запросов теста и не описывают устойчивое плато.
+
+## Diagnostic completeness
+
+PARTIAL
+
+```json
+[
+  "неполные диагностические ряды: order-service/cpu",
+  "источники объявлены симулированными: prometheus; ряды не измеряют реакцию цели на этот прогон"
+]
+```
+
+Полнота диагностики оценивается отдельно: отсутствие baseline или данных зависимости не отменяет проверку полных SLA-рядов целевого сервиса.
 
 ## Precheck
 
@@ -72,11 +108,11 @@ FAILED
 
 ## SLA
 
-- p95: peak=2466.350097129284; limit=500.0; unit=ms
+- p95: peak=2466.350097129284; limit=<= 500.0; unit=ms
 
-- p99: peak=4747.1012303043335; limit=1200.0; unit=ms
+- p99: peak=4747.1012303043335; limit=<= 1200.0; unit=ms
 
-- error_rate: peak=0.03695006130634469; limit=0.01; unit=ratio
+- error_rate: peak=0.03695006130634469; limit=<= 0.01; unit=ratio
 
 ```json
 [
@@ -84,6 +120,7 @@ FAILED
     "service": "order-service",
     "metric": "error_rate",
     "limit": 0.01,
+    "comparator": "<=",
     "peak": 0.03695006130634469,
     "first_at": 1789056120.0,
     "last_at": 1789056330.0,
@@ -95,6 +132,7 @@ FAILED
     "service": "order-service",
     "metric": "p95",
     "limit": 500.0,
+    "comparator": "<=",
     "peak": 2466.350097129284,
     "first_at": 1789056120.0,
     "last_at": 1789056330.0,
@@ -106,6 +144,7 @@ FAILED
     "service": "order-service",
     "metric": "p99",
     "limit": 1200.0,
+    "comparator": "<=",
     "peak": 4747.1012303043335,
     "first_at": 1789056150.0,
     "last_at": 1789056330.0,
@@ -118,3408 +157,717 @@ FAILED
 
 ## Maximum stable load
 
-1829.8444444444442 RPS
+Не установлена.
 
-Наблюдаемая устойчивая нагрузка: минимум RPS в непрерывном окне соблюдения всех заданных SLA. Это нижняя оценка по наблюдениям, а не доказанный предел мощности.
+Наблюдаемая устойчивая нагрузка: минимум RPS на плато после периода установления, вся измеренная часть которого соблюдала SLA. Это нижняя оценка по наблюдениям, а не доказанный предел мощности.
+
+```json
+{
+  "status": "INCONCLUSIVE",
+  "maximum_stable_rps": null,
+  "truncated": false,
+  "settling_seconds": 30,
+  "stable_seconds": 180,
+  "rps_tolerance": 0.1,
+  "reason": "симулированная телеметрия не подтверждает устойчивую RPS"
+}
+```
+
+## Load phases
+
+```json
+[
+  {
+    "start": 1789055100.0,
+    "end": 1789055100.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 417.5,
+    "rps_max": 417.5,
+    "rps_median": 417.5
+  },
+  {
+    "start": 1789055130.0,
+    "end": 1789055130.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 354.2291666666667,
+    "rps_max": 354.2291666666667,
+    "rps_median": 354.2291666666667
+  },
+  {
+    "start": 1789055160.0,
+    "end": 1789055160.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 712.711111111111,
+    "rps_max": 712.711111111111,
+    "rps_median": 712.711111111111
+  },
+  {
+    "start": 1789055190.0,
+    "end": 1789055190.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 915.8222222222221,
+    "rps_max": 915.8222222222221,
+    "rps_median": 915.8222222222221
+  },
+  {
+    "start": 1789055220.0,
+    "end": 1789055280.0,
+    "duration_seconds": 60.0,
+    "kind": "transition",
+    "rps_min": 1155.7555555555555,
+    "rps_max": 1271.0444444444443,
+    "rps_median": 1263.5333333333333
+  },
+  {
+    "start": 1789055310.0,
+    "end": 1789055610.0,
+    "duration_seconds": 300.0,
+    "kind": "plateau",
+    "rps_min": 1256.0666666666666,
+    "rps_max": 1318.0666666666664,
+    "rps_median": 1275.2444444444443,
+    "measured_start": 1789055340.0,
+    "samples": 10,
+    "missing_metrics": [],
+    "violated_metrics": [],
+    "sla_status": "PASSED",
+    "metrics": {
+      "cpu_throttling": {
+        "count": 10,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "mad": 0.0,
+        "unit": "ratio"
+      },
+      "error_rate": {
+        "count": 10,
+        "median": 0.001796906083642789,
+        "p95": 0.0018329191847224478,
+        "p99": 0.0018385510007539122,
+        "min": 0.0017774370055414215,
+        "max": 0.0018399589547617784,
+        "mad": 1.7803206599249148e-05,
+        "unit": "ratio"
+      },
+      "http_4xx": {
+        "count": 10,
+        "median": 10.244444444444444,
+        "p95": 10.479999999999999,
+        "p99": 10.575999999999999,
+        "min": 10.066666666666666,
+        "max": 10.599999999999998,
+        "mad": 0.08888888888888857,
+        "unit": "requests/s"
+      },
+      "http_5xx": {
+        "count": 10,
+        "median": 2.311111111111111,
+        "p95": 2.3799999999999994,
+        "p99": 2.3959999999999995,
+        "min": 2.2666666666666666,
+        "max": 2.3999999999999995,
+        "mad": 0.04444444444444429,
+        "unit": "requests/s"
+      },
+      "memory": {
+        "count": 10,
+        "median": 0.44932447746396065,
+        "p95": 0.4557895179372281,
+        "p99": 0.45715080841444433,
+        "min": 0.43926157895475626,
+        "max": 0.4574911310337484,
+        "mad": 0.0034300878178328276,
+        "unit": "ratio"
+      },
+      "network": {
+        "count": 10,
+        "median": 3082344.0999999996,
+        "p95": 3148539.6655555554,
+        "p99": 3150979.737555555,
+        "min": 2983563.7111111106,
+        "max": 3151589.755555555,
+        "mad": 46659.02222222206,
+        "unit": "bytes/s"
+      },
+      "p95": {
+        "count": 10,
+        "median": 138.7507005961125,
+        "p95": 139.97481998430362,
+        "p99": 140.14330506808707,
+        "min": 138.23467834031206,
+        "max": 140.18542633903294,
+        "mad": 0.3606289995656624,
+        "unit": "ms"
+      },
+      "p99": {
+        "count": 10,
+        "median": 196.77561113698496,
+        "p95": 201.87319081707443,
+        "p99": 202.54691539113716,
+        "min": 194.60650887573868,
+        "max": 202.71534653465284,
+        "mad": 1.5889620372926032,
+        "unit": "ms"
+      },
+      "pod_restarts": {
+        "count": 10,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "mad": 0.0,
+        "unit": "count"
+      },
+      "replicas": {
+        "count": 10,
+        "median": 4.0,
+        "p95": 4.0,
+        "p99": 4.0,
+        "min": 4.0,
+        "max": 4.0,
+        "mad": 0.0,
+        "unit": "count"
+      },
+      "rps": {
+        "count": 10,
+        "median": 1278.411111111111,
+        "p95": 1305.9766666666665,
+        "p99": 1315.6486666666665,
+        "min": 1256.0666666666666,
+        "max": 1318.0666666666664,
+        "mad": 10.600000000000136,
+        "unit": "requests/s"
+      }
+    }
+  },
+  {
+    "start": 1789055640.0,
+    "end": 1789055640.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 1437.9999999999998,
+    "rps_max": 1437.9999999999998,
+    "rps_median": 1437.9999999999998
+  },
+  {
+    "start": 1789055670.0,
+    "end": 1789055700.0,
+    "duration_seconds": 30.0,
+    "kind": "transition",
+    "rps_min": 1587.9777777777776,
+    "rps_max": 1713.9111111111108,
+    "rps_median": 1650.9444444444443
+  },
+  {
+    "start": 1789055730.0,
+    "end": 1789055970.0,
+    "duration_seconds": 240.0,
+    "kind": "plateau",
+    "rps_min": 1764.8444444444442,
+    "rps_max": 1923.9999999999998,
+    "rps_median": 1788.7777777777776,
+    "measured_start": 1789055760.0,
+    "samples": 8,
+    "missing_metrics": [],
+    "violated_metrics": [],
+    "sla_status": "PASSED",
+    "metrics": {
+      "cpu_throttling": {
+        "count": 8,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "mad": 0.0,
+        "unit": "ratio"
+      },
+      "error_rate": {
+        "count": 8,
+        "median": 0.0018346521072415108,
+        "p95": 0.002992784545721001,
+        "p99": 0.003139559450146741,
+        "min": 0.0018005993603465208,
+        "max": 0.0031762531762531765,
+        "mad": 2.838436244252836e-05,
+        "unit": "ratio"
+      },
+      "http_4xx": {
+        "count": 8,
+        "median": 14.399999999999999,
+        "p95": 15.366666666666665,
+        "p99": 15.428888888888887,
+        "min": 14.088888888888887,
+        "max": 15.444444444444443,
+        "mad": 0.25555555555555554,
+        "unit": "requests/s"
+      },
+      "http_5xx": {
+        "count": 8,
+        "median": 3.3,
+        "p95": 5.745555555555555,
+        "p99": 6.037999999999999,
+        "min": 3.177777777777777,
+        "max": 6.111111111111111,
+        "mad": 0.11111111111111138,
+        "unit": "requests/s"
+      },
+      "memory": {
+        "count": 8,
+        "median": 0.4820147883147001,
+        "p95": 0.4950291297864169,
+        "p99": 0.49604863091371953,
+        "min": 0.47359542921185493,
+        "max": 0.4963035061955452,
+        "mad": 0.005709273740649223,
+        "unit": "ratio"
+      },
+      "network": {
+        "count": 8,
+        "median": 4348701.433333333,
+        "p95": 4577313.398888888,
+        "p99": 4577770.750888888,
+        "min": 4177773.177777777,
+        "max": 4577885.088888888,
+        "mad": 95426.2666666666,
+        "unit": "bytes/s"
+      },
+      "p95": {
+        "count": 8,
+        "median": 232.11138923999675,
+        "p95": 319.7507157911886,
+        "p99": 326.643928127238,
+        "min": 226.58721461187213,
+        "max": 328.3672312112503,
+        "mad": 5.4074411479085,
+        "unit": "ms"
+      },
+      "p99": {
+        "count": 8,
+        "median": 339.4828586843132,
+        "p95": 438.00461217818906,
+        "p99": 454.82568065614,
+        "min": 318.5800000000008,
+        "max": 459.03094777562774,
+        "mad": 20.4716397226876,
+        "unit": "ms"
+      },
+      "pod_restarts": {
+        "count": 8,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "mad": 0.0,
+        "unit": "count"
+      },
+      "replicas": {
+        "count": 8,
+        "median": 4.0,
+        "p95": 4.0,
+        "p99": 4.0,
+        "min": 4.0,
+        "max": 4.0,
+        "mad": 0.0,
+        "unit": "count"
+      },
+      "rps": {
+        "count": 8,
+        "median": 1799.1111111111109,
+        "p95": 1919.263333333333,
+        "p99": 1923.0526666666665,
+        "min": 1764.8444444444442,
+        "max": 1923.9999999999998,
+        "mad": 31.888888888888914,
+        "unit": "requests/s"
+      }
+    }
+  },
+  {
+    "start": 1789056000.0,
+    "end": 1789056120.0,
+    "duration_seconds": 120.0,
+    "kind": "transition",
+    "rps_min": 1941.4888888888886,
+    "rps_max": 2077.822222222222,
+    "rps_median": 1976.0888888888887
+  },
+  {
+    "start": 1789056150.0,
+    "end": 1789056150.0,
+    "duration_seconds": 0.0,
+    "kind": "transition",
+    "rps_min": 2144.8444444444444,
+    "rps_max": 2144.8444444444444,
+    "rps_median": 2144.8444444444444
+  },
+  {
+    "start": 1789056180.0,
+    "end": 1789056210.0,
+    "duration_seconds": 30.0,
+    "kind": "transition",
+    "rps_min": 1939.1111111111109,
+    "rps_max": 1956.7555555555552,
+    "rps_median": 1947.933333333333
+  },
+  {
+    "start": 1789056240.0,
+    "end": 1789056330.0,
+    "duration_seconds": 90.0,
+    "kind": "transition",
+    "rps_min": 2106.555555555555,
+    "rps_max": 2138.622222222222,
+    "rps_median": 2114.422222222222
+  }
+]
+```
 
 ## Main anomalies
 
 Сервисов с данными: 80.
 
-```json
-[
-  {
-    "service": "order-service",
-    "score": 0.999726,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "cpu_throttling",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "pod_restarts",
-      "rps"
-    ]
-  },
-  {
-    "service": "checkout-api",
-    "score": 0.99332,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "gateway",
-    "score": 0.99332,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "payment-service",
-    "score": 0.983693,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "inventory-service",
-    "score": 0.97452,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "legacy-sync-job",
-    "score": 0.899337,
-    "severity": "critical",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "pod_restarts",
-      "rps"
-    ]
-  },
-  {
-    "service": "image-resizer",
-    "score": 0.892626,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "cpu_throttling",
-      "error_rate",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "media-api",
-    "score": 0.874171,
-    "severity": "critical",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "catalog-api",
-    "score": 0.865782,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "clickstream-collector",
-    "score": 0.865782,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "review-service",
-    "score": 0.865782,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "subscription-service",
-    "score": 0.865782,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "user-profile",
-    "score": 0.865782,
-    "severity": "critical",
-    "metrics": [
-      "cpu",
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "audit-log",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "billing-adapter",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "cashback-service",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "config-service",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "device-registry",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "email-sender",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  },
-  {
-    "service": "etl-runner",
-    "score": 0.832228,
-    "severity": "warning",
-    "metrics": [
-      "error_rate",
-      "http_4xx",
-      "http_5xx",
-      "memory",
-      "network",
-      "p95",
-      "p99",
-      "rps"
-    ]
-  }
-]
-```
+| сервис | score | важность | метрики со срабатываниями |
+| --- | --- | --- | --- |
+| order-service | 0.989 | critical | cpu, error_rate, memory, p95, p99, pod_restarts |
+| image-resizer | 0.9056 | critical | cpu, cpu_throttling, error_rate, memory, p95, p99 |
+| export-service | 0.5904 | warning | error_rate, memory, p95, p99 |
+| feature-flags | 0.5904 | warning | error_rate, memory, p95, p99 |
+| session-cleaner | 0.5904 | warning | error_rate, memory, p95, p99 |
+| ab-test-service | 0.488 | warning | memory, p95, p99 |
+| address-service | 0.488 | warning | error_rate, p95, p99 |
+| billing-adapter | 0.488 | warning | error_rate, memory, p95 |
+| bot-service | 0.488 | warning | error_rate, p95, p99 |
+| checkout-api | 0.488 | warning | error_rate, p95, p99 |
+| clickstream-collector | 0.488 | warning | cpu, error_rate, p99 |
+| gateway | 0.488 | warning | error_rate, p95, p99 |
+| kyc-service | 0.488 | warning | error_rate, memory, p95 |
+| label-printer | 0.488 | warning | error_rate, memory, p99 |
+| map-tiles | 0.488 | warning | error_rate, memory, p95 |
+| media-api | 0.488 | warning | error_rate, p95, p99 |
+| metrics-forwarder | 0.488 | warning | error_rate, memory, p95 |
+| pricing-service | 0.488 | warning | error_rate, p95, p99 |
+| promo-service | 0.488 | warning | memory, p95, p99 |
+| recommendation-api | 0.488 | warning | error_rate, p95, p99 |
 
-Показаны 20 сервисов с наибольшим score из 80 со срабатываниями.
+Показаны 20 сервисов с наибольшим score из 68 со срабатываниями.
 
 ## Timeline
 
-```json
-[
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "checkout-api",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "gateway",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "inventory-service",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "order-service",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "payment-service",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "checkout-api",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "gateway",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "inventory-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "order-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "payment-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "checkout-api",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "gateway",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "inventory-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "order-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "payment-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "checkout-api",
-    "metric": "network"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "gateway",
-    "metric": "network"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "inventory-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "order-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "payment-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "checkout-api",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "gateway",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "inventory-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "order-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "baseline",
-    "service": "payment-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "test period started"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055100.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "payment-service",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "inventory-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "payment-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "network"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "network"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "inventory-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "payment-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "inventory-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055130.0,
-    "event": "trend",
-    "service": "payment-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055250.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055250.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055280.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055280.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055310.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055370.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055400.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "network"
-  },
-  {
-    "at": 1789055400.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055400.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055430.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055460.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055490.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055490.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "memory"
-  },
-  {
-    "at": 1789055490.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "network"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055520.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055550.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055550.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055580.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "memory"
-  },
-  {
-    "at": 1789055580.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055580.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055580.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "http_4xx"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "p95"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055610.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "rps"
-  },
-  {
-    "at": 1789055640.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055640.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "memory"
-  },
-  {
-    "at": 1789055640.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "network"
-  },
-  {
-    "at": 1789055670.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055700.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "cpu"
-  },
-  {
-    "at": 1789055730.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "http_5xx"
-  },
-  {
-    "at": 1789055790.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "memory"
-  },
-  {
-    "at": 1789055850.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055850.0,
-    "event": "trend",
-    "service": "order-service",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055850.0,
-    "event": "trend",
-    "service": "checkout-api",
-    "metric": "p99"
-  },
-  {
-    "at": 1789055880.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055880.0,
-    "event": "trend",
-    "service": "gateway",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055910.0,
-    "event": "spike",
-    "service": "checkout-api",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789055910.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "memory"
-  },
-  {
-    "at": 1789055940.0,
-    "event": "spike",
-    "service": "gateway",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789056030.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "cpu_throttling"
-  },
-  {
-    "at": 1789056120.0,
-    "event": "sla_violation",
-    "service": "order-service",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789056120.0,
-    "event": "sla_violation",
-    "service": "order-service",
-    "metric": "p95"
-  },
-  {
-    "at": 1789056150.0,
-    "event": "sla_violation",
-    "service": "order-service",
-    "metric": "p99"
-  },
-  {
-    "at": 1789056180.0,
-    "event": "spike",
-    "service": "order-service",
-    "metric": "pod_restarts"
-  },
-  {
-    "at": 1789056210.0,
-    "event": "spike",
-    "service": "payment-service",
-    "metric": "p95"
-  },
-  {
-    "at": 1789056270.0,
-    "event": "spike",
-    "service": "inventory-service",
-    "metric": "error_rate"
-  },
-  {
-    "at": 1789056360.0,
-    "event": "test period ended"
-  }
-]
-```
+| время | событие | сервис | метрика |
+| --- | --- | --- | --- |
+| 2026-09-10 15:45:00Z | test period started | — | — |
+| 2026-09-10 15:51:30Z | spike | export-service | error_rate |
+| 2026-09-10 15:51:30Z | spike | export-service | p99 |
+| 2026-09-10 15:52:00Z | spike | export-service | memory |
+| 2026-09-10 15:52:00Z | spike | session-cleaner | memory |
+| 2026-09-10 15:52:30Z | saturation | image-resizer | cpu |
+| 2026-09-10 15:52:30Z | spike | image-resizer | cpu |
+| 2026-09-10 15:52:30Z | spike | image-resizer | cpu_throttling |
+| 2026-09-10 15:52:30Z | spike | feature-flags | error_rate |
+| 2026-09-10 15:52:30Z | spike | image-resizer | error_rate |
+| 2026-09-10 15:52:30Z | spike | feature-flags | memory |
+| 2026-09-10 15:52:30Z | spike | image-resizer | p95 |
+| 2026-09-10 15:52:30Z | spike | image-resizer | p99 |
+| 2026-09-10 15:53:00Z | saturation | image-resizer | cpu_throttling |
+| 2026-09-10 15:53:00Z | spike | session-cleaner | error_rate |
+| 2026-09-10 15:53:00Z | spike | export-service | p95 |
+| 2026-09-10 15:53:00Z | spike | session-cleaner | p95 |
+| 2026-09-10 15:53:00Z | spike | session-cleaner | p99 |
+| 2026-09-10 15:53:30Z | spike | order-service | error_rate |
+| 2026-09-10 15:53:30Z | spike | order-service | p95 |
+| 2026-09-10 15:53:30Z | spike | feature-flags | p99 |
+| 2026-09-10 15:53:30Z | spike | order-service | p99 |
+| 2026-09-10 15:58:30Z | spike | order-service | error_rate |
+| 2026-09-10 15:58:30Z | spike | order-service | memory |
+| 2026-09-10 15:58:30Z | spike | feature-flags | p95 |
+| 2026-09-10 15:58:30Z | spike | feature-flags | p99 |
+| 2026-09-10 15:59:00Z | saturation | order-service | cpu |
+| 2026-09-10 15:59:00Z | spike | export-service | memory |
+| 2026-09-10 15:59:00Z | spike | order-service | p95 |
+| 2026-09-10 15:59:00Z | spike | order-service | p99 |
+| 2026-09-10 15:59:30Z | spike | image-resizer | memory |
+| 2026-09-10 16:02:00Z | sla_violation | order-service | error_rate |
+| 2026-09-10 16:02:00Z | sla_violation | order-service | p95 |
+| 2026-09-10 16:02:30Z | sla_violation | order-service | p99 |
+| 2026-09-10 16:03:00Z | counter_increase | order-service | pod_restarts |
+| 2026-09-10 16:06:00Z | test period ended | — | — |
 
-Показаны 102 из 639 событий: остальные относятся к сервисам вне фокуса анализа.
+Показаны 36 из 216 событий: остальные относятся к сервисам вне фокуса анализа.
 
 ## Root cause analysis
 
-- Гипотеза (likely), order-service: На верхних ступенях прогона order-service упёрся в лимит CPU (утилизация выходила на плато вплоть до 1.0 при базовой ~0.33), появился CFS-троттлинг, и уже после его начала синхронно поехали p95/p99 и выросла доля 5xx/error rate. Это согласуется с картиной «CPU-сатурация → троттлинг → рост времени ответа и ошибок», а не с первичным сбоем сети/памяти (память и сеть росли пропорционально нагрузке, рестартов контейнера не было).
-  Evidence: metric:order-service:cpu, finding:15, finding:16, metric:order-service:cpu_throttling, finding:28, metric:order-service:p95, finding:1, finding:439, metric:order-service:p99, finding:2
+- Гипотеза (possible), order-service: На целевом сервисе наблюдаются нарушения SLA по задержке и всплески p95/p99; деградация может быть следствием насыщения CPU или внутренних очередей.
+  Evidence: finding:1, finding:2, metric:order-service:p95, metric:order-service:p99, finding:8, metric:order-service:cpu, metric:order-service:cpu_throttling
 
-- Гипотеза (possible), order-service: Дополнительный вклад в дефицит мощности на пике: число реплик order-service в прогоне колебалось (минимум ниже медианы) и зафиксирован рестарт пода. Потеря/перезапуск пода в момент максимальной нагрузки снижает доступную ёмкость и могла усилить и троттлинг, и хвостовые задержки, но по имеющимся агрегатам нельзя отделить этот эффект от общего CPU-насыщения.
-  Evidence: metric:order-service:replicas, metric:order-service:pod_restarts, finding:15, finding:1, finding:2
+  Механизм: latency_regression. Причинная связь не установлена.
 
-- Гипотеза (possible), checkout-api: Деградация checkout-api (рост p95/p99, 5xx и error rate) развивается на том же интервале верхних ступеней, что и у order-service, и выглядит как распространение проблемы снизу вверх по checkout-цепочке: собственный CPU checkout-api не упирался в лимит, троттлинга и рестартов нет. Это скорее следствие, чем независимая причина.
-  Evidence: metric:checkout-api:cpu, metric:checkout-api:cpu_throttling, metric:checkout-api:p95, metric:checkout-api:p99, metric:checkout-api:http_5xx, finding:166, finding:485, metric:order-service:p99, finding:2
+  Проверенные наблюдения:
 
-- Гипотеза (possible), gateway: gateway показывает ту же форму кривой, что и checkout-api (рост p95/p99/5xx и error rate без троттлинга и рестартов при утилизации CPU существенно ниже лимита), то есть его задержки, вероятнее всего, отражают ожидание ответов нижележащих сервисов, а не собственную нехватку ресурсов.
-  Evidence: metric:gateway:cpu, metric:gateway:cpu_throttling, metric:gateway:p95, metric:gateway:p99, metric:gateway:http_5xx, finding:179, finding:500
+| evidence_id | метрика | максимум | пик | предел | первое | вид | % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| finding:1 | p95 | — | 2466 | 500 | 2026-09-10 16:02:00Z | — | — |
+| finding:2 | p99 | — | 4747 | 1200 | 2026-09-10 16:02:30Z | — | — |
 
-## Composed queries
+  Противоречащие данные: 
 
-Запросы составлены моделью и подтверждены оператором. Единицы не проверены, в вердикт по SLA эти ряды не входят.
+  Следующая проверка: Сравнить задержку на устойчивом плато с предыдущим прогоном и проверить корреляцию с CPU, throttling и очередями.
 
-- Проверить, совпадает ли во времени рост CFS-троттлинга CPU у order-service с началом деградации latency/5xx на верхних ступенях нагрузки (гипотеза о CPU-сатурации как первопричине).
-  `max by (service) (rate(container_cpu_cfs_throttled_periods_total{namespace="nt01", service="order-service"}[3m]) / clamp_min(rate(container_cpu_cfs_periods_total{namespace="nt01", service="order-service"}[3m]), 1))`
-  Evidence: tool:call_00_c3S3I48n0mAryzG5DMag2451
+- Гипотеза (possible), order-service: Есть нарушения SLA по error_rate и всплески ошибок; возможны ошибки обработки или downstream-зависимостей.
+  Evidence: finding:0, finding:50, finding:51, metric:order-service:error_rate, metric:order-service:http_5xx
 
-## Evidence
+  Механизм: error_increase. Причинная связь не установлена.
+
+  Проверенные наблюдения:
+
+| evidence_id | метрика | максимум | пик | предел | первое | вид | % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| finding:0 | error_rate | — | 0.03695 | 0.01 | 2026-09-10 16:02:00Z | — | — |
+| finding:50 | error_rate | — | — | — | 2026-09-10 15:53:30Z | spike | — |
+| finding:51 | error_rate | — | — | — | 2026-09-10 15:58:30Z | spike | — |
+
+  Противоречащие данные: 
+
+  Следующая проверка: Проверить коды ошибок, логи и downstream-вызовы на той же ступени нагрузки.
+
+- Гипотеза (possible), order-service: CPU упирается в диагностический порог; возможна нехватка CPU при целевой нагрузке.
+  Evidence: finding:8, metric:order-service:cpu, metric:order-service:cpu_throttling
+
+  Механизм: cpu_saturation. Причинная связь не установлена.
+
+  Проверенные наблюдения:
+
+| evidence_id | метрика | максимум | пик | предел | первое | вид | % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| finding:8 | cpu | — | 1 | 0.9 | 2026-09-10 15:59:00Z | saturation | — |
+
+  Противоречащие данные: 
+
+  Следующая проверка: Проверить CPU limits/requests, throttling и поведение на устойчивом плато; убедиться, что ряд не неполный.
+
+- Гипотеза (possible), order-service: Зафиксирован рост счётчика рестартов подов; возможен сбой или потеря готовности.
+  Evidence: finding:213, metric:order-service:pod_restarts
+
+  Механизм: restarts. Причинная связь не установлена.
+
+  Проверенные наблюдения:
+
+| evidence_id | метрика | максимум | пик | предел | первое | вид | % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| finding:213 | pod_restarts | — | — | — | 2026-09-10 16:03:00Z | counter_increase | — |
+
+  Противоречащие данные: 
+
+  Следующая проверка: Проверить события подов, readiness и причины рестартов.
 
 ```json
 {
-  "metric:checkout-api:cpu": {
-    "service": "checkout-api",
-    "metric": "cpu",
-    "count": 42,
-    "median": 0.6555555555555554,
-    "p95": 0.7999999999999999,
-    "p99": 0.7999999999999999,
-    "min": 0.16666666666666666,
-    "max": 0.7999999999999999,
-    "mad": 0.1333333333333333,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:cpu_throttling": {
-    "service": "checkout-api",
-    "metric": "cpu_throttling",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:error_rate": {
-    "service": "checkout-api",
-    "metric": "error_rate",
-    "count": 42,
-    "median": 0.002344537493477698,
-    "p95": 0.02173697532062821,
-    "p99": 0.02540292179595338,
-    "min": 0.0021287379624936645,
-    "max": 0.027805040564024528,
-    "mad": 6.322832567945739e-05,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:http_4xx": {
-    "service": "checkout-api",
-    "metric": "http_4xx",
-    "count": 42,
-    "median": 16.288888888888888,
-    "p95": 20.12555555555555,
-    "p99": 20.19088888888889,
-    "min": 3.333333333333333,
-    "max": 20.2,
-    "mad": 3.766666666666664,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:http_5xx": {
-    "service": "checkout-api",
-    "metric": "http_5xx",
-    "count": 42,
-    "median": 4.755555555555555,
-    "p95": 54.23111111111109,
-    "p99": 63.16466666666661,
-    "min": 0.875,
-    "max": 68.62222222222222,
-    "mad": 1.355555555555555,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:memory": {
-    "service": "checkout-api",
-    "metric": "memory",
-    "count": 42,
-    "median": 0.31637179323782527,
-    "p95": 0.33064609387268623,
-    "p99": 0.3317243020236492,
-    "min": 0.28981207062800723,
-    "max": 0.3319988089303176,
-    "mad": 0.00732036276410028,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:network": {
-    "service": "checkout-api",
-    "metric": "network",
-    "count": 42,
-    "median": 4879221.477777777,
-    "p95": 6061697.646666666,
-    "p99": 6075299.250888889,
-    "min": 988233.4375,
-    "max": 6078246.977777777,
-    "mad": 1130504.9777777777,
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:p95": {
-    "service": "checkout-api",
-    "metric": "p95",
-    "count": 42,
-    "median": 222.83354821839123,
-    "p95": 778.6731984337163,
-    "p99": 948.6432160478162,
-    "min": 142.02902963865202,
-    "max": 959.8604415123067,
-    "mad": 63.01089410557552,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:p99": {
-    "service": "checkout-api",
-    "metric": "p99",
-    "count": 42,
-    "median": 258.7089373326271,
-    "p95": 1129.8241537818546,
-    "p99": 1183.0476451549243,
-    "min": 209.6852367688024,
-    "max": 1185.303730017762,
-    "mad": 26.516062742673753,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:pod_restarts": {
-    "service": "checkout-api",
-    "metric": "pod_restarts",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:replicas": {
-    "service": "checkout-api",
-    "metric": "replicas",
-    "count": 42,
-    "median": 6.0,
-    "p95": 6.0,
-    "p99": 6.0,
-    "min": 6.0,
-    "max": 6.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:checkout-api:rps": {
-    "service": "checkout-api",
-    "metric": "rps",
-    "count": 42,
-    "median": 2034.8444444444442,
-    "p95": 2512.042222222222,
-    "p99": 2528.902222222222,
-    "min": 411.04166666666663,
-    "max": 2534.733333333333,
-    "mad": 467.12222222222215,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:cpu": {
-    "service": "gateway",
-    "metric": "cpu",
-    "count": 42,
-    "median": 0.5444444444444443,
-    "p95": 0.6444444444444444,
-    "p99": 0.6666666666666666,
-    "min": 0.14583333333333331,
-    "max": 0.6666666666666666,
-    "mad": 0.10000000000000009,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:cpu_throttling": {
-    "service": "gateway",
-    "metric": "cpu_throttling",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:error_rate": {
-    "service": "gateway",
-    "metric": "error_rate",
-    "count": 42,
-    "median": 0.0022056379828997294,
-    "p95": 0.018737604183240428,
-    "p99": 0.021862046034401478,
-    "min": 0.002044720005276697,
-    "max": 0.023866938725035553,
-    "mad": 5.2173366882686534e-05,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:http_4xx": {
-    "service": "gateway",
-    "metric": "http_4xx",
-    "count": 42,
-    "median": 16.42222222222222,
-    "p95": 19.97444444444444,
-    "p99": 20.133333333333333,
-    "min": 3.375,
-    "max": 20.133333333333333,
-    "mad": 3.5222222222222204,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:http_5xx": {
-    "service": "gateway",
-    "metric": "http_5xx",
-    "count": 42,
-    "median": 4.422222222222222,
-    "p95": 47.07555555555553,
-    "p99": 54.86022222222217,
-    "min": 0.9375,
-    "max": 60.04444444444444,
-    "mad": 1.1888888888888887,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:memory": {
-    "service": "gateway",
-    "metric": "memory",
-    "count": 42,
-    "median": 0.3588256947696209,
-    "p95": 0.3755408922675997,
-    "p99": 0.3767478817421943,
-    "min": 0.32330726366490126,
-    "max": 0.37719045486301184,
-    "mad": 0.01005588797852397,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:network": {
-    "service": "gateway",
-    "metric": "network",
-    "count": 42,
-    "median": 4917891.444444444,
-    "p95": 6011706.279999999,
-    "p99": 6028220.124222221,
-    "min": 1041562.8541666666,
-    "max": 6035795.11111111,
-    "mad": 1084064.9555555554,
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:p95": {
-    "service": "gateway",
-    "metric": "p95",
-    "count": 42,
-    "median": 231.25188884960906,
-    "p95": 788.1919486649069,
-    "p99": 971.1834664987531,
-    "min": 147.38500315059858,
-    "max": 980.2045322486925,
-    "mad": 42.16751952852211,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:p99": {
-    "service": "gateway",
-    "metric": "p99",
-    "count": 42,
-    "median": 296.05907568744476,
-    "p95": 1140.843992673149,
-    "p99": 1188.916584843561,
-    "min": 226.3258232235701,
-    "max": 1190.6998256827426,
-    "mad": 55.428172319534866,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:pod_restarts": {
-    "service": "gateway",
-    "metric": "pod_restarts",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:replicas": {
-    "service": "gateway",
-    "metric": "replicas",
-    "count": 42,
-    "median": 6.0,
-    "p95": 6.0,
-    "p99": 6.0,
-    "min": 6.0,
-    "max": 6.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:gateway:rps": {
-    "service": "gateway",
-    "metric": "rps",
-    "count": 42,
-    "median": 2050.7999999999997,
-    "p95": 2497.9488888888886,
-    "p99": 2518.1862222222217,
-    "min": 429.0,
-    "max": 2519.844444444444,
-    "mad": 444.288888888889,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:cpu": {
-    "service": "inventory-service",
-    "metric": "cpu",
-    "count": 42,
-    "median": 0.5222222222222221,
-    "p95": 0.6,
-    "p99": 0.6131111111111109,
-    "min": 0.16666666666666666,
-    "max": 0.6222222222222221,
-    "mad": 0.07777777777777783,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:cpu_throttling": {
-    "service": "inventory-service",
-    "metric": "cpu_throttling",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:error_rate": {
-    "service": "inventory-service",
-    "metric": "error_rate",
-    "count": 42,
-    "median": 0.0003916949718057647,
-    "p95": 0.00044187112624045265,
-    "p99": 0.00044510695426908835,
-    "min": 0.00017286084701815038,
-    "max": 0.0004469641722929262,
-    "mad": 3.0110584186092182e-05,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:http_4xx": {
-    "service": "inventory-service",
-    "metric": "http_4xx",
-    "count": 42,
-    "median": 9.73333333333333,
-    "p95": 11.997777777777776,
-    "p99": 12.12311111111111,
-    "min": 1.9583333333333333,
-    "max": 12.177777777777777,
-    "mad": 2.211111111111112,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:http_5xx": {
-    "service": "inventory-service",
-    "metric": "http_5xx",
-    "count": 42,
-    "median": 0.4111111111111111,
-    "p95": 0.6,
-    "p99": 0.6444444444444444,
-    "min": 0.041666666666666664,
-    "max": 0.6444444444444444,
-    "mad": 0.09999999999999998,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:memory": {
-    "service": "inventory-service",
-    "metric": "memory",
-    "count": 42,
-    "median": 0.32459288090467453,
-    "p95": 0.3335797680076212,
-    "p99": 0.33440371012315157,
-    "min": 0.3101634867489338,
-    "max": 0.3345224913209677,
-    "mad": 0.005140502471476793,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:network": {
-    "service": "inventory-service",
-    "metric": "network",
-    "count": 42,
-    "median": 2947591.188888889,
-    "p95": 3610011.556666666,
-    "p99": 3622129.954666666,
-    "min": 586321.2291666666,
-    "max": 3628747.755555555,
-    "mad": 657342.5777777773,
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:p95": {
-    "service": "inventory-service",
-    "metric": "p95",
-    "count": 42,
-    "median": 24.5204979677152,
-    "p95": 24.728404540923666,
-    "p99": 24.767584686953406,
-    "min": 24.225514475061043,
-    "max": 24.77406072815635,
-    "mad": 0.1301494476907834,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:p99": {
-    "service": "inventory-service",
-    "metric": "p99",
-    "count": 42,
-    "median": 41.23374113201727,
-    "p95": 43.342772693481,
-    "p99": 43.650227247790454,
-    "min": 36.15760869565226,
-    "max": 43.698727687048965,
-    "mad": 1.7505555220070015,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:pod_restarts": {
-    "service": "inventory-service",
-    "metric": "pod_restarts",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:replicas": {
-    "service": "inventory-service",
-    "metric": "replicas",
-    "count": 42,
-    "median": 3.0,
-    "p95": 3.0,
-    "p99": 3.0,
-    "min": 3.0,
-    "max": 3.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:inventory-service:rps": {
-    "service": "inventory-service",
-    "metric": "rps",
-    "count": 42,
-    "median": 1220.2888888888888,
-    "p95": 1499.51,
-    "p99": 1519.6257777777776,
-    "min": 241.04166666666666,
-    "max": 1523.4888888888886,
-    "mad": 276.15555555555545,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:cpu": {
-    "service": "order-service",
-    "metric": "cpu",
-    "count": 41,
-    "median": 0.8222222222222221,
-    "p95": 0.9999999999999999,
-    "p99": 0.9999999999999999,
-    "min": 0.22916666666666666,
-    "max": 0.9999999999999999,
-    "mad": 0.15555555555555545,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 1,
-    "partial": false,
-    "max_gap": 60.0
-  },
-  "metric:order-service:cpu_throttling": {
-    "service": "order-service",
-    "metric": "cpu_throttling",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.04963888888888886,
-    "p99": 0.18007222222222222,
-    "min": 0.0,
-    "max": 0.18166666666666667,
-    "mad": 0.0,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:error_rate": {
-    "service": "order-service",
-    "metric": "error_rate",
-    "count": 42,
-    "median": 0.0018144205125141268,
-    "p95": 0.029035433231190108,
-    "p99": 0.03467502228153899,
-    "min": 0.0017564870259481038,
-    "max": 0.03695006130634469,
-    "mad": 3.860805818164893e-05,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:http_4xx": {
-    "service": "order-service",
-    "metric": "http_4xx",
-    "count": 42,
-    "median": 13.866666666666664,
-    "p95": 16.93333333333333,
-    "p99": 17.150444444444442,
-    "min": 2.875,
-    "max": 17.177777777777777,
-    "mad": 3.0666666666666664,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:http_5xx": {
-    "service": "order-service",
-    "metric": "http_5xx",
-    "count": 42,
-    "median": 3.133333333333333,
-    "p95": 61.199999999999974,
-    "p99": 72.26177777777771,
-    "min": 0.625,
-    "max": 79.02222222222221,
-    "mad": 0.8666666666666663,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:memory": {
-    "service": "order-service",
-    "metric": "memory",
-    "count": 42,
-    "median": 0.47421257570385933,
-    "p95": 0.5133462545927614,
-    "p99": 0.5152831699186936,
-    "min": 0.3997862827964127,
-    "max": 0.5155331832356751,
-    "mad": 0.02488809823989868,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:network": {
-    "service": "order-service",
-    "metric": "network",
-    "count": 42,
-    "median": 4151243.388888888,
-    "p95": 5078065.35,
-    "p99": 5174390.266222222,
-    "min": 858813.6666666666,
-    "max": 5181127.222222222,
-    "mad": 917441.7111111116,
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:p95": {
-    "service": "order-service",
-    "metric": "p95",
-    "count": 42,
-    "median": 219.03530403438486,
-    "p95": 1177.797499555815,
-    "p99": 2308.8088516593184,
-    "min": 115.1022304832714,
-    "max": 2466.350097129284,
-    "mad": 80.74258887646441,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:p99": {
-    "service": "order-service",
-    "metric": "p99",
-    "count": 42,
-    "median": 284.21990421694284,
-    "p95": 1940.4197676577307,
-    "p99": 4707.122006893339,
-    "min": 146.14312267657994,
-    "max": 4747.1012303043335,
-    "mad": 89.38700551029899,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:pod_restarts": {
-    "service": "order-service",
-    "metric": "pod_restarts",
-    "count": 42,
-    "median": 0.0,
-    "p95": 1.0,
-    "p99": 1.0,
-    "min": 0.0,
-    "max": 1.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:replicas": {
-    "service": "order-service",
-    "metric": "replicas",
-    "count": 42,
-    "median": 4.0,
-    "p95": 4.0,
-    "p99": 4.0,
-    "min": 3.0,
-    "max": 4.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:order-service:rps": {
-    "service": "order-service",
-    "metric": "rps",
-    "count": 42,
-    "median": 1739.3777777777775,
-    "p95": 2115.322222222222,
-    "p99": 2142.293333333333,
-    "min": 354.2291666666667,
-    "max": 2144.8444444444444,
-    "mad": 375.0444444444445,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:cpu": {
-    "service": "payment-service",
-    "metric": "cpu",
-    "count": 42,
-    "median": 0.47777777777777775,
-    "p95": 0.5777777777777777,
-    "p99": 0.5777777777777777,
-    "min": 0.14583333333333331,
-    "max": 0.5777777777777777,
-    "mad": 0.08888888888888888,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:cpu_throttling": {
-    "service": "payment-service",
-    "metric": "cpu_throttling",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:error_rate": {
-    "service": "payment-service",
-    "metric": "error_rate",
-    "count": 42,
-    "median": 0.0005885227616640229,
-    "p95": 0.0006903110419328295,
-    "p99": 0.0009913546921415275,
-    "min": 0.0,
-    "max": 0.0010832559579077683,
-    "mad": 3.6422576148335676e-05,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:http_4xx": {
-    "service": "payment-service",
-    "metric": "http_4xx",
-    "count": 42,
-    "median": 5.488888888888889,
-    "p95": 6.905555555555554,
-    "p99": 6.924222222222221,
-    "min": 1.0833333333333333,
-    "max": 6.933333333333333,
-    "mad": 1.2777777777777768,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:http_5xx": {
-    "service": "payment-service",
-    "metric": "http_5xx",
-    "count": 42,
-    "median": 0.38888888888888884,
-    "p95": 0.5111111111111111,
-    "p99": 0.5464444444444443,
-    "min": 0.0,
-    "max": 0.5555555555555555,
-    "mad": 0.08888888888888888,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:memory": {
-    "service": "payment-service",
-    "metric": "memory",
-    "count": 42,
-    "median": 0.3976594372652471,
-    "p95": 0.4052828389685601,
-    "p99": 0.40781445120461285,
-    "min": 0.38292375952005386,
-    "max": 0.40833684615790844,
-    "mad": 0.0038863210938870907,
-    "unit": "ratio",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:network": {
-    "service": "payment-service",
-    "metric": "network",
-    "count": 42,
-    "median": 1663219.7333333332,
-    "p95": 2047153.112222222,
-    "p99": 2053245.3377777776,
-    "min": 323022.8333333333,
-    "max": 2053566.7777777775,
-    "mad": 376656.1888888888,
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:p95": {
-    "service": "payment-service",
-    "metric": "p95",
-    "count": 42,
-    "median": 57.04262866611933,
-    "p95": 61.479178767781725,
-    "p99": 61.69433925439159,
-    "min": 49.62891379976808,
-    "max": 61.73415777562236,
-    "mad": 2.971951854596753,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:p99": {
-    "service": "payment-service",
-    "metric": "p99",
-    "count": 42,
-    "median": 73.00491899122136,
-    "p95": 74.12539775139834,
-    "p99": 74.18795999986206,
-    "min": 70.43781094527363,
-    "max": 74.19616876818621,
-    "mad": 0.7192590705209483,
-    "unit": "ms",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:pod_restarts": {
-    "service": "payment-service",
-    "metric": "pod_restarts",
-    "count": 42,
-    "median": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "min": 0.0,
-    "max": 0.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:replicas": {
-    "service": "payment-service",
-    "metric": "replicas",
-    "count": 42,
-    "median": 4.0,
-    "p95": 4.0,
-    "p99": 4.0,
-    "min": 4.0,
-    "max": 4.0,
-    "mad": 0.0,
-    "unit": "count",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "metric:payment-service:rps": {
-    "service": "payment-service",
-    "metric": "rps",
-    "count": 42,
-    "median": 692.2222222222222,
-    "p95": 853.441111111111,
-    "p99": 859.9313333333332,
-    "min": 134.625,
-    "max": 862.1999999999999,
-    "mad": 158.38888888888886,
-    "unit": "requests/s",
-    "source": "prometheus",
-    "start": 1789055100.0,
-    "end": 1789056330.0,
-    "invalid_points": 0,
-    "partial": false,
-    "max_gap": 30.0
-  },
-  "finding:0": {
-    "service": "order-service",
-    "metric": "error_rate",
-    "limit": 0.01,
-    "peak": 0.03695006130634469,
-    "first_at": 1789056120.0,
-    "last_at": 1789056330.0,
-    "count": 8,
-    "unit": "ratio",
-    "source": "prometheus"
-  },
-  "finding:1": {
-    "service": "order-service",
-    "metric": "p95",
-    "limit": 500.0,
-    "peak": 2466.350097129284,
-    "first_at": 1789056120.0,
-    "last_at": 1789056330.0,
-    "count": 8,
-    "unit": "ms",
-    "source": "prometheus"
-  },
-  "finding:2": {
-    "service": "order-service",
-    "metric": "p99",
-    "limit": 1200.0,
-    "peak": 4747.1012303043335,
-    "first_at": 1789056150.0,
-    "last_at": 1789056330.0,
-    "count": 7,
-    "unit": "ms",
-    "source": "prometheus"
-  },
-  "finding:6": {
-    "service": "checkout-api",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.23333333333333334,
-    "current": 0.6555555555555554,
-    "absolute": 0.4222222222222221,
-    "percent": 180.9523809523809
-  },
-  "finding:7": {
-    "service": "checkout-api",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 1
-  },
-  "finding:9": {
-    "service": "gateway",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.2,
-    "current": 0.5444444444444443,
-    "absolute": 0.3444444444444443,
-    "percent": 172.22222222222211
-  },
-  "finding:10": {
-    "service": "gateway",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055580.0,
-    "count": 1
-  },
-  "finding:12": {
-    "service": "inventory-service",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.23333333333333334,
-    "current": 0.5222222222222221,
-    "absolute": 0.2888888888888888,
-    "percent": 123.80952380952377
-  },
-  "finding:15": {
-    "service": "order-service",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.3333333333333333,
-    "current": 0.8222222222222221,
-    "absolute": 0.48888888888888876,
-    "percent": 146.66666666666663
-  },
-  "finding:16": {
-    "service": "order-service",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055700.0,
-    "count": 1,
-    "examples": [
-      {
-        "at": 1789055700.0,
-        "value": 0.8222222222222221,
-        "robust_z": 4.72142824999999
-      }
-    ]
-  },
-  "finding:17": {
-    "service": "payment-service",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.2,
-    "current": 0.47777777777777775,
-    "absolute": 0.27777777777777773,
-    "percent": 138.88888888888886
-  },
-  "finding:18": {
-    "service": "payment-service",
-    "metric": "cpu",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 2
-  },
-  "finding:28": {
-    "service": "order-service",
-    "metric": "cpu_throttling",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789056030.0,
-    "count": 8,
-    "examples": [
-      {
-        "at": 1789056030.0,
-        "value": 0.003333333333333334,
-        "robust_z": null
-      },
-      {
-        "at": 1789056060.0,
-        "value": 0.003333333333333333,
-        "robust_z": null
-      },
-      {
-        "at": 1789056090.0,
-        "value": 0.003333333333333333,
-        "robust_z": null
-      }
-    ]
-  },
-  "finding:44": {
-    "service": "checkout-api",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055910.0,
-    "count": 8,
-    "examples": [
-      {
-        "at": 1789055910.0,
-        "value": 0.0024688271508484638,
-        "robust_z": 12.372631443833873
-      },
-      {
-        "at": 1789055940.0,
-        "value": 0.0029602312369181698,
-        "robust_z": 8.443969570934458
-      },
-      {
-        "at": 1789055970.0,
-        "value": 0.0032962069595133528,
-        "robust_z": 11.705575263528791
-      }
-    ]
-  },
-  "finding:45": {
-    "service": "checkout-api",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055850.0,
-    "count": 2
-  },
-  "finding:59": {
-    "service": "gateway",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055940.0,
-    "count": 6,
-    "examples": [
-      {
-        "at": 1789055940.0,
-        "value": 0.0027172570525171684,
-        "robust_z": 7.617559325749332
-      },
-      {
-        "at": 1789055970.0,
-        "value": 0.002997707635337683,
-        "robust_z": 10.329570902648763
-      },
-      {
-        "at": 1789056000.0,
-        "value": 0.003271662808272906,
-        "robust_z": 4.496403424885946
-      }
-    ]
-  },
-  "finding:60": {
-    "service": "gateway",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055880.0,
-    "count": 1
-  },
-  "finding:64": {
-    "service": "inventory-service",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789056270.0,
-    "count": 1,
-    "examples": [
-      {
-        "at": 1789056270.0,
-        "value": 0.00043487388657289383,
-        "robust_z": 4.5821094227151535
-      }
-    ]
-  },
-  "finding:75": {
-    "service": "order-service",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055280.0,
-    "count": 12,
-    "examples": [
-      {
-        "at": 1789055280.0,
-        "value": 0.0018114986193918288,
-        "robust_z": 4.574828395298284
-      },
-      {
-        "at": 1789055610.0,
-        "value": 0.0018208487178190279,
-        "robust_z": 6.982695921959253
-      },
-      {
-        "at": 1789055670.0,
-        "value": 0.0017632488559873492,
-        "robust_z": 8.607832541310772
-      }
-    ]
-  },
-  "finding:76": {
-    "service": "order-service",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055850.0,
-    "count": 2
-  },
-  "finding:78": {
-    "service": "payment-service",
-    "metric": "error_rate",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055880.0,
-    "count": 3,
-    "examples": [
-      {
-        "at": 1789055880.0,
-        "value": 0.0006546950991395435,
-        "robust_z": 5.938578419093879
-      },
-      {
-        "at": 1789055910.0,
-        "value": 0.0006187161639597834,
-        "robust_z": 3.586446291231913
-      },
-      {
-        "at": 1789056030.0,
-        "value": 0.0005466052934407365,
-        "robust_z": 12.30273697529639
-      }
-    ]
-  },
-  "finding:113": {
-    "service": "checkout-api",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 4.0,
-    "current": 16.288888888888888,
-    "absolute": 12.288888888888888,
-    "percent": 307.2222222222222
-  },
-  "finding:114": {
-    "service": "checkout-api",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 6,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 12.444444444444443,
-        "robust_z": 4.946258166666684
-      },
-      {
-        "at": 1789055640.0,
-        "value": 13.91111111111111,
-        "robust_z": 14.164284750000055
-      },
-      {
-        "at": 1789055670.0,
-        "value": 14.888888888888888,
-        "robust_z": 12.333526857142903
-      }
-    ]
-  },
-  "finding:115": {
-    "service": "checkout-api",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 4
-  },
-  "finding:123": {
-    "service": "gateway",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 4.0,
-    "current": 16.42222222222222,
-    "absolute": 12.42222222222222,
-    "percent": 310.55555555555554
-  },
-  "finding:124": {
-    "service": "gateway",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 8,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 12.577777777777776,
-        "robust_z": 4.215560937500014
-      },
-      {
-        "at": 1789055640.0,
-        "value": 13.688888888888888,
-        "robust_z": 10.117346250000043
-      },
-      {
-        "at": 1789055670.0,
-        "value": 15.244444444444444,
-        "robust_z": 11.803570625000047
-      }
-    ]
-  },
-  "finding:125": {
-    "service": "gateway",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055520.0,
-    "count": 3
-  },
-  "finding:126": {
-    "service": "inventory-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 2.4,
-    "current": 9.73333333333333,
-    "absolute": 7.33333333333333,
-    "percent": 305.55555555555543
-  },
-  "finding:127": {
-    "service": "inventory-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 7,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 7.577777777777777,
-        "robust_z": 5.733162875000013
-      },
-      {
-        "at": 1789055640.0,
-        "value": 8.2,
-        "robust_z": 9.667686416666703
-      },
-      {
-        "at": 1789055670.0,
-        "value": 8.799999999999999,
-        "robust_z": 4.519081325000016
-      }
-    ]
-  },
-  "finding:128": {
-    "service": "inventory-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 4
-  },
-  "finding:134": {
-    "service": "order-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 3.4,
-    "current": 13.866666666666664,
-    "absolute": 10.466666666666663,
-    "percent": 307.8431372549019
-  },
-  "finding:135": {
-    "service": "order-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055490.0,
-    "count": 10,
-    "examples": [
-      {
-        "at": 1789055490.0,
-        "value": 10.133333333333333,
-        "robust_z": 5.395918
-      },
-      {
-        "at": 1789055580.0,
-        "value": 10.288888888888888,
-        "robust_z": 4.0469385
-      },
-      {
-        "at": 1789055610.0,
-        "value": 10.599999999999998,
-        "robust_z": 4.0469384999999996
-      }
-    ]
-  },
-  "finding:136": {
-    "service": "order-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055520.0,
-    "count": 3
-  },
-  "finding:137": {
-    "service": "payment-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1.3666666666666667,
-    "current": 5.488888888888889,
-    "absolute": 4.122222222222222,
-    "percent": 301.62601626016254
-  },
-  "finding:138": {
-    "service": "payment-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 9,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 4.422222222222222,
-        "robust_z": 4.721428250000013
-      },
-      {
-        "at": 1789055640.0,
-        "value": 4.5777777777777775,
-        "robust_z": 13.489795000000054
-      },
-      {
-        "at": 1789055670.0,
-        "value": 4.977777777777777,
-        "robust_z": 4.991224150000016
-      }
-    ]
-  },
-  "finding:139": {
-    "service": "payment-service",
-    "metric": "http_4xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:166": {
-    "service": "checkout-api",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1.1333333333333333,
-    "current": 4.755555555555555,
-    "absolute": 3.6222222222222213,
-    "percent": 319.6078431372548
-  },
-  "finding:167": {
-    "service": "checkout-api",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055460.0,
-    "count": 10,
-    "examples": [
-      {
-        "at": 1789055460.0,
-        "value": 3.311111111111111,
-        "robust_z": 4.046938500000013
-      },
-      {
-        "at": 1789055640.0,
-        "value": 3.9999999999999996,
-        "robust_z": 8.093877000000026
-      },
-      {
-        "at": 1789055670.0,
-        "value": 4.355555555555555,
-        "robust_z": 8.318706916666699
-      }
-    ]
-  },
-  "finding:168": {
-    "service": "checkout-api",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 6
-  },
-  "finding:179": {
-    "service": "gateway",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1.0666666666666667,
-    "current": 4.422222222222222,
-    "absolute": 3.355555555555555,
-    "percent": 314.5833333333333
-  },
-  "finding:180": {
-    "service": "gateway",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055640.0,
-    "count": 10,
-    "examples": [
-      {
-        "at": 1789055640.0,
-        "value": 3.644444444444444,
-        "robust_z": 10.791836000000027
-      },
-      {
-        "at": 1789055670.0,
-        "value": 4.088888888888889,
-        "robust_z": 23.60714124999961
-      },
-      {
-        "at": 1789055700.0,
-        "value": 4.3999999999999995,
-        "robust_z": 10.56700608333337
-      }
-    ]
-  },
-  "finding:181": {
-    "service": "gateway",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:183": {
-    "service": "inventory-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.1,
-    "current": 0.4111111111111111,
-    "absolute": 0.3111111111111111,
-    "percent": 311.11111111111114
-  },
-  "finding:192": {
-    "service": "order-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.7333333333333334,
-    "current": 3.133333333333333,
-    "absolute": 2.3999999999999995,
-    "percent": 327.27272727272714
-  },
-  "finding:193": {
-    "service": "order-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055670.0,
-    "count": 9,
-    "examples": [
-      {
-        "at": 1789055670.0,
-        "value": 2.7999999999999994,
-        "robust_z": 7.41938725000002
-      },
-      {
-        "at": 1789055910.0,
-        "value": 3.5999999999999996,
-        "robust_z": 5.39591800000002
-      },
-      {
-        "at": 1789055940.0,
-        "value": 5.066666666666666,
-        "robust_z": 18.43605316666661
-      }
-    ]
-  },
-  "finding:194": {
-    "service": "order-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 7
-  },
-  "finding:196": {
-    "service": "payment-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 0.1,
-    "current": 0.38888888888888884,
-    "absolute": 0.28888888888888886,
-    "percent": 288.88888888888886
-  },
-  "finding:197": {
-    "service": "payment-service",
-    "metric": "http_5xx",
-    "unit": "requests/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055730.0,
-    "count": 4,
-    "examples": [
-      {
-        "at": 1789055730.0,
-        "value": 0.46666666666666656,
-        "robust_z": 4.046938499999992
-      },
-      {
-        "at": 1789055880.0,
-        "value": 0.46666666666666656,
-        "robust_z": 810035143137390.9
-      },
-      {
-        "at": 1789055910.0,
-        "value": 0.44444444444444436,
-        "robust_z": 540023428758260.56
-      }
-    ]
-  },
-  "finding:235": {
-    "service": "checkout-api",
-    "metric": "memory",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055580.0,
-    "count": 2,
-    "examples": [
-      {
-        "at": 1789055580.0,
-        "value": 0.30309063879152137,
-        "robust_z": 6.683154646529839
-      },
-      {
-        "at": 1789055910.0,
-        "value": 0.316313390309612,
-        "robust_z": 8.693145178923073
-      }
-    ]
-  },
-  "finding:249": {
-    "service": "gateway",
-    "metric": "memory",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055790.0,
-    "count": 3,
-    "examples": [
-      {
-        "at": 1789055790.0,
-        "value": 0.36880542431026697,
-        "robust_z": 5.562685966010064
-      },
-      {
-        "at": 1789055850.0,
-        "value": 0.3568702060729265,
-        "robust_z": 20.844401435311443
-      },
-      {
-        "at": 1789056030.0,
-        "value": 0.3711680183187127,
-        "robust_z": 3.676520101984371
-      }
-    ]
-  },
-  "finding:253": {
-    "service": "inventory-service",
-    "metric": "memory",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055490.0,
-    "count": 3,
-    "examples": [
-      {
-        "at": 1789055490.0,
-        "value": 0.31545870192348957,
-        "robust_z": 5.670521057166219
-      },
-      {
-        "at": 1789055580.0,
-        "value": 0.3194095343351364,
-        "robust_z": 4.924043900339486
-      },
-      {
-        "at": 1789055670.0,
-        "value": 0.3258021818473935,
-        "robust_z": 4.537106040415729
-      }
-    ]
-  },
-  "finding:266": {
-    "service": "order-service",
-    "metric": "memory",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055640.0,
-    "count": 4,
-    "examples": [
-      {
-        "at": 1789055640.0,
-        "value": 0.4632121045142412,
-        "robust_z": 4.02939235289771
-      },
-      {
-        "at": 1789055910.0,
-        "value": 0.4963035061955452,
-        "robust_z": 3.873238521611872
-      },
-      {
-        "at": 1789056150.0,
-        "value": 0.5136755686253309,
-        "robust_z": 6.298111912510952
-      }
-    ]
-  },
-  "finding:268": {
-    "service": "payment-service",
-    "metric": "memory",
-    "unit": "ratio",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055910.0,
-    "count": 2,
-    "examples": [
-      {
-        "at": 1789055910.0,
-        "value": 0.39557746425271034,
-        "robust_z": 5.09297883085586
-      },
-      {
-        "at": 1789056330.0,
-        "value": 0.4013987248763442,
-        "robust_z": 4.573546533506674
-      }
-    ]
-  },
-  "finding:312": {
-    "service": "checkout-api",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1197439.4666666668,
-    "current": 4879221.477777777,
-    "absolute": 3681782.0111111104,
-    "percent": 307.47124289799393
-  },
-  "finding:313": {
-    "service": "checkout-api",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055640.0,
-    "count": 4,
-    "examples": [
-      {
-        "at": 1789055640.0,
-        "value": 4182601.0888888882,
-        "robust_z": 7.269027369671326
-      },
-      {
-        "at": 1789055670.0,
-        "value": 4410410.577777777,
-        "robust_z": 5.637344807555032
-      },
-      {
-        "at": 1789055940.0,
-        "value": 5372314.088888888,
-        "robust_z": 4.1041960237546125
-      }
-    ]
-  },
-  "finding:314": {
-    "service": "checkout-api",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:328": {
-    "service": "gateway",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1196455.3666666667,
-    "current": 4917891.444444444,
-    "absolute": 3721436.0777777773,
-    "percent": 311.0384374927186
-  },
-  "finding:329": {
-    "service": "gateway",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055400.0,
-    "count": 12,
-    "examples": [
-      {
-        "at": 1789055400.0,
-        "value": 3571364.9333333327,
-        "robust_z": 9.503661612141407
-      },
-      {
-        "at": 1789055430.0,
-        "value": 3643172.3777777776,
-        "robust_z": 9.109609232790127
-      },
-      {
-        "at": 1789055610.0,
-        "value": 3756283.3999999994,
-        "robust_z": 10.541744357392226
-      }
-    ]
-  },
-  "finding:330": {
-    "service": "gateway",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:334": {
-    "service": "inventory-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 720692.2,
-    "current": 2947591.188888889,
-    "absolute": 2226898.9888888886,
-    "percent": 308.9944623916963
-  },
-  "finding:335": {
-    "service": "inventory-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055490.0,
-    "count": 10,
-    "examples": [
-      {
-        "at": 1789055490.0,
-        "value": 2182215.3777777776,
-        "robust_z": 6.034555276935706
-      },
-      {
-        "at": 1789055550.0,
-        "value": 2135793.0888888887,
-        "robust_z": 4.048885253383999
-      },
-      {
-        "at": 1789055640.0,
-        "value": 2442164.2666666666,
-        "robust_z": 7.487430076816362
-      }
-    ]
-  },
-  "finding:336": {
-    "service": "inventory-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:353": {
-    "service": "order-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 1020767.6666666667,
-    "current": 4151243.388888888,
-    "absolute": 3130475.722222221,
-    "percent": 306.6785738271707
-  },
-  "finding:354": {
-    "service": "order-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055400.0,
-    "count": 6,
-    "examples": [
-      {
-        "at": 1789055400.0,
-        "value": 2983563.7111111106,
-        "robust_z": 3.571564011883781
-      },
-      {
-        "at": 1789055640.0,
-        "value": 3415955.866666666,
-        "robust_z": 4.499041008628979
-      },
-      {
-        "at": 1789055670.0,
-        "value": 3861631.844444444,
-        "robust_z": 11.861608992077894
-      }
-    ]
-  },
-  "finding:355": {
-    "service": "order-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055520.0,
-    "count": 5
-  },
-  "finding:357": {
-    "service": "payment-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "baseline",
-    "first_at": 1789055100.0,
-    "baseline": 407669.3666666667,
-    "current": 1663219.7333333332,
-    "absolute": 1255550.3666666665,
-    "percent": 307.98251458841514
-  },
-  "finding:358": {
-    "service": "payment-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055370.0,
-    "count": 11,
-    "examples": [
-      {
-        "at": 1789055370.0,
-        "value": 1236288.7555555555,
-        "robust_z": 4.215269346655905
-      },
-      {
-        "at": 1789055550.0,
-        "value": 1209380.6888888888,
-        "robust_z": 15.175059749212604
-      },
-      {
-        "at": 1789055610.0,
-        "value": 1274975.8666666665,
-        "robust_z": 5.021390785160708
-      }
-    ]
-  },
-  "finding:359": {
-    "service": "payment-service",
-    "metric": "network",
-    "unit": "bytes/s",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055130.0,
-    "count": 3
-  },
-  "finding:408": {
-    "service": "checkout-api",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055280.0,
-    "count": 12,
-    "examples": [
-      {
-        "at": 1789055280.0,
-        "value": 161.76904506437768,
-        "robust_z": 4.219884686334485
-      },
-      {
-        "at": 1789055610.0,
-        "value": 166.63672163426023,
-        "robust_z": 4.7073662976326975
-      },
-      {
-        "at": 1789055640.0,
-        "value": 188.54007316262056,
-        "robust_z": 11.300608330324362
-      }
-    ]
-  },
-  "finding:409": {
-    "service": "checkout-api",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055580.0,
-    "count": 2
-  },
-  "finding:423": {
-    "service": "gateway",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055250.0,
-    "count": 13,
-    "examples": [
-      {
-        "at": 1789055250.0,
-        "value": 187.3517322372285,
-        "robust_z": 9.79430125091748
-      },
-      {
-        "at": 1789055610.0,
-        "value": 194.45705573437223,
-        "robust_z": 4.438765990588293
-      },
-      {
-        "at": 1789055640.0,
-        "value": 208.14345991561171,
-        "robust_z": 13.575185111202442
-      }
-    ]
-  },
-  "finding:424": {
-    "service": "gateway",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055100.0,
-    "count": 7
-  },
-  "finding:428": {
-    "service": "inventory-service",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055520.0,
-    "count": 5,
-    "examples": [
-      {
-        "at": 1789055520.0,
-        "value": 24.317798231849668,
-        "robust_z": 3.635349232768128
-      },
-      {
-        "at": 1789055670.0,
-        "value": 24.481747272235417,
-        "robust_z": 3.59861123002006
-      },
-      {
-        "at": 1789055700.0,
-        "value": 24.564453655884748,
-        "robust_z": 7.973938625387767
-      }
-    ]
-  },
-  "finding:439": {
-    "service": "order-service",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 11,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 140.18542633903294,
-        "robust_z": 7.839274618318778
-      },
-      {
-        "at": 1789055640.0,
-        "value": 145.9535552815454,
-        "robust_z": 15.181541071164256
-      },
-      {
-        "at": 1789055670.0,
-        "value": 159.1596082583378,
-        "robust_z": 12.569920904884697
-      }
-    ]
-  },
-  "finding:440": {
-    "service": "order-service",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055550.0,
-    "count": 5
-  },
-  "finding:442": {
-    "service": "payment-service",
-    "metric": "p95",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789056210.0,
-    "count": 2,
-    "examples": [
-      {
-        "at": 1789056210.0,
-        "value": 61.73415777562236,
-        "robust_z": 3.8951221265835345
-      },
-      {
-        "at": 1789056270.0,
-        "value": 59.53438661710038,
-        "robust_z": 4.900403862804448
-      }
-    ]
-  },
-  "finding:485": {
-    "service": "checkout-api",
-    "metric": "p99",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 13,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 235.72951021412754,
-        "robust_z": 4.654467104448671
-      },
-      {
-        "at": 1789055640.0,
-        "value": 240.62121715996022,
-        "robust_z": 12.760165854404944
-      },
-      {
-        "at": 1789055670.0,
-        "value": 243.7374623871614,
-        "robust_z": 6.6857995874099
-      }
-    ]
-  },
-  "finding:486": {
-    "service": "checkout-api",
-    "metric": "p99",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055850.0,
-    "count": 2
-  },
-  "finding:500": {
-    "service": "gateway",
-    "metric": "p99",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055610.0,
-    "count": 12,
-    "examples": [
-      {
-        "at": 1789055610.0,
-        "value": 241.9542605454853,
-        "robust_z": 5.0675868527661185
-      },
-      {
-        "at": 1789055640.0,
-        "value": 245.36106088004823,
-        "robust_z": 13.695735314464207
-      },
-      {
-        "at": 1789055670.0,
-        "value": 247.55571727462927,
-        "robust_z": 6.116850080542219
-      }
-    ]
-  },
-  "finding:501": {
-    "service": "gateway",
-    "metric": "p99",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "trend",
-    "first_at": 1789055580.0,
-    "count": 3
-  },
-  "finding:505": {
-    "service": "inventory-service",
-    "metric": "p99",
-    "unit": "ms",
-    "source": "prometheus",
-    "kind": "spike",
-    "first_at": 1789055520.0,
-    "count": 6,
-    "examples": [
-      {
-        "at": 1789055520.0,
-        "value": 38.10543224299059,
-        "robust_z": 5.1243559869703805
-      },
-      {
-        "at": 1789055610.0,
-        "value": 38.948275862068805,
-        "robust_z": 4.675852525526893
-      },
-      {
-        "at": 1789055670.0,
-        "value": 40.75168665667179,
-        "robust_z": 3.8418024055417215
-      }
-    ]
-  },
-  "tool:call_00_IInggjfOCgeTfoONZmhG6356": {
+  "status": "HYPOTHESES",
+  "accepted": 4,
+  "rejected": [
+    {
+      "index": 4,
+      "reason": "invalid evidence references"
+    }
+  ],
+  "ignored_references": [],
+  "note": "проверены наблюдения; причинная связь требует независимой проверки"
+}
+```
+
+## Evidence
+
+**Ряды метрик (60)**
+
+| evidence_id | сервис | метрика | единица | медиана | p95 | максимум | точек | источник | качество |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| metric:order-service:cpu | order-service | cpu | ratio | 0.8222 | 1 | 1 | 41 | prometheus | негодных точек: 1 |
+| metric:order-service:cpu_throttling | order-service | cpu_throttling | ratio | 0 | 0.04964 | 0.1817 | 42 | prometheus | — |
+| metric:order-service:error_rate | order-service | error_rate | ratio | 0.001814 | 0.02904 | 0.03695 | 42 | prometheus | — |
+| metric:order-service:http_4xx | order-service | http_4xx | requests/s | 13.87 | 16.93 | 17.18 | 42 | prometheus | — |
+| metric:order-service:http_5xx | order-service | http_5xx | requests/s | 3.133 | 61.2 | 79.02 | 42 | prometheus | — |
+| metric:order-service:memory | order-service | memory | ratio | 0.4742 | 0.5133 | 0.5155 | 42 | prometheus | — |
+| metric:order-service:network | order-service | network | bytes/s | 4.151e+06 | 5.078e+06 | 5.181e+06 | 42 | prometheus | — |
+| metric:order-service:p95 | order-service | p95 | ms | 219 | 1178 | 2466 | 42 | prometheus | — |
+| metric:order-service:p99 | order-service | p99 | ms | 284.2 | 1940 | 4747 | 42 | prometheus | — |
+| metric:order-service:pod_restarts | order-service | pod_restarts | count | 0 | 1 | 1 | 42 | prometheus | — |
+| metric:order-service:replicas | order-service | replicas | count | 4 | 4 | 4 | 42 | prometheus | — |
+| metric:order-service:rps | order-service | rps | requests/s | 1739 | 2115 | 2145 | 42 | prometheus | — |
+| metric:export-service:cpu | export-service | cpu | ratio | 0.4 | 0.4667 | 0.4667 | 42 | prometheus | — |
+| metric:export-service:cpu_throttling | export-service | cpu_throttling | ratio | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:export-service:error_rate | export-service | error_rate | ratio | 0.00165 | 0.003391 | 0.00346 | 42 | prometheus | — |
+| metric:export-service:http_4xx | export-service | http_4xx | requests/s | 0.06667 | 0.1 | 0.1333 | 42 | prometheus | — |
+| metric:export-service:http_5xx | export-service | http_5xx | requests/s | 0.03333 | 0.06667 | 0.06667 | 42 | prometheus | — |
+| metric:export-service:memory | export-service | memory | ratio | 0.4451 | 0.4532 | 0.4545 | 42 | prometheus | — |
+| metric:export-service:network | export-service | network | bytes/s | 4.807e+04 | 5.106e+04 | 5.139e+04 | 42 | prometheus | — |
+| metric:export-service:p95 | export-service | p95 | ms | 89.44 | 91.06 | 91.51 | 42 | prometheus | — |
+| metric:export-service:p99 | export-service | p99 | ms | 98.76 | 99.33 | 99.66 | 42 | prometheus | — |
+| metric:export-service:pod_restarts | export-service | pod_restarts | count | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:export-service:replicas | export-service | replicas | count | 2 | 2 | 2 | 42 | prometheus | — |
+| metric:export-service:rps | export-service | rps | requests/s | 20.25 | 20.67 | 20.97 | 42 | prometheus | — |
+| metric:feature-flags:cpu | feature-flags | cpu | ratio | 0.2667 | 0.2667 | 0.2667 | 42 | prometheus | — |
+| metric:feature-flags:cpu_throttling | feature-flags | cpu_throttling | ratio | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:feature-flags:error_rate | feature-flags | error_rate | ratio | 0.002708 | 0.003925 | 0.003987 | 42 | prometheus | — |
+| metric:feature-flags:http_4xx | feature-flags | http_4xx | requests/s | 0.2 | 0.2333 | 0.2333 | 42 | prometheus | — |
+| metric:feature-flags:http_5xx | feature-flags | http_5xx | requests/s | 0.1333 | 0.2 | 0.2 | 42 | prometheus | — |
+| metric:feature-flags:memory | feature-flags | memory | ratio | 0.3794 | 0.3844 | 0.3864 | 42 | prometheus | — |
+| metric:feature-flags:network | feature-flags | network | bytes/s | 1.226e+05 | 1.27e+05 | 1.28e+05 | 42 | prometheus | — |
+| metric:feature-flags:p95 | feature-flags | p95 | ms | 23.75 | 23.77 | 23.78 | 42 | prometheus | — |
+| metric:feature-flags:p99 | feature-flags | p99 | ms | 24.75 | 24.77 | 24.78 | 42 | prometheus | — |
+| metric:feature-flags:pod_restarts | feature-flags | pod_restarts | count | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:feature-flags:replicas | feature-flags | replicas | count | 2 | 2 | 2 | 42 | prometheus | — |
+| metric:feature-flags:rps | feature-flags | rps | requests/s | 51.3 | 52.6 | 53.33 | 42 | prometheus | — |
+| metric:image-resizer:cpu | image-resizer | cpu | ratio | 0.5 | 1 | 1 | 42 | prometheus | — |
+| metric:image-resizer:cpu_throttling | image-resizer | cpu_throttling | ratio | 0 | 0.2365 | 0.2433 | 42 | prometheus | — |
+| metric:image-resizer:error_rate | image-resizer | error_rate | ratio | 0.0007215 | 0.03064 | 0.03103 | 42 | prometheus | — |
+| metric:image-resizer:http_4xx | image-resizer | http_4xx | requests/s | 0.2 | 0.2 | 0.2 | 42 | prometheus | — |
+| metric:image-resizer:http_5xx | image-resizer | http_5xx | requests/s | 0.03333 | 1.432 | 1.467 | 42 | prometheus | — |
+| metric:image-resizer:memory | image-resizer | memory | ratio | 0.5208 | 0.5301 | 0.5314 | 42 | prometheus | — |
+| metric:image-resizer:network | image-resizer | network | bytes/s | 1.114e+05 | 1.176e+05 | 1.208e+05 | 42 | prometheus | — |
+| metric:image-resizer:p95 | image-resizer | p95 | ms | 38.29 | 452.7 | 459.2 | 42 | prometheus | — |
+| metric:image-resizer:p99 | image-resizer | p99 | ms | 47.85 | 853.8 | 869.6 | 42 | prometheus | — |
+| metric:image-resizer:pod_restarts | image-resizer | pod_restarts | count | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:image-resizer:replicas | image-resizer | replicas | count | 1 | 1 | 1 | 42 | prometheus | — |
+| metric:image-resizer:rps | image-resizer | rps | requests/s | 46.35 | 47.66 | 48.03 | 42 | prometheus | — |
+| metric:session-cleaner:cpu | session-cleaner | cpu | ratio | 0.5 | 0.5 | 0.5 | 42 | prometheus | — |
+| metric:session-cleaner:cpu_throttling | session-cleaner | cpu_throttling | ratio | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:session-cleaner:error_rate | session-cleaner | error_rate | ratio | 0.003115 | 0.006349 | 0.006557 | 42 | prometheus | — |
+| metric:session-cleaner:http_4xx | session-cleaner | http_4xx | requests/s | 0.05 | 0.06667 | 0.06667 | 42 | prometheus | — |
+| metric:session-cleaner:http_5xx | session-cleaner | http_5xx | requests/s | 0.03333 | 0.06667 | 0.06667 | 42 | prometheus | — |
+| metric:session-cleaner:memory | session-cleaner | memory | ratio | 0.5798 | 0.5891 | 0.5917 | 42 | prometheus | — |
+| metric:session-cleaner:network | session-cleaner | network | bytes/s | 2.558e+04 | 2.603e+04 | 2.614e+04 | 42 | prometheus | — |
+| metric:session-cleaner:p95 | session-cleaner | p95 | ms | 41.36 | 42.79 | 43.14 | 42 | prometheus | — |
+| metric:session-cleaner:p99 | session-cleaner | p99 | ms | 48.71 | 49.36 | 49.39 | 42 | prometheus | — |
+| metric:session-cleaner:pod_restarts | session-cleaner | pod_restarts | count | 0 | 0 | 0 | 42 | prometheus | — |
+| metric:session-cleaner:replicas | session-cleaner | replicas | count | 2 | 2 | 2 | 42 | prometheus | — |
+| metric:session-cleaner:rps | session-cleaner | rps | requests/s | 10.63 | 11 | 11.13 | 42 | prometheus | — |
+
+**Срабатывания порогов (34)**
+
+| evidence_id | сервис | метрика | предел | пик | срабатываний | первое | последнее | источник |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| finding:0 | order-service | error_rate | 0.01 | 0.03695 | 8 | 2026-09-10 16:02:00Z | 2026-09-10 16:05:30Z | prometheus |
+| finding:1 | order-service | p95 | 500 | 2466 | 8 | 2026-09-10 16:02:00Z | 2026-09-10 16:05:30Z | prometheus |
+| finding:2 | order-service | p99 | 1200 | 4747 | 7 | 2026-09-10 16:02:30Z | 2026-09-10 16:05:30Z | prometheus |
+| finding:8 | order-service | cpu | 0.9 | 1 | 13 | 2026-09-10 15:59:00Z | — | prometheus |
+| finding:50 | order-service | error_rate | — | — | 1 | 2026-09-10 15:53:30Z | — | prometheus |
+| finding:51 | order-service | error_rate | — | — | 3 | 2026-09-10 15:58:30Z | — | prometheus |
+| finding:98 | order-service | memory | — | — | 1 | 2026-09-10 15:58:30Z | — | prometheus |
+| finding:139 | order-service | p95 | — | — | 1 | 2026-09-10 15:53:30Z | — | prometheus |
+| finding:140 | order-service | p95 | — | — | 2 | 2026-09-10 15:59:00Z | — | prometheus |
+| finding:190 | order-service | p99 | — | — | 1 | 2026-09-10 15:53:30Z | — | prometheus |
+| finding:191 | order-service | p99 | — | — | 2 | 2026-09-10 15:59:00Z | — | prometheus |
+| finding:213 | order-service | pod_restarts | — | — | 1 | 2026-09-10 16:03:00Z | — | prometheus |
+| finding:6 | image-resizer | cpu | 0.9 | 1 | 6 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:7 | image-resizer | cpu | — | — | 3 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:9 | image-resizer | cpu_throttling | 0.2 | 0.2433 | 5 | 2026-09-10 15:53:00Z | — | prometheus |
+| finding:10 | image-resizer | cpu_throttling | — | — | 3 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:32 | export-service | error_rate | — | — | 3 | 2026-09-10 15:51:30Z | — | prometheus |
+| finding:33 | feature-flags | error_rate | — | — | 2 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:37 | image-resizer | error_rate | — | — | 3 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:64 | session-cleaner | error_rate | — | — | 1 | 2026-09-10 15:53:00Z | — | prometheus |
+| finding:85 | export-service | memory | — | — | 2 | 2026-09-10 15:52:00Z | — | prometheus |
+| finding:86 | export-service | memory | — | — | 1 | 2026-09-10 15:59:00Z | — | prometheus |
+| finding:87 | feature-flags | memory | — | — | 1 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:89 | image-resizer | memory | — | — | 1 | 2026-09-10 15:59:30Z | — | prometheus |
+| finding:106 | session-cleaner | memory | — | — | 1 | 2026-09-10 15:52:00Z | — | prometheus |
+| finding:124 | export-service | p95 | — | — | 1 | 2026-09-10 15:53:00Z | — | prometheus |
+| finding:125 | feature-flags | p95 | — | — | 1 | 2026-09-10 15:58:30Z | — | prometheus |
+| finding:132 | image-resizer | p95 | — | — | 3 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:152 | session-cleaner | p95 | — | — | 1 | 2026-09-10 15:53:00Z | — | prometheus |
+| finding:179 | export-service | p99 | — | — | 1 | 2026-09-10 15:51:30Z | — | prometheus |
+| finding:180 | feature-flags | p99 | — | — | 1 | 2026-09-10 15:53:30Z | — | prometheus |
+| finding:181 | feature-flags | p99 | — | — | 1 | 2026-09-10 15:58:30Z | — | prometheus |
+| finding:186 | image-resizer | p99 | — | — | 3 | 2026-09-10 15:52:30Z | — | prometheus |
+| finding:203 | session-cleaner | p99 | — | — | 1 | 2026-09-10 15:53:00Z | — | prometheus |
+
+**Улики инструментов (11)**
+
+```json
+{
+  "tool:chatcmpl-tool-95756650f7f2ae5b": {
     "success": true,
-    "text": "NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)\nСсылка: http://localhost:8081/browse/NT-123\nТип: Task\nСтатус: In Progress\nПриоритет: High\nИсполнитель: Алексей Перфов\nАвтор: Мария Кью\nКомпоненты: order-service, checkout-api\nМетки: performance, checkout, release-1.42\nОбновлена: 2026-09-10\n\nОписание:\nh2. Задача\n\nПровести нагрузочное тестирование checkout flow перед релизом 1.42.\nОсновной интерес — поведение order-service после перехода на новую\nсхему сериализации заказов.\n\nh2. Параметры НТ\n\n* Окружение: nt01\n* Namespace: nt01\n* Тестируемый сервис: order-service\n* Точка входа (стенд): http://localhost:8087/api/checkout\n* Точка входа изнутри кластера: http://checkout-app:8080/api/checkout\n* Health-check: http://localhost:8087/healthz\n* Тип теста: load (ступенчатый)\n* Целевой RPS: 2000\n* Длительность: 21 минут\n* Сценарий k6: checkout_peak_2000rps\n* Ступени: 1000 -> 1600 -> 1800 -> 2000 RPS\n\nh2. SLA\n\n* p95 < 500 мс\n* p99 < 1200 мс\n* error rate < 1%\n* CPU utilization < 85% от лимита\n\nh2. Ссылки\n\n* Топология и зависимости: [NT/order-service — архитектура и зависимости|http://localhost:8082/pages/NT-ARCH]\n* SLA/SLO контура: [NT/SLA-SLO checkout flow|http://localhost:8082/pages/NT-SLA]\n* Предыдущий прогон: NT-118\n\nh2. Definition of Done\n\n* Отчёт с вердиктом PASS/FAIL по SLA\n* Определена максимальная стабильная нагрузка\n* Указана вероятная причина деградации (если есть)\n\nСвязи:\n- relates NT-118: НТ checkout flow, релиз 1.41 (1900 RPS)\n- blocks ORD-4471: order-service: перевести сериализацию заказов на новый формат\n- relates OPS-908: orders.events: рост consumer lag на nt01 во время нагрузочных прогонов\n\nКомментарии (от старых к новым):\n- 2026-09-10 Алексей Перфов: Прогон завершён в 16:06 UTC. Нужен разбор: на верхней ступени поехали времена ответа.\n- 2026-09-10 Дмитрий Опс: Напоминаю: в релизе 1.42 в order-service поменяли сериализацию заказов (ORD-4471). На нагрузочном профиле это ещё не мерили.\n- 2026-09-10 Алексей Перфов: Прогон запущен: test_id=nt-run-2291, старт 15:45 UTC, план 21 минут. Ступени 1000/1600/1800/2000 RPS.\n- 2026-09-10 Мария Кью: Стенд подготовлен, данные прогреты. Запускаем в 15:45 UTC.",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_00_IInggjfOCgeTfoONZmhG6356"
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [],
+    "total": 0,
+    "shown": 0,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-95756650f7f2ae5b"
   },
-  "tool:call_01_4P98P4T6AYBU1sy5Gw5S2905": {
+  "tool:chatcmpl-tool-9f88c295056fffd0": {
+    "success": true,
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [],
+    "total": 0,
+    "shown": 0,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-9f88c295056fffd0"
+  },
+  "tool:chatcmpl-tool-a1189fd266ab9d51": {
+    "success": true,
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [],
+    "total": 0,
+    "shown": 0,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-a1189fd266ab9d51"
+  },
+  "tool:chatcmpl-tool-a50cad86882f75d7": {
     "success": true,
     "service": "order-service",
     "namespace": "nt01",
     "metrics": [
+      {
+        "metric": "http_request_duration_seconds_bucket",
+        "type": "",
+        "help": "",
+        "labels": [
+          "le",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_count",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_sum",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
       {
         "metric": "container_cpu_cfs_periods_total",
         "type": "",
@@ -3563,858 +911,1095 @@ FAILED
           "pod",
           "service"
         ]
+      },
+      {
+        "metric": "container_memory_rss",
+        "type": "gauge",
+        "help": "Size of RSS in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_usage_bytes",
+        "type": "gauge",
+        "help": "Current memory usage in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_working_set_bytes",
+        "type": "gauge",
+        "help": "Current working set in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_receive_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_transmit_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_in_flight",
+        "type": "gauge",
+        "help": "Number of HTTP requests currently in flight",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "code",
+          "method",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_limits",
+        "type": "gauge",
+        "help": "The container resource limits",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_requests",
+        "type": "gauge",
+        "help": "The container resource requests",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_status_restarts_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_info",
+        "type": "gauge",
+        "help": "Information about pod",
+        "labels": [
+          "created_by_kind",
+          "namespace",
+          "node",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_phase",
+        "type": "gauge",
+        "help": "The pods current phase",
+        "labels": [
+          "namespace",
+          "phase",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_ready",
+        "type": "gauge",
+        "help": "Describes whether the pod is ready to serve requests",
+        "labels": [
+          "condition",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "up",
+        "type": "gauge",
+        "help": "1 if the target is reachable",
+        "labels": [
+          "instance",
+          "job",
+          "namespace",
+          "pod",
+          "service"
+        ]
       }
     ],
-    "total": 4,
-    "shown": 4,
+    "total": 21,
+    "shown": 21,
     "hints": [
       "duration_seconds"
     ],
     "note": "names and labels existed during the test period; units are not verified",
-    "evidence_id": "tool:call_01_4P98P4T6AYBU1sy5Gw5S2905"
+    "evidence_id": "tool:chatcmpl-tool-a50cad86882f75d7"
   },
-  "tool:call_02_9ELrV30QrsZVK35XqueU3117": {
+  "tool:chatcmpl-tool-be351fcdec26b474": {
     "success": true,
-    "text": "по запросу 'order-service latency CPU saturation load test' страниц не найдено",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_02_9ELrV30QrsZVK35XqueU3117"
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [],
+    "total": 0,
+    "shown": 0,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-be351fcdec26b474"
   },
-  "tool:call_01_b3K6onM773METWFFp6t87848": {
+  "tool:chatcmpl-tool-a8b1fea500abeaab": {
     "success": true,
-    "text": "OPS-908: orders.events: рост consumer lag на nt01 во время нагрузочных прогонов\nСсылка: http://localhost:8081/browse/OPS-908\nТип: Bug\nСтатус: Open\nПриоритет: Medium\nИсполнитель: Дмитрий Опс\nАвтор: Дмитрий Опс\nКомпоненты: kafka-orders, notification-worker\nМетки: kafka, nt01\nОбновлена: 2026-09-05\n\nОписание:\nНа нагрузочных прогонах периодически растёт lag consumer-группы\nnotification-worker в топике orders.events.\n\nГипотеза платформенной команды: consumer упирается не в Kafka, а в\nсинхронный вызов order-service при обогащении сообщений.\nТребуется подтверждение на данных очередного НТ.\n\nСвязи:\n- relates NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_01_b3K6onM773METWFFp6t87848"
-  },
-  "tool:call_02_AGspAsfGiRjJ4n148zKp4022": {
-    "success": true,
-    "text": "ORD-4471: order-service: перевести сериализацию заказов на новый формат\nСсылка: http://localhost:8081/browse/ORD-4471\nТип: Story\nСтатус: Done\nПриоритет: Medium\nИсполнитель: Иван Разработчиков\nАвтор: Иван Разработчиков\nКомпоненты: order-service\nМетки: release-1.42\nОбновлена: 2026-09-07\n\nОписание:\nПереводим сериализацию заказа на новую схему (protobuf -> json+gzip\nдля совместимости с партнёрским API).\n\nРиски: рост CPU на сериализации, отдельно не профилировали.\nВыкатили в составе релиза 1.42 на nt01.\n\nСвязи:\n- blocked by NT-123: НТ checkout flow перед релизом 1.42 (2000 RPS)",
-    "truncated": false,
-    "note": "context text is not verified metric evidence",
-    "evidence_id": "tool:call_02_AGspAsfGiRjJ4n148zKp4022"
-  },
-  "tool:call_00_c3S3I48n0mAryzG5DMag2451": {
-    "success": true,
-    "query": "max by (service) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"nt01\", service=\"order-service\"}[3m]) / clamp_min(rate(container_cpu_cfs_periods_total{namespace=\"nt01\", service=\"order-service\"}[3m]), 1))",
-    "purpose": "Проверить, совпадает ли во времени рост CFS-троттлинга CPU у order-service с началом деградации latency/5xx на верхних ступенях нагрузки (гипотеза о CPU-сатурации как первопричине).",
-    "origin": "model_query",
-    "metrics": {
-      "order-service": {
-        "composed": {
-          "count": 43,
-          "median": 0.0,
-          "p95": 0.09758585858585858,
-          "p99": 0.10199393939393939,
-          "min": 0.0,
-          "max": 0.10424242424242425,
-          "mad": 0.0,
-          "unit": "unverified",
-          "source": "prometheus",
-          "start": 1789055100.0,
-          "end": 1789056360.0,
-          "invalid_points": 0,
-          "partial": false,
-          "max_gap": 30.0
-        }
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [
+      {
+        "metric": "http_request_duration_seconds_bucket",
+        "type": "",
+        "help": "",
+        "labels": [
+          "le",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_count",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_sum",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_usage_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_rss",
+        "type": "gauge",
+        "help": "Size of RSS in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_usage_bytes",
+        "type": "gauge",
+        "help": "Current memory usage in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_working_set_bytes",
+        "type": "gauge",
+        "help": "Current working set in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_receive_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_transmit_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_in_flight",
+        "type": "gauge",
+        "help": "Number of HTTP requests currently in flight",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "code",
+          "method",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_limits",
+        "type": "gauge",
+        "help": "The container resource limits",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_requests",
+        "type": "gauge",
+        "help": "The container resource requests",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_status_restarts_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_info",
+        "type": "gauge",
+        "help": "Information about pod",
+        "labels": [
+          "created_by_kind",
+          "namespace",
+          "node",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_phase",
+        "type": "gauge",
+        "help": "The pods current phase",
+        "labels": [
+          "namespace",
+          "phase",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_ready",
+        "type": "gauge",
+        "help": "Describes whether the pod is ready to serve requests",
+        "labels": [
+          "condition",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "up",
+        "type": "gauge",
+        "help": "1 if the target is reachable",
+        "labels": [
+          "instance",
+          "job",
+          "namespace",
+          "pod",
+          "service"
+        ]
       }
+    ],
+    "total": 21,
+    "shown": 21,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-a8b1fea500abeaab"
+  },
+  "tool:chatcmpl-tool-b3e5ed8ca80815b5": {
+    "success": true,
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [],
+    "total": 0,
+    "shown": 0,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-b3e5ed8ca80815b5"
+  },
+  "tool:chatcmpl-tool-93414fc960e07e15": {
+    "success": true,
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [
+      {
+        "metric": "http_request_duration_seconds_bucket",
+        "type": "",
+        "help": "",
+        "labels": [
+          "le",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_count",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_sum",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_usage_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_rss",
+        "type": "gauge",
+        "help": "Size of RSS in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_usage_bytes",
+        "type": "gauge",
+        "help": "Current memory usage in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_working_set_bytes",
+        "type": "gauge",
+        "help": "Current working set in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_receive_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_transmit_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_in_flight",
+        "type": "gauge",
+        "help": "Number of HTTP requests currently in flight",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "code",
+          "method",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_limits",
+        "type": "gauge",
+        "help": "The container resource limits",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_requests",
+        "type": "gauge",
+        "help": "The container resource requests",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_status_restarts_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_info",
+        "type": "gauge",
+        "help": "Information about pod",
+        "labels": [
+          "created_by_kind",
+          "namespace",
+          "node",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_phase",
+        "type": "gauge",
+        "help": "The pods current phase",
+        "labels": [
+          "namespace",
+          "phase",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_ready",
+        "type": "gauge",
+        "help": "Describes whether the pod is ready to serve requests",
+        "labels": [
+          "condition",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "up",
+        "type": "gauge",
+        "help": "1 if the target is reachable",
+        "labels": [
+          "instance",
+          "job",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      }
+    ],
+    "total": 21,
+    "shown": 21,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-93414fc960e07e15"
+  },
+  "tool:chatcmpl-tool-96fc71ae6d2a9fbc": {
+    "success": true,
+    "data": {
+      "test_id": "nt-run-2291",
+      "scenario": "checkout_peak_2000rps",
+      "jira_key": "NT-123",
+      "environment": "nt01",
+      "namespace": "nt01",
+      "target_service": "order-service",
+      "target_rps": 2000.0,
+      "duration_seconds": 1260,
+      "started_at": 1789055100.0,
+      "finished_at": 1789056360.0,
+      "baseline_start": 1789052700.0,
+      "baseline_end": 1789055100.0,
+      "test_status": "completed"
     },
-    "note": "composed query; units unverified; not used for the SLA verdict",
-    "evidence_id": "tool:call_00_c3S3I48n0mAryzG5DMag2451"
+    "missing_parameters": [],
+    "evidence_id": "tool:chatcmpl-tool-96fc71ae6d2a9fbc"
+  },
+  "tool:chatcmpl-tool-b27bacd393ca554d": {
+    "success": true,
+    "service": "order-service",
+    "namespace": "nt01",
+    "metrics": [
+      {
+        "metric": "http_request_duration_seconds_bucket",
+        "type": "",
+        "help": "",
+        "labels": [
+          "le",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_count",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_request_duration_seconds_sum",
+        "type": "",
+        "help": "",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_periods_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_cfs_throttled_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_cpu_usage_seconds_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_rss",
+        "type": "gauge",
+        "help": "Size of RSS in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_usage_bytes",
+        "type": "gauge",
+        "help": "Current memory usage in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_memory_working_set_bytes",
+        "type": "gauge",
+        "help": "Current working set in bytes",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_receive_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "container_network_transmit_bytes_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_in_flight",
+        "type": "gauge",
+        "help": "Number of HTTP requests currently in flight",
+        "labels": [
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "http_requests_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "code",
+          "method",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_limits",
+        "type": "gauge",
+        "help": "The container resource limits",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_resource_requests",
+        "type": "gauge",
+        "help": "The container resource requests",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "resource",
+          "service",
+          "unit"
+        ]
+      },
+      {
+        "metric": "kube_pod_container_status_restarts_total",
+        "type": "",
+        "help": "",
+        "labels": [
+          "container",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_info",
+        "type": "gauge",
+        "help": "Information about pod",
+        "labels": [
+          "created_by_kind",
+          "namespace",
+          "node",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_phase",
+        "type": "gauge",
+        "help": "The pods current phase",
+        "labels": [
+          "namespace",
+          "phase",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "kube_pod_status_ready",
+        "type": "gauge",
+        "help": "Describes whether the pod is ready to serve requests",
+        "labels": [
+          "condition",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      },
+      {
+        "metric": "up",
+        "type": "gauge",
+        "help": "1 if the target is reachable",
+        "labels": [
+          "instance",
+          "job",
+          "namespace",
+          "pod",
+          "service"
+        ]
+      }
+    ],
+    "total": 21,
+    "shown": 21,
+    "hints": [
+      "duration_seconds"
+    ],
+    "note": "names and labels existed during the test period; units are not verified",
+    "evidence_id": "tool:chatcmpl-tool-b27bacd393ca554d"
+  },
+  "tool:chatcmpl-tool-b80c8f0f6e438e9f": {
+    "success": true,
+    "text": "по запросу 'NT-ARCH order-service архитектура и зависимости checkout' страниц не найдено",
+    "truncated": false,
+    "note": "context text is not verified metric evidence",
+    "evidence_id": "tool:chatcmpl-tool-b80c8f0f6e438e9f"
   }
 }
 ```
 
 ## Baseline comparison
 
-```json
-{
-  "checkout-api": {
-    "cpu": {
-      "baseline": 0.23333333333333334,
-      "current": 0.6555555555555554,
-      "absolute": 0.4222222222222221,
-      "percent": 180.9523809523809
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.002296610759273436,
-      "current": 0.002344537493477698,
-      "absolute": 4.7926734204262276e-05,
-      "percent": 2.0868461932758926
-    },
-    "http_4xx": {
-      "baseline": 4.0,
-      "current": 16.288888888888888,
-      "absolute": 12.288888888888888,
-      "percent": 307.2222222222222
-    },
-    "http_5xx": {
-      "baseline": 1.1333333333333333,
-      "current": 4.755555555555555,
-      "absolute": 3.6222222222222213,
-      "percent": 319.6078431372548
-    },
-    "memory": {
-      "baseline": 0.28938334435224533,
-      "current": 0.31637179323782527,
-      "absolute": 0.02698844888557994,
-      "percent": 9.326192889915898
-    },
-    "network": {
-      "baseline": 1197439.4666666668,
-      "current": 4879221.477777777,
-      "absolute": 3681782.0111111104,
-      "percent": 307.47124289799393
-    },
-    "p95": {
-      "baseline": 142.41257793439954,
-      "current": 222.83354821839123,
-      "absolute": 80.4209702839917,
-      "percent": 56.47041255094515
-    },
-    "p99": {
-      "baseline": 211.10928961748635,
-      "current": 258.7089373326271,
-      "absolute": 47.59964771514075,
-      "percent": 22.547396091089887
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 6.0,
-      "current": 6.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 500.1666666666667,
-      "current": 2034.8444444444442,
-      "absolute": 1534.6777777777775,
-      "percent": 306.8332777962901
-    }
-  },
-  "gateway": {
-    "cpu": {
-      "baseline": 0.2,
-      "current": 0.5444444444444443,
-      "absolute": 0.3444444444444443,
-      "percent": 172.22222222222211
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.002139752591106653,
-      "current": 0.0022056379828997294,
-      "absolute": 6.588539179307618e-05,
-      "percent": 3.0791126070795447
-    },
-    "http_4xx": {
-      "baseline": 4.0,
-      "current": 16.42222222222222,
-      "absolute": 12.42222222222222,
-      "percent": 310.55555555555554
-    },
-    "http_5xx": {
-      "baseline": 1.0666666666666667,
-      "current": 4.422222222222222,
-      "absolute": 3.355555555555555,
-      "percent": 314.5833333333333
-    },
-    "memory": {
-      "baseline": 0.3247562227770686,
-      "current": 0.3588256947696209,
-      "absolute": 0.03406947199255228,
-      "percent": 10.490783425554104
-    },
-    "network": {
-      "baseline": 1196455.3666666667,
-      "current": 4917891.444444444,
-      "absolute": 3721436.0777777773,
-      "percent": 311.0384374927186
-    },
-    "p95": {
-      "baseline": 147.89357490864796,
-      "current": 231.25188884960906,
-      "absolute": 83.3583139409611,
-      "percent": 56.36371559241198
-    },
-    "p99": {
-      "baseline": 227.43954248366043,
-      "current": 296.05907568744476,
-      "absolute": 68.61953320378433,
-      "percent": 30.17044989382796
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 6.0,
-      "current": 6.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 498.7,
-      "current": 2050.7999999999997,
-      "absolute": 1552.0999999999997,
-      "percent": 311.2291959093643
-    }
-  },
-  "inventory-service": {
-    "cpu": {
-      "baseline": 0.23333333333333334,
-      "current": 0.5222222222222221,
-      "absolute": 0.2888888888888888,
-      "percent": 123.80952380952377
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.00032930845225027445,
-      "current": 0.0003916949718057647,
-      "absolute": 6.238651955549026e-05,
-      "percent": 18.944706438350543
-    },
-    "http_4xx": {
-      "baseline": 2.4,
-      "current": 9.73333333333333,
-      "absolute": 7.33333333333333,
-      "percent": 305.55555555555543
-    },
-    "http_5xx": {
-      "baseline": 0.1,
-      "current": 0.4111111111111111,
-      "absolute": 0.3111111111111111,
-      "percent": 311.11111111111114
-    },
-    "memory": {
-      "baseline": 0.30821395199745893,
-      "current": 0.32459288090467453,
-      "absolute": 0.016378928907215595,
-      "percent": 5.3141425951251655
-    },
-    "network": {
-      "baseline": 720692.2,
-      "current": 2947591.188888889,
-      "absolute": 2226898.9888888886,
-      "percent": 308.9944623916963
-    },
-    "p95": {
-      "baseline": 24.19914788345245,
-      "current": 24.5204979677152,
-      "absolute": 0.32135008426275036,
-      "percent": 1.3279396688281402
-    },
-    "p99": {
-      "baseline": 35.527070063694495,
-      "current": 41.23374113201727,
-      "absolute": 5.706671068322777,
-      "percent": 16.062881228571918
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 3.0,
-      "current": 3.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 300.6666666666667,
-      "current": 1220.2888888888888,
-      "absolute": 919.622222222222,
-      "percent": 305.861049519586
-    }
-  },
-  "order-service": {
-    "cpu": {
-      "baseline": 0.3333333333333333,
-      "current": 0.8222222222222221,
-      "absolute": 0.48888888888888876,
-      "percent": 146.66666666666663
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.0017421602787456448,
-      "current": 0.0018144205125141268,
-      "absolute": 7.226023376848199e-05,
-      "percent": 4.147737418310866
-    },
-    "http_4xx": {
-      "baseline": 3.4,
-      "current": 13.866666666666664,
-      "absolute": 10.466666666666663,
-      "percent": 307.8431372549019
-    },
-    "http_5xx": {
-      "baseline": 0.7333333333333334,
-      "current": 3.133333333333333,
-      "absolute": 2.3999999999999995,
-      "percent": 327.27272727272714
-    },
-    "memory": {
-      "baseline": 0.39940284471958876,
-      "current": 0.47421257570385933,
-      "absolute": 0.07480973098427057,
-      "percent": 18.73039513196074
-    },
-    "network": {
-      "baseline": 1020767.6666666667,
-      "current": 4151243.388888888,
-      "absolute": 3130475.722222221,
-      "percent": 306.6785738271707
-    },
-    "p95": {
-      "baseline": 117.57936507936512,
-      "current": 219.03530403438486,
-      "absolute": 101.45593895501975,
-      "percent": 86.28719749127562
-    },
-    "p99": {
-      "baseline": 146.86611374407573,
-      "current": 284.21990421694284,
-      "absolute": 137.3537904728671,
-      "percent": 93.52313271679232
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 4.0,
-      "current": 4.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 424.93333333333334,
-      "current": 1739.3777777777775,
-      "absolute": 1314.4444444444441,
-      "percent": 309.32956803681617
-    }
-  },
-  "payment-service": {
-    "cpu": {
-      "baseline": 0.2,
-      "current": 0.47777777777777775,
-      "absolute": 0.27777777777777773,
-      "percent": 138.88888888888886
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.0005685048322910744,
-      "current": 0.0005885227616640229,
-      "absolute": 2.0017929372948494e-05,
-      "percent": 3.5211537767016403
-    },
-    "http_4xx": {
-      "baseline": 1.3666666666666667,
-      "current": 5.488888888888889,
-      "absolute": 4.122222222222222,
-      "percent": 301.62601626016254
-    },
-    "http_5xx": {
-      "baseline": 0.1,
-      "current": 0.38888888888888884,
-      "absolute": 0.28888888888888886,
-      "percent": 288.88888888888886
-    },
-    "memory": {
-      "baseline": 0.38562203757464886,
-      "current": 0.3976594372652471,
-      "absolute": 0.01203739969059825,
-      "percent": 3.121553883773576
-    },
-    "network": {
-      "baseline": 407669.3666666667,
-      "current": 1663219.7333333332,
-      "absolute": 1255550.3666666665,
-      "percent": 307.98251458841514
-    },
-    "p95": {
-      "baseline": 49.85621165644171,
-      "current": 57.04262866611933,
-      "absolute": 7.186417009677619,
-      "percent": 14.414286145925196
-    },
-    "p99": {
-      "baseline": 71.01785714285714,
-      "current": 73.00491899122136,
-      "absolute": 1.9870618483642204,
-      "percent": 2.797974943635815
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 4.0,
-      "current": 4.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 170.2,
-      "current": 692.2222222222222,
-      "absolute": 522.0222222222221,
-      "percent": 306.71105888497186
-    }
-  }
-}
-```
+| сервис | метрика | baseline | текущее | разница | % |
+| --- | --- | --- | --- | --- | --- |
+| export-service | cpu | 0.4 | 0.4 | 0 | 0 |
+| export-service | cpu_throttling | 0 | 0 | 0 | — |
+| export-service | error_rate | 0.001656 | 0.00165 | -5.46e-06 | -0.3298 |
+| export-service | http_4xx | 0.06667 | 0.06667 | 0 | 0 |
+| export-service | http_5xx | 0.03333 | 0.03333 | 0 | 0 |
+| export-service | memory | 0.4467 | 0.4451 | -0.001635 | -0.3661 |
+| export-service | network | 4.804e+04 | 4.807e+04 | 27.88 | 0.05804 |
+| export-service | p95 | 89.63 | 89.44 | -0.186 | -0.2076 |
+| export-service | p99 | 98.79 | 98.76 | -0.02801 | -0.02835 |
+| export-service | pod_restarts | 0 | 0 | 0 | — |
+| export-service | replicas | 2 | 2 | 0 | 0 |
+| export-service | rps | 20.07 | 20.25 | 0.1833 | 0.9136 |
+| feature-flags | cpu | 0.2667 | 0.2667 | 0 | 0 |
+| feature-flags | cpu_throttling | 0 | 0 | 0 | — |
+| feature-flags | error_rate | 0.002732 | 0.002708 | -2.404e-05 | -0.8798 |
+| feature-flags | http_4xx | 0.2 | 0.2 | 0 | 0 |
+| feature-flags | http_5xx | 0.1333 | 0.1333 | 0 | 0 |
+| feature-flags | memory | 0.3793 | 0.3794 | 7.936e-05 | 0.02092 |
+| feature-flags | network | 1.224e+05 | 1.226e+05 | 193.4 | 0.1579 |
+| feature-flags | p95 | 23.75 | 23.75 | 0 | 0 |
+| feature-flags | p99 | 24.75 | 24.75 | 0 | 0 |
+| feature-flags | pod_restarts | 0 | 0 | 0 | — |
+| feature-flags | replicas | 2 | 2 | 0 | 0 |
+| feature-flags | rps | 51.1 | 51.3 | 0.2 | 0.3914 |
+| image-resizer | cpu | 0.4667 | 0.5 | 0.03333 | 7.143 |
+| image-resizer | cpu_throttling | 0 | 0 | 0 | — |
+| image-resizer | error_rate | 0.0007174 | 0.0007215 | 4.141e-06 | 0.5772 |
+| image-resizer | http_4xx | 0.2 | 0.2 | 0 | 0 |
+| image-resizer | http_5xx | 0.03333 | 0.03333 | 0 | 0 |
+| image-resizer | memory | 0.522 | 0.5208 | -0.001202 | -0.2302 |
+| image-resizer | network | 1.109e+05 | 1.114e+05 | 448.8 | 0.4047 |
+| image-resizer | p95 | 37.74 | 38.29 | 0.5472 | 1.45 |
+| image-resizer | p99 | 47.74 | 47.85 | 0.1087 | 0.2277 |
+| image-resizer | pod_restarts | 0 | 0 | 0 | — |
+| image-resizer | replicas | 1 | 1 | 0 | 0 |
+| image-resizer | rps | 46.17 | 46.35 | 0.1833 | 0.3971 |
+| order-service | cpu | 0.3333 | 0.8222 | 0.4889 | 146.7 |
+| order-service | cpu_throttling | 0 | 0 | 0 | — |
+| order-service | error_rate | 0.001742 | 0.001814 | 7.226e-05 | 4.148 |
+| order-service | http_4xx | 3.4 | 13.87 | 10.47 | 307.8 |
+| order-service | http_5xx | 0.7333 | 3.133 | 2.4 | 327.3 |
+| order-service | memory | 0.3994 | 0.4742 | 0.07481 | 18.73 |
+| order-service | network | 1.021e+06 | 4.151e+06 | 3.13e+06 | 306.7 |
+| order-service | p95 | 117.6 | 219 | 101.5 | 86.29 |
+| order-service | p99 | 146.9 | 284.2 | 137.4 | 93.52 |
+| order-service | pod_restarts | 0 | 0 | 0 | — |
+| order-service | replicas | 4 | 4 | 0 | 0 |
+| order-service | rps | 424.9 | 1739 | 1314 | 309.3 |
+| session-cleaner | cpu | 0.5 | 0.5 | 0 | 0 |
+| session-cleaner | cpu_throttling | 0 | 0 | 0 | — |
+| session-cleaner | error_rate | 0.003115 | 0.003115 | 3.023e-08 | 0.0009705 |
+| session-cleaner | http_4xx | 0.03333 | 0.05 | 0.01667 | 50 |
+| session-cleaner | http_5xx | 0.03333 | 0.03333 | 0 | 0 |
+| session-cleaner | memory | 0.5811 | 0.5798 | -0.001364 | -0.2348 |
+| session-cleaner | network | 2.553e+04 | 2.558e+04 | 49.93 | 0.1956 |
+| session-cleaner | p95 | 41.51 | 41.36 | -0.1552 | -0.3739 |
+| session-cleaner | p99 | 48.63 | 48.71 | 0.08428 | 0.1733 |
+| session-cleaner | pod_restarts | 0 | 0 | 0 | — |
+| session-cleaner | replicas | 2 | 2 | 0 | 0 |
+| session-cleaner | rps | 10.67 | 10.63 | -0.03333 | -0.3125 |
 
-Показаны 5 из 80 сервисов: остальные вне фокуса анализа. Полные ряды остались в состоянии прогона.
+Показаны 5 из 80 сервисов: остальные вне фокуса анализа. Агрегаты доступны в состоянии прогона; исходные точки перечитываются из источников.
 
 ## Previous test comparison
 
 ```json
 {
   "test_id": "nt-run-2187",
-  "note": "stable load compared using current SLA limits",
+  "status": "NOT_COMPARABLE",
+  "matched_phases": [],
+  "regressions": [],
+  "limitations": [
+    "не подтверждено совпадение environment_fingerprint",
+    "не подтверждено совпадение scenario"
+  ],
   "scenario_differs": {
     "current": "checkout_peak_2000rps",
     "previous": "checkout_peak_1900rps"
-  },
-  "stable_rps": {
-    "baseline": 1942.2333333333333,
-    "current": 1829.8444444444442,
-    "absolute": -112.38888888888914,
-    "percent": -5.7865801683056866
   }
 }
 ```
 
-```json
-{
-  "checkout-api": {
-    "cpu": {
-      "baseline": 0.5333333333333333,
-      "current": 0.6555555555555554,
-      "absolute": 0.12222222222222212,
-      "percent": 22.91666666666665
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.002308458570173046,
-      "current": 0.002344537493477698,
-      "absolute": 3.607892330465207e-05,
-      "percent": 1.562901053145066
-    },
-    "http_4xx": {
-      "baseline": 15.6,
-      "current": 16.288888888888888,
-      "absolute": 0.6888888888888882,
-      "percent": 4.4159544159544115
-    },
-    "http_5xx": {
-      "baseline": 4.416666666666667,
-      "current": 4.755555555555555,
-      "absolute": 0.3388888888888877,
-      "percent": 7.672955974842739
-    },
-    "memory": {
-      "baseline": 0.3147684093564749,
-      "current": 0.31637179323782527,
-      "absolute": 0.0016033838813503953,
-      "percent": 0.509385260302461
-    },
-    "network": {
-      "baseline": 4651920.9,
-      "current": 4879221.477777777,
-      "absolute": 227300.57777777687,
-      "percent": 4.886166008922827
-    },
-    "p95": {
-      "baseline": 173.36397039386713,
-      "current": 222.83354821839123,
-      "absolute": 49.469577824524094,
-      "percent": 28.535097409302363
-    },
-    "p99": {
-      "baseline": 237.17208035950296,
-      "current": 258.7089373326271,
-      "absolute": 21.536856973124145,
-      "percent": 9.080688140222408
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 6.0,
-      "current": 6.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 1953.2833333333333,
-      "current": 2034.8444444444442,
-      "absolute": 81.5611111111109,
-      "percent": 4.175590387694783
-    }
-  },
-  "gateway": {
-    "cpu": {
-      "baseline": 0.43333333333333335,
-      "current": 0.5444444444444443,
-      "absolute": 0.11111111111111094,
-      "percent": 25.6410256410256
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.0021634379316426548,
-      "current": 0.0022056379828997294,
-      "absolute": 4.220005125707459e-05,
-      "percent": 1.9506014311689979
-    },
-    "http_4xx": {
-      "baseline": 15.416666666666666,
-      "current": 16.42222222222222,
-      "absolute": 1.0055555555555546,
-      "percent": 6.522522522522517
-    },
-    "http_5xx": {
-      "baseline": 4.166666666666666,
-      "current": 4.422222222222222,
-      "absolute": 0.25555555555555554,
-      "percent": 6.133333333333334
-    },
-    "memory": {
-      "baseline": 0.3571198359131813,
-      "current": 0.3588256947696209,
-      "absolute": 0.0017058588564395905,
-      "percent": 0.47767127022714534
-    },
-    "network": {
-      "baseline": 4623537.616666667,
-      "current": 4917891.444444444,
-      "absolute": 294353.82777777687,
-      "percent": 6.366420091764947
-    },
-    "p95": {
-      "baseline": 198.2043956927601,
-      "current": 231.25188884960906,
-      "absolute": 33.04749315684896,
-      "percent": 16.673441091627666
-    },
-    "p99": {
-      "baseline": 242.85389390244956,
-      "current": 296.05907568744476,
-      "absolute": 53.205181784995204,
-      "percent": 21.90830911954282
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 6.0,
-      "current": 6.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 1925.1666666666665,
-      "current": 2050.7999999999997,
-      "absolute": 125.63333333333321,
-      "percent": 6.525841918448613
-    }
-  },
-  "inventory-service": {
-    "cpu": {
-      "baseline": 0.4666666666666667,
-      "current": 0.5222222222222221,
-      "absolute": 0.05555555555555547,
-      "percent": 11.904761904761886
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.0004006208300826646,
-      "current": 0.0003916949718057647,
-      "absolute": -8.925858276899869e-06,
-      "percent": -2.2280065355209056
-    },
-    "http_4xx": {
-      "baseline": 9.25,
-      "current": 9.73333333333333,
-      "absolute": 0.48333333333333073,
-      "percent": 5.225225225225197
-    },
-    "http_5xx": {
-      "baseline": 0.43333333333333335,
-      "current": 0.4111111111111111,
-      "absolute": -0.022222222222222254,
-      "percent": -5.128205128205136
-    },
-    "memory": {
-      "baseline": 0.32393551617860794,
-      "current": 0.32459288090467453,
-      "absolute": 0.0006573647260665894,
-      "percent": 0.20293073566658215
-    },
-    "network": {
-      "baseline": 2784833.716666667,
-      "current": 2947591.188888889,
-      "absolute": 162757.47222222202,
-      "percent": 5.844423358139894
-    },
-    "p95": {
-      "baseline": 24.36050513609964,
-      "current": 24.5204979677152,
-      "absolute": 0.15999283161556122,
-      "percent": 0.6567714040480593
-    },
-    "p99": {
-      "baseline": 38.859195132306056,
-      "current": 41.23374113201727,
-      "absolute": 2.3745459997112164,
-      "percent": 6.110641230798703
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 3.0,
-      "current": 3.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 1161.3,
-      "current": 1220.2888888888888,
-      "absolute": 58.98888888888882,
-      "percent": 5.079556435795128
-    }
-  },
-  "order-service": {
-    "cpu": {
-      "baseline": 0.75,
-      "current": 0.8222222222222221,
-      "absolute": 0.07222222222222208,
-      "percent": 9.62962962962961
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.00177906695277007,
-      "current": 0.0018144205125141268,
-      "absolute": 3.535355974405678e-05,
-      "percent": 1.9871966981911526
-    },
-    "http_4xx": {
-      "baseline": 13.2,
-      "current": 13.866666666666664,
-      "absolute": 0.6666666666666643,
-      "percent": 5.050505050505033
-    },
-    "http_5xx": {
-      "baseline": 2.9166666666666665,
-      "current": 3.133333333333333,
-      "absolute": 0.21666666666666634,
-      "percent": 7.428571428571418
-    },
-    "memory": {
-      "baseline": 0.4710513330064714,
-      "current": 0.47421257570385933,
-      "absolute": 0.0031612426973879337,
-      "percent": 0.6711036517424533
-    },
-    "network": {
-      "baseline": 3852636.4499999997,
-      "current": 4151243.388888888,
-      "absolute": 298606.93888888834,
-      "percent": 7.750716756284865
-    },
-    "p95": {
-      "baseline": 140.86619730384274,
-      "current": 219.03530403438486,
-      "absolute": 78.16910673054213,
-      "percent": 55.49174196981729
-    },
-    "p99": {
-      "baseline": 205.26237799668883,
-      "current": 284.21990421694284,
-      "absolute": 78.95752622025401,
-      "percent": 38.46663328704479
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 4.0,
-      "current": 4.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 1654.8166666666666,
-      "current": 1739.3777777777775,
-      "absolute": 84.5611111111109,
-      "percent": 5.109998757834861
-    }
-  },
-  "payment-service": {
-    "cpu": {
-      "baseline": 0.4,
-      "current": 0.47777777777777775,
-      "absolute": 0.07777777777777772,
-      "percent": 19.444444444444432
-    },
-    "cpu_throttling": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "error_rate": {
-      "baseline": 0.0005956351092869865,
-      "current": 0.0005885227616640229,
-      "absolute": -7.1123476229636e-06,
-      "percent": -1.1940779702320665
-    },
-    "http_4xx": {
-      "baseline": 5.216666666666667,
-      "current": 5.488888888888889,
-      "absolute": 0.27222222222222214,
-      "percent": 5.218317358892437
-    },
-    "http_5xx": {
-      "baseline": 0.4,
-      "current": 0.38888888888888884,
-      "absolute": -0.011111111111111183,
-      "percent": -2.7777777777777954
-    },
-    "memory": {
-      "baseline": 0.3969430588185787,
-      "current": 0.3976594372652471,
-      "absolute": 0.0007163784466683865,
-      "percent": 0.18047385657795428
-    },
-    "network": {
-      "baseline": 1592137.5333333332,
-      "current": 1663219.7333333332,
-      "absolute": 71082.19999999995,
-      "percent": 4.464576615512652
-    },
-    "p95": {
-      "baseline": 53.84739547351039,
-      "current": 57.04262866611933,
-      "absolute": 3.1952331926089386,
-      "percent": 5.933867672728567
-    },
-    "p99": {
-      "baseline": 72.24388087950001,
-      "current": 73.00491899122136,
-      "absolute": 0.7610381117213478,
-      "percent": 1.0534291658427513
-    },
-    "pod_restarts": {
-      "baseline": 0.0,
-      "current": 0.0,
-      "absolute": 0.0,
-      "percent": null
-    },
-    "replicas": {
-      "baseline": 4.0,
-      "current": 4.0,
-      "absolute": 0.0,
-      "percent": 0.0
-    },
-    "rps": {
-      "baseline": 652.0666666666666,
-      "current": 692.2222222222222,
-      "absolute": 40.155555555555566,
-      "percent": 6.158197866612141
-    }
-  }
-}
-```
+regressions измерены на сопоставимых ступенях: это наблюдения одинаковой нагрузки в двух прогонах, а не установленная причина. Различия по всему периоду ниже описательные: прогоны держали там разную нагрузку.
 
-Показаны 5 из 29 сервисов прошлого прогона: остальные вне фокуса анализа. Полные ряды остались в состоянии прогона.
+| сервис | метрика | baseline | текущее | разница | % |
+| --- | --- | --- | --- | --- | --- |
+| order-service | cpu | 0.75 | 0.8222 | 0.07222 | 9.63 |
+| order-service | cpu_throttling | 0 | 0 | 0 | — |
+| order-service | error_rate | 0.001779 | 0.001814 | 3.535e-05 | 1.987 |
+| order-service | http_4xx | 13.2 | 13.87 | 0.6667 | 5.051 |
+| order-service | http_5xx | 2.917 | 3.133 | 0.2167 | 7.429 |
+| order-service | memory | 0.4711 | 0.4742 | 0.003161 | 0.6711 |
+| order-service | network | 3.853e+06 | 4.151e+06 | 2.986e+05 | 7.751 |
+| order-service | p95 | 140.9 | 219 | 78.17 | 55.49 |
+| order-service | p99 | 205.3 | 284.2 | 78.96 | 38.47 |
+| order-service | pod_restarts | 0 | 0 | 0 | — |
+| order-service | replicas | 4 | 4 | 0 | 0 |
+| order-service | rps | 1655 | 1739 | 84.56 | 5.11 |
+
+Показаны 1 из 29 сервисов прошлого прогона: остальные вне фокуса анализа. Агрегаты доступны в состоянии прогона; исходные точки перечитываются из источников.
 
 ## Recommendations
 
-- Предложение LLM, требует проверки: Профилировать сериализацию заказов (json+gzip) в order-service под нагрузкой и сравнить CPU-стоимость обработки запроса с прогоном NT-118 (до релиза 1.42).
+- Предложение LLM, требует проверки: Не делать вывод о регрессии без сравнения с предыдущим прогоном на сопоставимом устойчивом плато.
 
-- Предложение LLM, требует проверки: Проверить соответствие CPU limits/requests реальному потреблению order-service; при подтверждении троттлинга поднять лимиты и/или число реплик и повторить ступень 2000 RPS.
+- Предложение LLM, требует проверки: Проверить order-service на устойчивом плато: задержку, error_rate, CPU, throttling и ошибки сервера.
 
-- Предложение LLM, требует проверки: Разобрать единственный рестарт пода order-service и динамику replicas (4→3) в момент пика: посмотреть причины рестарта и не совпал ли он с ростом хвостовых задержек.
+- Предложение LLM, требует проверки: Проверить dependencies и downstream-вызовы order-service, так как dependencies в контексте не предоставлены.
 
-- Предложение LLM, требует проверки: Повторить прогон на ступени около максимальной стабильной нагрузки (≈1830 RPS) для проверки, что после устранения CPU-ограничения SLA выполняется.
+- Предложение LLM, требует проверки: Проверить image-resizer как отдельный критический сервис; не считать его причиной order-service без подтверждённой зависимости.
 
-- Предложение LLM, требует проверки: Проверить гипотезу из OPS-908: сопоставить lag consumer-группы notification-worker в orders.events с интервалами деградации order-service на этом же прогоне.
-
-- Предложение LLM, требует проверки: Восстановить доступность страницы топологии/зависимостей NT-ARCH (чтение не удалось) — без неё направление зависимостей order-service с checkout-api/gateway подтверждено только по метрикам.
-
-- Предложение LLM, требует проверки: Текущее состояние подов и событий Kubernetes проверять отдельно: оно относится к другому периоду и не доказывает состояние во время прогона.
+- Предложение LLM, требует проверки: Повторить тест с полными метриками и явными SLA-порогами, если диагностические ряды неполные.
 
 ## Unverified assumptions
 
@@ -4423,10 +2008,31 @@ FAILED
 ```
 
 ```json
+{
+  "stop_reason": ""
+}
+```
+
+```json
 []
 ```
 
 Precheck относится к данным завершённого теста. Текущие DNS/HTTP/pods не подтверждают их состояние в прошлом. Запуск и остановка НТ этим графом не выполнялись.
+
+## Analysis policy
+
+```json
+{
+  "version": "nt-analysis-v3",
+  "step_seconds": 30,
+  "settling_seconds": 30,
+  "stable_seconds": 180,
+  "plateau_tolerance": 0.1,
+  "tool_approval": "generated",
+  "query_map_sha256": "066dbabc9fe407f03818ad3de8b7c4e4bb5e4eeba8d835f70339a363e377f8bf",
+  "sla_semantics": "maximum of service time series; explicit comparator, inclusive by default"
+}
+```
 
 ## Sources
 

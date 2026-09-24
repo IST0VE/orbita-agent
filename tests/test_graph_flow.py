@@ -261,6 +261,120 @@ def test_stray_tool_call_does_not_stay_in_the_history(monkeypatch: pytest.Monkey
     assert not any("tool_calls" in m.additional_kwargs for m in answers)
 
 
+SILENT_CALL = AIMessage(
+    content="",
+    tool_calls=[{"name": "list_task_files", "args": {}, "id": "call-3"}],
+    response_metadata=usage_meta(hit=1600, miss=64, output=40),
+)
+
+
+def test_role_that_only_calls_a_tool_is_asked_again(monkeypatch: pytest.MonkeyPatch):
+    """
+    Ответ — один вызов без текста: снимать нечего оставить, и документ этапа
+    пропадал молча. Так живая модель ответила всем четырём ролям после
+    аналитика, и конвейер опубликовал один документ из пяти. Роль
+    переспрашивается один раз, и оба вызова оплачены.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], SILENT_CALL, *PIPELINE[1:])
+
+    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert result["usage"]["calls"] == len(roles.ROLES) + 1
+    # Немой ответ в историю не попал: за ним висел бы вызов без ответа.
+    answers = [m for m in result["messages"] if m.type == "ai"]
+    assert all(m.content for m in answers)
+    assert not any(m.tool_calls for m in answers)
+
+
+def test_asking_again_happens_once(monkeypatch: pytest.MonkeyPatch):
+    """
+    Второй немой вызов — не повод для третьего: этап остаётся без документа.
+    Но уже не молча — итог прогона называет его.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], SILENT_CALL, SILENT_CALL, *PIPELINE[2:])
+
+    assert "api" not in result["artifacts"]
+    assert result["usage"]["calls"] == len(roles.ROLES) + 1
+    api = roles.PIPELINE.by_key("api").title
+    assert f"Не выполнены этапы: {api}" in result["summary"]["problems"]
+
+
+def test_analyst_out_of_tool_turns_is_asked_again(monkeypatch: pytest.MonkeyPatch):
+    """
+    На исчерпанном потолке у аналитика права спрашивать тоже нет, и немой
+    вызов снимается так же. Предупреждение «это последний ход» модель, которая
+    отвечает вызовом без текста, уже не остановило — без переспроса пропадал
+    бы первый документ, на котором стоят остальные четыре.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+    monkeypatch.setenv("TOOL_TURNS_PER_RUN", "1")
+
+    from agent import inputs
+
+    folder = inputs.ensure_root() / "задача"
+    folder.mkdir(parents=True)
+    (folder / "встреча.md").write_text("выгрузка асинхронная", encoding="utf-8")
+
+    result = run(
+        ASKS_FOR_FILE,
+        SILENT_CALL,
+        *PIPELINE,
+        config={"configurable": {"thread_id": "t-1", "input_dir": "задача"}},
+    )
+
+    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert result["usage"]["calls"] == len(roles.ROLES) + 2
+
+
+def priced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Тариф по доллару за миллион токенов любого вида: деньги считаются в уме."""
+    for name in ("CACHE_HIT", "CACHE_MISS", "CACHE_WRITE", "OUTPUT"):
+        monkeypatch.setenv(f"PRICE_{name}_PER_MTOK", "1")
+
+
+def test_asking_again_stops_at_the_budget(monkeypatch: pytest.MonkeyPatch):
+    """
+    Переспрос — такой же платный вызов, и ворота бюджета перед ним те же.
+    Немой ответ, исчерпавший лимит, второго запроса не получает: этап
+    остаётся без документа, а дальше конвейер уводят в `over_budget`.
+    """
+    priced(monkeypatch)
+    # Немой ответ стоит $0.0017: лимит кончается на нём.
+    monkeypatch.setenv("BUDGET_USD_PER_THREAD", "0.001")
+
+    node = make_role_node(roles.ROLES[1], llm=fake_model(SILENT_CALL, PIPELINE[1]))
+    update = node({"messages": [HumanMessage(TASK)], "task": TASK}, CONFIG)
+
+    assert update["usage"]["calls"] == 1
+    assert "artifacts" not in update
+
+
+def test_asking_again_does_not_charge_legacy_history_twice(monkeypatch: pytest.MonkeyPatch):
+    """
+    Старый checkpoint знает только токены, и их оценка переносится в деньги
+    вместе с первым начислением. Второй вызов того же узла переносить её уже
+    не должен: история стоила $0.01 один раз, а не два.
+    """
+    priced(monkeypatch)
+
+    node = make_role_node(roles.ROLES[1], llm=fake_model(SILENT_CALL, PIPELINE[1]))
+    update = node(
+        {
+            "messages": [HumanMessage(TASK)],
+            "task": TASK,
+            "usage": {"cache_miss": 10_000, "calls": 10},
+        },
+        CONFIG,
+    )
+
+    calls = (1600 + 64 + 40 + 1600 + 64 + 200) / 1_000_000
+    assert update["spend"]["usd"] == pytest.approx(0.01 + calls)
+    assert update["spend"]["estimated_calls"] == 10
+
+
 def test_analyst_keeps_its_tool_call(monkeypatch: pytest.MonkeyPatch):
     """У роли с файлами вызов остаётся: ей есть куда пойти за ответом."""
     monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")

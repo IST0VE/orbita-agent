@@ -17,12 +17,25 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.pipeline import Pipeline
+
 #: Статусы публикации, которые означают «что-то пошло не так».
 TROUBLE = {"failed", "partial", "skipped", "rejected", "stale"}
 
 
-def summary_of(state: dict) -> dict:
-    """Итог, проблемы и следующее действие — по состоянию треда."""
+def summary_of(state: dict, pipeline: Pipeline | None = None) -> dict:
+    """
+    Итог, проблемы и следующее действие — по состоянию треда.
+
+    pipeline — конвейер, чьи этапы считаются. Без него итог знает только
+    выпущенные документы: этап, не выпустивший документа, в словаре не
+    оставляет ничего, и «вышел один из пяти» выглядел бы как «вышел один».
+    Так 23 сентября 2026 конвейер опубликовал один документ из пяти, и ни одна
+    строка итога об этом не сказала.
+    """
     artifacts = state.get("artifacts") or {}
     publication = state.get("publication") or {}
     halt = state.get("halt") or {}
@@ -33,7 +46,15 @@ def summary_of(state: dict) -> dict:
     problems: list[str] = []
     next_steps: list[str] = []
 
-    if artifacts:
+    # При отказе по входу этапы не пропали, их не запускали: причина уже стоит
+    # в треде, и перечень всех этапов подряд к ней ничего не добавит.
+    missing = pipeline.pending(artifacts) if pipeline and not state.get("refused") else []
+
+    if artifacts and pipeline:
+        outcome.append(
+            f"Документов этапов: {len(pipeline.done(artifacts))} из {len(pipeline.roles)}"
+        )
+    elif artifacts:
         outcome.append(f"Документов этапов: {len(artifacts)}")
     if state.get("execution_status"):
         outcome.append(f"Тест: {state['execution_status']}")
@@ -56,6 +77,15 @@ def summary_of(state: dict) -> dict:
             + (halt.get("reason") or "без причины")
         )
         next_steps.append("Исправьте материалы или подтвердите этап заново.")
+
+    # Та же строка, что в сообщении об остановке (`routes.halted_node`), но и
+    # у дошедшего до конца прогона: этап, чья модель не выпустила документа,
+    # иначе пропадал бы без следа — ворота пустой документ пропускают, а
+    # публикация уходит страницами только тех этапов, что состоялись.
+    if missing:
+        problems.append("Не выполнены этапы: " + ", ".join(role.title for role in missing))
+        if not halt.get("stage"):
+            next_steps.append("Повторите ход в этом треде: этапы без документа будут написаны заново.")
 
     status = publication.get("status")
     if status in TROUBLE:

@@ -53,12 +53,18 @@ function duration(runtime: RuntimeSnapshot): string {
   return `${Math.floor(seconds / 60)} мин ${String(seconds % 60).padStart(2, "0")} с`;
 }
 
-/** Подпись показателя и либо его виджет, либо прочерк вместо него. */
+/**
+ * Подпись показателя и либо его виджет, либо прочерк вместо него.
+ *
+ * Виджет с заголовком из манифеста приносит его сам: своя подпись поверх
+ * давала «Стоимость» дважды подряд.
+ */
 function Measure({ title, item, empty }: { title: string; item?: SurfaceItem; empty: string }) {
+  const shown = item && !item.empty ? item : null;
   return (
     <div className="inspector-section">
-      <span className="eyebrow">{title}</span>
-      {item && !item.empty ? (item.node as ReactNode) : <span className="inspector-empty">{empty}</span>}
+      {shown?.title ? null : <span className="eyebrow">{title}</span>}
+      {shown ? (shown.node as ReactNode) : <span className="inspector-empty">{empty}</span>}
     </div>
   );
 }

@@ -23,15 +23,28 @@
 """
 
 import argparse
-import json
-import sys
-import time
 from pathlib import Path
 
-from dotenv import dotenv_values
-
-ROOT = Path(__file__).resolve().parents[1]
-TESTBED_ENV = ROOT / ".env.nt-testbed"
+from portal_shots import (
+    LIVE_APPROVE,
+    ROOT,
+    SCROLL_CONSOLE_TO_END,
+    SCROLL_DIALOG_TO_TEXT,
+    SCROLL_TO_TEXT,
+    approve_all,
+    console_tab,
+    expand,
+    launch,
+    open_portal,
+    playwright,
+    reload,
+    run_task,
+    shoot,
+    shoot_box,
+    shown,
+    view,
+    zoom_out,
+)
 
 TASK = """Проведи нагрузочное тестирование стенда checkout.
 Сценарий: POST /api/checkout с телом {"cart_id": "<из набора данных>", "items": 2}, ожидается HTTP 200.
@@ -41,92 +54,17 @@ SLA: p95 <= 800 мс, доля ошибок <= 1%.
 Остановить прогон при p95 > 2500 мс или доле ошибок > 15%.
 Авторизация не нужна, используй синтетические cart_id."""
 
-RUN_BUTTON = "[запустить]"
-DETAILS_BUTTON = "[подробности]"
-APPROVE_BUTTON = "[подтвердить]"
-# Отвеченная карточка подтверждения остаётся в разметке с погашенной кнопкой:
-# без отбора по «не disabled» локатор цепляется за неё и ждёт, пока она оживёт.
-LIVE_APPROVE = "button:not([disabled])"
-
-# Прогон занимает две-три минуты: разгон и плато идут по часам, а не по модели.
-STEP_MS = 420_000
+# Нагрузка идёт две-три минуты по часам, но ходы модели на демо-шлюзе могут
+# ждать окна квоты.
+STEP_MS = 3_600_000
 
 # Живые метрики надо снять, пока нагрузка идёт. Окно короткое — плато сценария,
 # — поэтому ожидание построено на появлении виджета, а не на фиксированной паузе.
 LIVE_WIDGET = "Статус и метрики"
 
-# Через сколько после разрешения запуска снимать идущую нагрузку: пробный прогон
+# Через сколько после появления метрик снимать идущую нагрузку: пробный прогон
 # занимает секунды, дальше идёт разгон и плато сценария из задачи.
 LIVE_SHOT_MS = 30_000
-
-SCROLL_TO_TEXT = """(needle) => {
-  const node = [...document.querySelectorAll('.engine-document :is(h1, h2, h3, p, li)')]
-    .find((item) => item.textContent.includes(needle));
-  if (!node) return false;
-  let box = node.parentElement;
-  while (box && box.scrollHeight <= box.clientHeight + 2) box = box.parentElement;
-  const target = box ?? document.scrollingElement;
-  target.scrollTop += node.getBoundingClientRect().top - target.getBoundingClientRect().top - 48;
-  return true;
-}"""
-
-SCROLL_JOURNAL_TO_END = """() => {
-  const panel = document.querySelector('.timeline-panel');
-  if (!panel) return false;
-  const box = [panel, ...panel.querySelectorAll('*')]
-    .find((node) => node.scrollHeight > node.clientHeight + 2);
-  if (box) box.scrollTop = box.scrollHeight;
-  return !!box;
-}"""
-
-
-def shown(path: Path) -> str:
-    return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
-
-
-def token() -> str:
-    value = dotenv_values(TESTBED_ENV).get("API_ADMIN_TOKEN") if TESTBED_ENV.exists() else None
-    if not value:
-        sys.exit("в .env.nt-testbed нет API_ADMIN_TOKEN: портал без него получает 401")
-    return value
-
-
-def shoot(target, out: Path, name: str) -> None:
-    """Снимок кадра или панели. Chromium изредка не отдаёт первый."""
-    path = out / name
-    for attempt in range(3):
-        try:
-            target.screenshot(path=str(path), animations="disabled")
-        except Exception:
-            if attempt == 2:
-                raise
-            time.sleep(1.5)
-            continue
-        print(f"снимок: {shown(path)}", flush=True)
-        return
-
-
-def expand(locator) -> bool:
-    """Раскрыть свёрнутый блок, если он есть.
-
-    Кадр важнее раскрытия: неудачный клик по виджету не должен ронять съёмку.
-    Упавший скрипт закрывает поток, LangGraph отменяет run, а граф — честно
-    гасит идущий прогон k6. Один снимок не стоит остановленного НТ.
-    """
-    try:
-        locator.click(timeout=5000)
-        return True
-    except Exception:
-        return False
-
-
-def shoot_box(page, locator, out: Path, name: str) -> None:
-    box = locator.bounding_box()
-    pad = 14
-    clip = {"x": max(box["x"] - pad, 0), "y": max(box["y"] - pad, 0),
-            "width": box["width"] + 2 * pad, "height": box["height"] + 2 * pad}
-    page.screenshot(path=str(out / name), clip=clip, animations="disabled")
-    print(f"снимок: {shown(out / name)}", flush=True)
 
 
 def main() -> None:
@@ -134,125 +72,105 @@ def main() -> None:
     parser.add_argument("--url", default="http://localhost:5173")
     parser.add_argument("--out", default=str(ROOT / "docs" / "image" / "NT_RUN"))
     parser.add_argument("--report", default=str(ROOT / "docs" / "examples" / "nt-run-checkout.md"))
+    parser.add_argument("--thread", help="доснять с разрешения запуска по уже запущенному "
+                        "треду, без нового планирования")
     parser.add_argument("--headed", action="store_true", help="показать браузер")
     args = parser.parse_args()
 
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        sys.exit("нужен playwright: pip install -e .[docs] && playwright install chromium")
-
-    with sync_playwright() as driver:
-        browser = driver.chromium.launch(headless=not args.headed, args=["--disable-gpu"])
-        context = browser.new_context(viewport={"width": 1440, "height": 900},
-                                      device_scale_factor=2, color_scheme="dark")
-        context.add_init_script(
-            f"sessionStorage.setItem('orbita.adminApiToken', {json.dumps(token())});"
-            "localStorage.setItem('orbita.graph', 'nt_run');"
-            "localStorage.setItem('orbita.published.open', '1');"
-            "Object.keys(localStorage).filter(k => k.startsWith('orbita.thread'))"
-            ".forEach(k => localStorage.removeItem(k));")
-        page = context.new_page()
-        task = page.get_by_placeholder("Опишите задачу…")
-        for attempt in range(6):
-            page.goto(args.url)
-            try:
-                task.wait_for(timeout=15_000)
-                break
-            except Exception:
-                if attempt == 5:
-                    raise
-                page.wait_for_timeout(3000)
-
-        # Пустой граф до запуска: видно топологию конвейера и выбранный конвейер.
-        page.wait_for_timeout(1500)
-        shoot(page, out, "portal-graph.png")
-
-        task.fill(TASK)
-        page.get_by_role("button", name=RUN_BUTTON).first.click()
+    with playwright() as driver:
+        browser = launch(driver, headed=args.headed)
+        context, page = open_portal(browser, args.url, "nt_run", console_height=250,
+                                    thread=args.thread)
+        if not args.thread:
+            # Граф до запуска: видно топологию конвейера и выбранный сценарий.
+            zoom_out(page, 2)
+            shoot(page, out, "portal-graph.png")
+            run_task(page, TASK)
 
         # Первая остановка — разрешение запуска. До неё модель читает материалы
         # и собирает план, и именно этот кадр показывает, что оператор видит
         # перед тем, как на стенд уйдёт нагрузка.
-        approve = page.locator(LIVE_APPROVE, has_text=APPROVE_BUTTON).first
+        approve = page.locator(LIVE_APPROVE).first
         approve.wait_for(state="visible", timeout=STEP_MS)
         page.wait_for_timeout(1200)
+        # Планировщик может так и не дойти до плана: исчерпав шаги, граф сразу
+        # просит опубликовать отчёт «подтверждённых прогонов нет». Такую
+        # карточку под именем разрешения запуска снимать нельзя.
+        if page.locator(".approve").first.get_by_text("Подготовлено объектов").count():
+            raise SystemExit("первой остановкой стала публикация, а не разрешение запуска: "
+                             "планировщик не дошёл до плана, кадры не сняты")
         shoot(page, out, "portal-launch-approval.png")
-        # Окно показывает документ свёрнутым. Подтверждается конкретный сценарий
-        # и конкретный код, поэтому для документации он раскрывается: второй кадр
-        # — то, что оператор обязан прочитать до запуска нагрузки.
-        if expand(page.locator("summary", has_text="Сводка конвейера").first):
+        # Окно показывает план свёрнутым. Подтверждается конкретный сценарий
+        # и конкретный код, поэтому для документации он раскрывается: второй
+        # кадр — то, что оператор обязан прочитать до запуска нагрузки. Сводка
+        # начинается набором данных, поэтому кадр подводится к k6-скрипту.
+        summary = page.locator(".approve summary", has_text="Сводка конвейера").first
+        if expand(summary):
             page.wait_for_timeout(600)
+            page.evaluate(SCROLL_DIALOG_TO_TEXT, "k6/http")
+            page.wait_for_timeout(400)
             shoot(page, out, "portal-launch-plan.png")
+            # Развёрнутая сводка выше окна и уводит кнопку за край: нажатие
+            # тогда не доходит, и прогон так и стоит на разрешении.
+            expand(summary)
+            page.wait_for_timeout(400)
         approve.click()
+        try:
+            page.locator(".approve").first.wait_for(state="detached", timeout=60_000)
+        except Exception:
+            reload(page)
 
-        # Пробный прогон, затем основной. Снимок нужен, пока нагрузка идёт:
-        # опора на текст состояния, а не на классы вёрстки — они меняются чаще.
+        # Пробный прогон, затем основной. Метрики живут во вкладке «Результат»;
+        # снимок нужен, пока нагрузка идёт. Тред, открытый заново, живой поток
+        # не получает — его состояние перечитывается перезагрузкой.
+        view(page, "Результат")
+        if args.thread:
+            page.wait_for_timeout(LIVE_SHOT_MS)
+            reload(page)
+            view(page, "Результат")
         page.get_by_text(LIVE_WIDGET).first.wait_for(timeout=STEP_MS)
-        # Виджеты состояния свёрнуты в «JSON»: пока их не раскрыть, ни метрик,
-        # ни test_id на снимке не будет — и ждать их в тексте страницы бесполезно.
-        page.wait_for_timeout(LIVE_SHOT_MS)
+        if not args.thread:
+            page.wait_for_timeout(LIVE_SHOT_MS)
+        shoot(page, out, "portal-live.png")
 
         # Дальше остановки только на публикации: сначала документ вложенного
-        # анализа, потом отчёт кампании. Снимается первая встреченная. Признак
-        # конца — что подтверждать больше нечего: список готовых документов не
-        # годится, в нём лежат отчёты прошлых прогонов с тем же началом имени.
-        publish_shot = False
-        for _ in range(4):
-            approve = page.locator(LIVE_APPROVE, has_text=APPROVE_BUTTON).first
-            try:
-                approve.wait_for(state="visible", timeout=120_000)
-            except Exception:
-                break
-            page.wait_for_timeout(600)
-            if not publish_shot:
-                shoot(page, out, "portal-publish-approval.png")
-                publish_shot = True
-            # Нажатая кнопка гаснет, пока идёт запрос, и остаётся видимой:
-            # без ожидания исчезновения следующий проход цепляется за неё же и
-            # ждёт, пока неактивная кнопка снова станет кликабельной.
-            try:
-                approve.click(timeout=60_000)
-            except Exception:
-                break
-            try:
-                approve.wait_for(state="detached", timeout=60_000)
-            except Exception:
-                page.wait_for_timeout(3000)
+        # анализа, потом отчёт кампании. Снимается первая встреченная.
+        published: list[bool] = []
 
-        document_button = page.locator("button", has_text="Проведи нагрузочное тестирование").last
+        def card(p) -> None:
+            if not published:
+                shoot(p, out, "portal-publish-approval.png")
+                published.append(True)
+
+        approve_all(page, card, timeout_ms=STEP_MS, thread=args.thread)
+
+        # Итоги кампании: план, test_id, измерения прогонов, анализ.
+        view(page, "Результат")
+        page.wait_for_timeout(800)
+        shoot(page, out, "portal-state.png")
+
+        # Отчёт кампании публикуется последним, а список идёт свежими вверх.
+        document_button = page.locator(
+            "details.engine-outline .resource-list button",
+            has_text="Проведи нагрузочное тестирование").first
         document_button.wait_for(state="visible", timeout=STEP_MS)
         document_button.click(timeout=60_000)
-        document = page.locator(".engine-document").first
+        document = page.locator(".document-view .engine-document").first
         document.wait_for(timeout=60_000)
-        page.evaluate("window.scrollTo(0, 0)")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(800)
         shoot(page, out, "portal-report.png")
 
         if page.evaluate(SCROLL_TO_TEXT, "Исторический анализ"):
             page.wait_for_timeout(500)
             shoot(page, out, "portal-report-analysis.png")
 
-        # Панель состояния целиком: план, test_id, измерения прогонов, анализ и
-        # журнал. Снимать её кадром страницы бессмысленно — карточка последнего
-        # подтверждения остаётся в ленте прогона и занимает середину экрана.
-        for title in (LIVE_WIDGET, "Текущий test_id", "Выполненные прогоны"):
-            expand(page.get_by_text(title).first.locator("xpath=following::summary[1]"))
-        state = page.locator(".state-panel, aside").last
-        if state.count():
-            page.wait_for_timeout(400)
-            shoot_box(page, state, out, "portal-state.png")
-
-        page.get_by_role("button", name=DETAILS_BUTTON).first.click()
-        journal = page.locator(".timeline-panel").first
-        journal.wait_for(timeout=30_000)
-        journal.scroll_into_view_if_needed()
-        page.evaluate(SCROLL_JOURNAL_TO_END)
+        console_tab(page, "События")
+        page.evaluate(SCROLL_CONSOLE_TO_END)
         page.wait_for_timeout(500)
-        shoot_box(page, journal, out, "portal-log.png")
+        shoot_box(page, page.locator(".console").first, out, "portal-log.png", pad=0)
 
         report = Path(args.report)
         report.parent.mkdir(parents=True, exist_ok=True)

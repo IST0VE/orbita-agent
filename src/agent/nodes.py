@@ -45,6 +45,7 @@ from agent.documents import (
     text_of,
 )
 from agent.pipeline import Pipeline
+from agent.routes import budget_gate
 from agent.runtime import options
 from agent.state import State, _merge_spend, _merge_usage
 from agent.tools import FILE_TOOLS as TOOLS
@@ -135,6 +136,13 @@ def trim_history(messages: list) -> list:
         include_system=False,
         allow_partial=False,
     )
+
+
+# Переспрос роли, ответившей одним вызовом инструмента (см. `make_role_node`).
+NO_TOOLS_NOW = (
+    "Инструменты на этом этапе недоступны: вызов не будет выполнен. Напиши документ "
+    "этапа по материалам выше; чего в них не хватает — отметь открытым вопросом."
+)
 
 
 def without_tool_calls(message: Any) -> Any:
@@ -327,12 +335,19 @@ def make_role_node(
         # переставали работать там, где им инструменты не нужны вовсе.
         tools = (pipeline.tools or TOOLS) if pipeline.has_tools else ()
         messages = [SystemMessage(content=prefix)] + history
-        if llm is not None:
-            response = llm.invoke(messages)
-        else:
-            response = tool_compat.invoke(
-                model_for, messages, config, tools, allow_tools=asking
-            )
+
+        def ask(messages: list) -> Any:
+            if llm is not None:
+                return llm.invoke(messages)
+            return tool_compat.invoke(model_for, messages, config, tools, allow_tools=asking)
+
+        response = ask(messages)
+        # Счётчики за вызовы уедут в редьюсер, а деньги нужны уже готовыми:
+        # складываем ровно то же, что сложат редьюсеры. Деньги считаются здесь,
+        # тарифом этого вызова, и дальше только складываются: пересчёт итоговых
+        # счётчиков текущей ценой переоценил бы историю при смене модели.
+        turn = extract_usage(response)
+        money = charge(turn, state=state)
 
         # Роль без права спрашивать тоже может позвать инструмент: схемы
         # привязаны ко всем ролям конвейера ради общего префикса, и модель
@@ -342,15 +357,38 @@ def make_role_node(
         # документ, за который заплачено, молча пропадал бы, а следующая роль
         # получала бы «этап не выполнен». На исчерпанном потолке довод тот же,
         # и он же закрывает петлю: без вызовов роутер уводит на следующий этап.
+        #
+        # Бывает, что написанного нет: ответ — один вызов без текста. Так
+        # 23 сентября 2026 qwen3.8-flash отвечала всем четырём ролям после
+        # аналитика, и конвейер публиковал один документ из пяти, не сказав ни
+        # слова. Снятый вызов тогда оставляет пустоту, поэтому роль
+        # переспрашивается один раз — указанием в конце переписки, чтобы
+        # кешируемый префикс остался тем же. Первый ответ в историю не идёт:
+        # за ним висел бы вызов без ответа инструмента. Переспрашивается и
+        # роль с файлами на исчерпанном потолке: предупреждение «ход
+        # последний» уже стоит у неё в переписке, но модель, отвечающую
+        # вызовом без текста, оно не останавливает, а её документ — первый,
+        # и на нём стоят остальные.
+        #
+        # Переспрос — такой же платный вызов, и ворота бюджета перед ним те же,
+        # что перед узлом: первый ответ мог исчерпать лимит. Смотрят они на
+        # состояние, в которое первый вызов уже вписан. По нему же начисляется
+        # второй: для старого checkpoint'а без денег `charge` переносит оценку
+        # истории в первое начисление, и по исходному состоянию перенёс бы её
+        # второй раз.
+        silent = getattr(response, "tool_calls", None) and not text_of(response).strip()
+        charged = {
+            **state,
+            "usage": _merge_usage(state.get("usage"), turn),
+            "spend": _merge_spend(state.get("spend"), money),
+        }
+        if tools and not asking and silent and budget_gate(charged) != "over_budget":
+            response = ask([*messages, HumanMessage(content=NO_TOOLS_NOW)])
+            again = extract_usage(response)
+            turn = _merge_usage(turn, again)
+            money = _merge_spend(money, charge(again, state=charged))
         if not asking:
             response = without_tool_calls(response)
-
-        # Счётчики за этот вызов уедут в редьюсер, а деньги нужны уже готовыми:
-        # складываем ровно то же, что сложат редьюсеры. Деньги считаются здесь,
-        # тарифом этого вызова, и дальше только складываются: пересчёт итоговых
-        # счётчиков текущей ценой переоценил бы историю при смене модели.
-        turn = extract_usage(response)
-        money = charge(turn, state=state)
         update = {
             # Приписка с паузы уезжает в состояние тем же обновлением, что и
             # ответ роли: до него она жила только в локальной переменной, и

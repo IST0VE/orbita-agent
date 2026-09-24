@@ -431,9 +431,14 @@ tbody tr:last-child td {
   font-size: var(--type-body);
 }
 
+/*
+ * Значение сжимается, подпись — нет. Наоборот (`1fr auto`) длинное значение
+ * в одну строку занимало всю ширину, и список выбранных файлов ложился
+ * поверх своей подписи.
+ */
 .key-value > div {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: var(--space-4);
   align-items: baseline;
   padding: var(--space-2) 0;

@@ -429,7 +429,7 @@ def publish_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
     отношения не имеет, — и пересчитывать на каждом кадре.
     """
     update = _publish(state, config, pipeline)
-    return {**update, "summary": summary_of({**state, **update})}
+    return {**update, "summary": summary_of({**state, **update}, pipeline)}
 
 
 def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
