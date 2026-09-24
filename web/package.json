@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test:engine": "node --experimental-strip-types --experimental-specifier-resolution=node --test tests/engine.test.ts tests/auth.test.ts tests/canvas.test.ts tests/csp.test.ts",
+    "test:engine": "node --experimental-strip-types --experimental-specifier-resolution=node --test tests/engine.test.ts tests/auth.test.ts tests/canvas.test.ts tests/csp.test.ts tests/report.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,0 +1,225 @@
+/*
+ * Журнал: записи сервера и интерфейса и отчёт для разработчика.
+ *
+ * Полоса сверху — та же, что у настроек (`.settings-bar`): страница того же
+ * рода, открывается из того же меню, и закрывается тем же крестиком.
+ * Ниже — один столбец записей, свежие сверху: журнал открывают сразу после
+ * ошибки, и искать её в конце списка незачем.
+ */
+
+.journal {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  outline: none;
+  background: var(--bg-main);
+}
+
+.journal-bar .canvas-search input {
+  width: 200px;
+  min-height: var(--control-height);
+  font-size: var(--type-body);
+}
+
+.journal-bar button svg {
+  flex: none;
+}
+
+.journal-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.journal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) var(--space-5) var(--space-7);
+}
+
+.journal-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin: 0 0 var(--space-4);
+}
+
+.journal-load-error,
+.journal-status {
+  margin: 0 0 var(--space-4);
+}
+
+.journal-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Важность записи — полосой слева: цвет читается раньше слова. */
+.journal-row {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.journal-row[data-tone="bad"] {
+  border-left-color: var(--color-danger);
+}
+
+.journal-row[data-tone="warn"] {
+  border-left-color: var(--color-warning);
+}
+
+.journal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+}
+
+.journal-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-dense);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-level {
+  flex: none;
+  padding: 0 var(--space-2);
+  font-size: var(--type-label);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-xs);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.journal-row[data-tone="bad"] .journal-level {
+  color: var(--color-danger-text);
+  background: var(--color-danger-soft);
+}
+
+.journal-row[data-tone="warn"] .journal-level {
+  color: var(--color-warning-text);
+  background: var(--color-warning-soft);
+}
+
+.journal-source {
+  min-width: 0;
+  font-size: var(--type-mono-dense);
+}
+
+.journal-tag {
+  flex: none;
+  font-size: var(--type-label);
+  color: var(--text-secondary);
+}
+
+.journal-copy {
+  flex: none;
+  margin-left: auto;
+}
+
+.journal-message {
+  margin: var(--space-2) 0 0;
+  font-size: var(--type-body);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.journal-trace,
+.journal-preview {
+  margin-top: var(--space-3);
+}
+
+.journal-trace > summary,
+.journal-preview > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.journal-trace > summary::-webkit-details-marker,
+.journal-preview > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal-trace[open] > summary svg,
+.journal-preview[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.journal-trace pre,
+.journal-preview pre {
+  max-height: 420px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) var(--space-4);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-dense);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+}
+
+.journal-preview {
+  margin-top: var(--space-6);
+}
+
+/*
+ * Кнопка у красной плашки: продолжение ошибки, а не отдельное действие.
+ *
+ * Текст ошибки провайдера бывает одним «словом» на сотню символов — хеш
+ * ключа, JSON без пробелов. Без переноса он выталкивал кнопку за край
+ * плашки, и на узком экране вход в журнал пропадал ровно тогда, когда нужен.
+ */
+div.error[role="alert"]:has(.alert-journal) {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+div.error[role="alert"] > span {
+  flex: 1 1 24ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+div.error[role="alert"] .alert-journal {
+  flex: none;
+  margin-left: auto;
+  color: inherit;
+}
+
+@media (max-width: 760px) {
+  .journal-bar .canvas-search input {
+    width: 100%;
+  }
+
+  .journal-body {
+    padding: var(--space-3) var(--space-3) var(--space-6);
+  }
+}

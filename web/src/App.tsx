@@ -36,6 +36,8 @@ import { useServerStatus } from "./hooks/useServerStatus";
 import { InterruptSurface } from "./engine/surfaces/SurfaceRenderer";
 import type { OrbitaState } from "./lib/orbita";
 import { SettingsPage } from "./panels/settings/SettingsPage";
+import { JournalPage, type JournalContext } from "./panels/journal/JournalPage";
+import { describeError, reportClient } from "./lib/clientLog.ts";
 import { AppShell } from "./app/AppShell";
 import { ContextBar } from "./app/ContextBar";
 import { ExecutionConsole, type ConsoleTab } from "./app/ExecutionConsole";
@@ -96,7 +98,7 @@ export function App() {
     task: localStorage.getItem(TASK_KEY) || "",
   }));
   const online = useServerStatus();
-  /** Где находится оператор: рабочая область, база знаний или настройки. */
+  /** Где находится оператор: рабочая область, настройки или журнал. */
   const [section, setSection] = useState<AppSection>("workspace");
   /** На что он смотрит внутри рабочей области. */
   const [view, setView] = useState<WorkspaceView>("graph");
@@ -642,6 +644,8 @@ export function App() {
     if (group) setSettingsGroup(group);
   }, []);
 
+  const openJournal = useCallback(() => setSection("journal"), []);
+
   const toggleAnimation = useCallback(() => {
     setAnimated((value) => {
       localStorage.setItem("orbita.animation", value ? "0" : "1");
@@ -662,6 +666,67 @@ export function App() {
   const locked = stream.isLoading || busy;
   const streamError = stream.error ? runErrorMessage(stream.error) : null;
 
+  /*
+   * Каждая красная плашка оставляет запись в журнале интерфейса. Плашка
+   * исчезает со следующим прогоном или сменой сценария, а пересказывать
+   * разработчику ошибку по памяти — худший из способов её передать.
+   */
+  useEffect(() => {
+    if (assistantsError) reportClient("error", "список сценариев", assistantsError);
+  }, [assistantsError]);
+  useEffect(() => {
+    if (bundleError) reportClient("error", `сценарий ${graphId}`, bundleError);
+    // Сценарий входит в текст записи, но повод для неё — только новая ошибка.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundleError]);
+  useEffect(() => {
+    if (actionError) reportClient("error", "действие", actionError);
+  }, [actionError]);
+  useEffect(() => {
+    if (!stream.error) return;
+    // Плашка показывает переведённый текст, а в журнал уходит и исходная
+    // ошибка SDK: по её классу и стеку разбирают, откуда она пришла.
+    const raw = describeError(stream.error);
+    const detail = [raw.message !== streamError ? raw.message : "", raw.detail ?? ""].filter(Boolean).join("\n");
+    reportClient("error", "прогон", streamError ?? raw.message, detail || undefined);
+    // Запись — одна на ошибку, а не на каждый кадр с тем же текстом.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream.error]);
+
+  const failures = useMemo(
+    () =>
+      runtime.executionOrder
+        .map((id) => runtime.executions[id])
+        .filter((item) => item?.status === "failed")
+        .map((item) => ({
+          time: item.finishedAt,
+          node: item.nodeId,
+          message: item.error?.message || "узел завершился ошибкой",
+        })),
+    [runtime.executionOrder, runtime.executions],
+  );
+  const journalContext = useMemo<JournalContext>(
+    () => ({
+      connection:
+        online === "ok" ? "на связи"
+          : online === "unauthorized" ? "нет доступа (токен API)"
+            : online === "offline" ? "нет сервера" : "проверяется",
+      scenario: label.label,
+      graphId,
+      threadId: runtime.threadId ?? threadId,
+      runId: runtime.runId,
+      runStatus: runtime.runStatus,
+      runError: runtime.error?.message,
+      failures,
+    }),
+    [online, label.label, graphId, runtime.threadId, threadId, runtime.runId, runtime.runStatus, runtime.error, failures],
+  );
+  const journalButton = (
+    <button className="btn-ghost btn-sm alert-journal" onClick={openJournal}>
+      Журнал и отчёт
+    </button>
+  );
+
   return (
     <AppShell
       section={section}
@@ -681,6 +746,7 @@ export function App() {
           online={online}
           onSection={setSection}
           onOpenSettings={openSettings}
+          onOpenJournal={openJournal}
           alerts={alerts}
           onOpenAlerts={() => openConsole("events")}
         />
@@ -723,8 +789,12 @@ export function App() {
               Упрощённый интерфейс: {bundle.warning}
             </div>
           ) : null}
-          {fatalError ? <div className="error" role="alert">{fatalError}</div> : null}
-          {streamError ? <div className="error" role="alert">{streamError}</div> : null}
+          {fatalError ? (
+            <div className="error" role="alert"><span>{fatalError}</span>{journalButton}</div>
+          ) : null}
+          {streamError ? (
+            <div className="error" role="alert"><span>{streamError}</span>{journalButton}</div>
+          ) : null}
         </div>
       }
       sidebar={
@@ -815,6 +885,11 @@ export function App() {
         animated={animated}
         onToggleAnimation={toggleAnimation}
         onResetLayout={resetLeftWidth}
+      />
+      <JournalPage
+        open={section === "journal"}
+        onClose={() => setSection("workspace")}
+        context={journalContext}
       />
       {/*
         Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на

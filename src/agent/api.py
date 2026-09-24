@@ -5,7 +5,8 @@
 а не поднимается вторым сервером: второй процесс — это второй порт, второй
 CORS, вторая точка отказа и лишняя память ради трёх обработчиков.
 
-Здесь ровно то, чего нет в API LangGraph: настройки из `.env` и файлы задач.
+Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы задач
+и журнал сервера для интерфейса.
 Всё, что касается графа, тредов и прогонов, остаётся у самого сервера —
 дублировать его роуты незачем.
 
@@ -34,7 +35,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from agent import config as cfg
-from agent import inputs, jira_writer, pause, publishers, settings_io
+from agent import inputs, jira_writer, logbook, pause, publishers, settings_io
 from agent.security import ApiSecurityMiddleware, auth_error
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
@@ -47,6 +48,9 @@ from agent.ui_engine.registry import ManifestNotFound, registry
 # показали. Записывать это в `.env` — значит стереть настоящий ключ.
 _MASKED = re.compile(r"^.{0,8}\*{4,}$")
 _LOG = logging.getLogger(__name__)
+# Журнал для страницы «Журнал» подключается здесь, при загрузке роутов: до этой
+# точки uvicorn ещё переписывает обработчики корневого логгера (`logbook.install`).
+_LOGBOOK = logbook.install()
 
 
 class RequestBodyTooLarge(ValueError):
@@ -278,6 +282,39 @@ async def get_published_file(request: Request) -> JSONResponse:
     except OSError as exc:
         return _error(f"документ не прочитан: {exc}", 500)
     return JSONResponse({"name": name, "text": text})
+
+
+async def get_logs(request: Request) -> JSONResponse:
+    """
+    Журнал сервера: последние записи `logging` и сведения о процессе.
+
+    Ради этого роута оператору больше не нужен доступ к `docker compose logs`,
+    чтобы узнать, почему упал прогон: трассировка узла, повтор запроса к шлюзу
+    модели и отказ интеграции видны на странице «Журнал» и уходят в отчёт.
+
+    `after` — последний `next`, который клиент уже получил: опрос забирает
+    только новое. `level` — нижняя граница важности, `thread_id` — записи
+    одного треда. Секреты вычищены ещё при записи (`logbook.scrub`).
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    params = request.query_params
+    try:
+        after = max(0, int(params.get("after", "0")))
+        limit = max(1, min(int(params.get("limit", "500")), 2000))
+    except ValueError:
+        return _error("after и limit должны быть целыми числами")
+    level = params.get("level", "info").lower()
+    if level not in logbook.LEVELS:
+        return _error("level: одно из " + ", ".join(logbook.LEVELS))
+    snapshot = _LOGBOOK.snapshot(
+        after=after,
+        level=logbook.LEVELS[level],
+        thread_id=params.get("thread_id", "")[:200],
+        limit=limit,
+    )
+    return JSONResponse({**snapshot, "server": await asyncio.to_thread(logbook.server_info)})
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +648,7 @@ app = Starlette(
         Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
         Route("/api/published", get_published, methods=["GET"]),
         Route("/api/published/file", get_published_file, methods=["GET"]),
+        Route("/api/logs", get_logs, methods=["GET"]),
         Route("/api/ui/capabilities", get_ui_capabilities, methods=["GET"]),
         Route("/api/ui/graphs/{graph_id}/manifest", get_ui_manifest, methods=["GET"]),
         Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),

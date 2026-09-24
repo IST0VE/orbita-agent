@@ -94,6 +94,26 @@ def can_edit(name: str) -> bool:
     return bool(_NAME.fullmatch(name)) and name in known_names() and not is_reserved(name)
 
 
+def named_secret(name: str) -> bool:
+    """
+    Секрет по одному имени — без сверки со списком известных настроек.
+
+    `is_secret` считает секретом и всякое незнакомое имя: интерфейсу настроек
+    показывать незнакомое значение незачем. Журналу сервера (`logbook`) такое
+    правило не годится — он вычищает значения из текста записей, и секретом
+    оказался бы весь `os.environ`: `HOME=/app` стёр бы каталог из каждой
+    трассировки.
+    """
+    if name in _PUBLIC_NAMES:
+        return False
+    spec = settings_schema.BY_NAME.get(name)
+    return (
+        name in _SECRET_NAMES
+        or bool(_SECRET_WORDS & set(name.split("_")))
+        or bool(spec and spec.secret)
+    )
+
+
 def is_secret(name: str) -> bool:
     if name in _PUBLIC_NAMES:
         return False

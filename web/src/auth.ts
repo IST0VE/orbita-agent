@@ -1,9 +1,48 @@
 /** One authenticated transport for settings, graph requests and SDK streams. */
+import { reportClient } from "./lib/clientLog.ts";
+
 const ADMIN_TOKEN_KEY = "orbita.adminApiToken";
 type AuthState = { revision: number; prompt: Promise<void> | null };
 const sessions = new WeakMap<Storage, AuthState>();
 
+function requestLine(input: RequestInfo | URL, init: RequestInit): string {
+  const method = init.method ?? (input instanceof Request ? input.method : "GET");
+  try {
+    return `${method.toUpperCase()} ${new URL(input instanceof Request ? input.url : String(input), window.location.href).pathname}`;
+  } catch {
+    return `${method.toUpperCase()} ${String(input)}`;
+  }
+}
+
+/**
+ * Every request the operator started goes through here, so failures the UI
+ * only shows as one banner line are also kept in the client journal with
+ * the method, path, status and response body. Background health checks are
+ * not recorded: the header already shows "no server", and a journal that
+ * repeats the same line every few seconds is not read.
+ */
 export async function authorizedFetch(input: RequestInfo | URL, init: RequestInit = {}, promptOnUnauthorized = true): Promise<Response> {
+  if (!promptOnUnauthorized) return exchange(input, init, false);
+  try {
+    const response = await exchange(input, init, true);
+    if (response.status >= 500) {
+      const line = `${requestLine(input, init)} → ${response.status}`;
+      response.clone().text().then(
+        (body) => reportClient("error", "запрос", line, body.slice(0, 2000) || undefined),
+        () => reportClient("error", "запрос", line),
+      );
+    }
+    return response;
+  } catch (error) {
+    // A stopped run aborts its stream on purpose; that is not a failure.
+    if ((error as Error)?.name !== "AbortError") {
+      reportClient("warning", "запрос", `${requestLine(input, init)}: ${(error as Error)?.message ?? String(error)}`);
+    }
+    throw error;
+  }
+}
+
+async function exchange(input: RequestInfo | URL, init: RequestInit, promptOnUnauthorized: boolean): Promise<Response> {
   const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (url.username || url.password || !(url.protocol === "https:" || (url.protocol === "http:" && loopback))) {

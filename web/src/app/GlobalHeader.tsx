@@ -13,13 +13,16 @@
  * области. Рабочая поверхность одна, и уходить с неё некуда: настройки
  * открываются слоем из меню профиля.
  *
+ * Журнал ошибок открывается из того же меню и ещё — кнопкой у каждой красной
+ * плашки: туда оператор идёт сразу после ошибки, и искать вход незачем.
+ *
  * Точка входа в настройки одна — меню профиля. Раньше их было две, пункт и
  * шестерёнка, и обе вели в одно место: два одинаковых входа читаются как два
  * разных, и половина операторов ищет в шестерёнке то, чего там нет.
  */
 
 import type { Assistant, ServerStatus } from "../api";
-import { Bell, BrandMark, Palette, Settings } from "../ui/icons";
+import { Bell, BrandMark, Bug, Palette, Settings } from "../ui/icons";
 import { Menu } from "../ui/Menu";
 import { StatusDot } from "../ui";
 import { ScenarioSwitcher } from "./ScenarioSwitcher";
@@ -47,6 +50,7 @@ export function GlobalHeader({
   online,
   onSection,
   onOpenSettings,
+  onOpenJournal,
   alerts,
   onOpenAlerts,
 }: {
@@ -60,6 +64,8 @@ export function GlobalHeader({
   /** Возврат на рабочую область по марке: из настроек и из открытого документа. */
   onSection: (section: AppSection) => void;
   onOpenSettings: (group?: SettingsGroupId) => void;
+  /** Журнал ошибок сервера и интерфейса, из которого собирается отчёт. */
+  onOpenJournal: () => void;
   /** Сколько в текущем прогоне того, о чём стоит сказать: отказы и остановки. */
   alerts: number;
   onOpenAlerts: () => void;
@@ -129,6 +135,13 @@ export function GlobalHeader({
             icon: Palette,
             hint: "Движение фона и плотность интерфейса",
             onSelect: () => onOpenSettings("appearance"),
+          },
+          {
+            id: "journal",
+            label: "Журнал и ошибки",
+            icon: Bug,
+            hint: "Что записали сервер и интерфейс, отчёт для разработчика",
+            onSelect: onOpenJournal,
           },
         ]}
       />

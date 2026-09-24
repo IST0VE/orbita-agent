@@ -145,12 +145,12 @@ Runner отдельно сохраняет `.nt-runs/`: SQLite и файлы k6 
 | LLM | `providers.py`, `tool_compat.py`, `prompts.py`, `*_prompts.py` |
 | Сохранение | `publishers.py`, `documents.py`, `render.py`, `drafts.py` |
 | Atlassian | `confluence.py`, `jira.py`, `jira_writer.py`, `jira_plan.py`, `jira_fields.py`, `jira_forms.py`, `request_pacing.py` |
-| Настройки и API | `config.py`, `settings_io.py`, `api.py` |
+| Настройки и API | `config.py`, `settings_io.py`, `api.py`, `logbook.py` (журнал сервера для `/api/logs`) |
 | Контекст и хранение | `knowledge.py`, `memory.py`, `checkpointer.py` |
 | Анализ НТ | `nt_graph.py`, `nt/`, `integrations/` |
 | Проведение НТ | `nt_run_graph.py`, `nt_run/plan.py`, `nt_run/client.py`, `nt_run/runner.py`, `nt_run/worker.py`, `scripts/serve_nt_runner.py` |
 | Backend UI engine | `src/agent/ui_engine/` |
-| Frontend | `web/src/App.tsx`, `web/src/engine/`, `web/src/panels/` |
+| Frontend | `web/src/App.tsx`, `web/src/engine/`, `web/src/panels/`; журнал и отчёт об ошибке — `web/src/panels/journal/`, `web/src/lib/clientLog.ts`, `web/src/lib/report.ts` |
 
 Короткие имена Python-файлов в таблице относятся к `src/agent/`.
 

@@ -205,3 +205,63 @@ export const checkServer = (signal?: AbortSignal): Promise<ServerStatus> =>
   }, false)
     .then((r): ServerStatus => (r.ok ? "ok" : r.status === 401 || r.status === 403 ? "unauthorized" : "offline"))
     .catch((): ServerStatus => "offline");
+
+/* ------------------------------------------------------------------ */
+/* Журнал сервера                                                      */
+/* ------------------------------------------------------------------ */
+
+/** Запись `logging` сервера; секреты вычищены ещё при записи (`agent/logbook.py`). */
+export type ServerLogRecord = {
+  /** Место записи в журнале — по нему записи сводятся при опросе. */
+  id: number;
+  /** Номер последнего изменения: повтор той же записи его увеличивает. */
+  seq: number;
+  time: string;
+  last_time: string;
+  repeats: number;
+  level: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL" | string;
+  logger: string;
+  message: string;
+  /** Трассировка, если запись сделана вместе с исключением. */
+  exception: string;
+  thread_id: string;
+  run_id: string;
+  graph_id: string;
+  node: string;
+  fields: Record<string, string>;
+};
+
+/** Сведения о процессе для отчёта: версии и модель, без адресов и ключей. */
+export type ServerInfo = {
+  app: string;
+  langgraph: string;
+  langgraph_api: string;
+  python: string;
+  platform: string;
+  provider: string;
+  model: string;
+};
+
+export type ServerLog = {
+  records: ServerLogRecord[];
+  /** Передаётся следующим `after`: опрос забирает только новое. */
+  next: number;
+  truncated: boolean;
+  evicted: number;
+  started_at: string;
+  server: ServerInfo;
+};
+
+export type ServerLogQuery = {
+  after?: number;
+  level?: "debug" | "info" | "warning" | "error";
+  threadId?: string;
+  limit?: number;
+};
+
+export const loadServerLog = ({ after = 0, level = "info", threadId, limit }: ServerLogQuery = {}) => {
+  const query = new URLSearchParams({ after: String(after), level });
+  if (threadId) query.set("thread_id", threadId);
+  if (limit) query.set("limit", String(limit));
+  return json<ServerLog>(`/api/logs?${query}`);
+};
