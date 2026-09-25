@@ -46,8 +46,24 @@ published/
 !docs/measurements/turns-broken-prefix.jsonl
 !docs/measurements/turns-stable-prefix.jsonl
 
-# Локальные входные материалы: никогда не публикуются в репозиторий
-input/
+# Рабочие материалы закрыты по умолчанию. Разрешены только проверенные примеры.
+/input/**
+!/input/example/
+!/input/example/accounts.csv
+!/input/example/ticket.md
+!/input/diagram/
+!/input/diagram/orders-export.drawio
+!/input/partial-refund/
+!/input/partial-refund/current-api.md
+!/input/partial-refund/mail-finance.md
+!/input/partial-refund/meeting-2026-08-18.md
+!/input/partial-refund/refunds-export.csv
+!/input/partial-refund/ticket.md
+!/input/partial-refund-package/
+!/input/partial-refund-package/01-requirements.md
+!/input/partial-refund-package/02-api.md
+!/input/partial-refund-package/03-data.md
+!/input/partial-refund-package/04-architecture.md
 
 # Логи, базы, выгрузки, резервные копии и архивы могут содержать данные пользователей.
 *.log
