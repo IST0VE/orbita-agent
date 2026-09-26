@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 import requests
 
 from agent import config as cfg
-from agent import request_pacing
+from agent import credentials, request_pacing
 
 REQUIRED_VARS = cfg.JIRA_REQUIRED_VARS
 
@@ -82,9 +82,22 @@ class Settings:
     max_chars: int = 12000
 
 
+def _value(name: str) -> str:
+    """Токен и e-mail — того, кто работает (`credentials`); остальное — из `.env`."""
+    try:
+        return credentials.value(name)
+    except credentials.CredentialsError as exc:
+        raise JiraError(str(exc)) from exc
+
+
+def default_project() -> str:
+    """Проект по умолчанию того, кто работает: свой или общий JIRA_PROJECT_KEY."""
+    return _value("JIRA_PROJECT_KEY").upper()
+
+
 def missing_vars() -> list[str]:
     """Каких обязательных переменных не хватает для чтения Jira."""
-    return [name for name in cfg.jira_required_vars() if not cfg.env_str(name)]
+    return [name for name in cfg.jira_required_vars() if not _value(name)]
 
 
 def is_configured() -> bool:
@@ -99,7 +112,7 @@ def load_settings() -> Settings:
     """
     absent = missing_vars()
     if absent:
-        raise JiraError("не заданы переменные окружения: " + ", ".join(absent))
+        raise JiraError(credentials.missing_message(absent))
     base_url = cfg.jira_base_url()
     parsed = urlsplit(base_url)
     local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
@@ -114,8 +127,8 @@ def load_settings() -> Settings:
         )
     return Settings(
         base_url=base_url,
-        token=cfg.jira_token(),
-        email=cfg.jira_email(),
+        token=_value("JIRA_TOKEN"),
+        email=_value("JIRA_EMAIL") or None,
         api_path=cfg.jira_api_path(),
         search_path=cfg.jira_search_path(),
         timeout_s=cfg.jira_timeout_s(),
@@ -186,7 +199,7 @@ def call(method: str, path: str, s: Settings, **kwargs) -> dict:
     try:
         response = request_pacing.send(
             method, url, headers=headers, auth=auth, timeout=s.timeout_s,
-            interval=s.interval_s, **kwargs
+            interval=s.interval_s, system="jira", **kwargs
         )
     except requests.RequestException as exc:
         # Разорванное соединение — та же блокировка, только до HTTP-ответа.

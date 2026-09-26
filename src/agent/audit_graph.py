@@ -43,7 +43,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
-from agent import audit_roles, checks, confluence, inputs, sources
+from agent import audit_roles, checks, confluence, credentials, inputs, metrics, sources
 from agent import graph as common_graph
 
 PIPELINE = audit_roles.PIPELINE
@@ -102,9 +102,9 @@ def missing_package(state: State, config: RunnableConfig) -> str:
         if not absent:
             return ""
         return (
-            "В запросе есть ссылка на страницу Confluence, но читать её нечем: не "
-            "заданы " + ", ".join(absent) + ". Заполните переменные в .env и "
-            "перезапустите сервер — или положите документы файлами в папку задачи. "
+            "В запросе есть ссылка на страницу Confluence, но читать её нечем: "
+            + credentials.missing_message(absent)
+            + ". Или положите документы файлами в папку задачи. "
             "Прогон остановлен до первого вызова модели — деньги не потрачены."
         )
 
@@ -270,4 +270,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "audit")

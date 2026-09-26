@@ -34,7 +34,7 @@ from __future__ import annotations
 from langchain_core.language_models import BaseChatModel
 
 from agent import config as cfg
-from agent import llm_pacing
+from agent import llm_pacing, metrics
 
 # Ритм обращений к модели: один обработчик на процесс, потому что минутное окно
 # шлюз считает по ключу, а не по клиенту. Клиентов ниже несколько — по одному на
@@ -130,7 +130,10 @@ def build_llm(
         # больше десяти мест, и каждое из них обошло бы обёртку.
         # Retries must re-enter the callback. SDK-internal retries bypass it
         # and can exceed TPM/RPM; application calls use llm_retry.invoke.
-        kwargs = dict(cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer], max_retries=0)
+        # Метрики — после ритма: время ответа не должно включать очередь шлюза.
+        kwargs = dict(
+            cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer, metrics.LLM], max_retries=0
+        )
         client = _FACTORIES[name](model_name, kwargs)
         _CLIENTS[key] = client
     return client

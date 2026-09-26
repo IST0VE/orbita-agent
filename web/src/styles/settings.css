@@ -279,6 +279,14 @@
   overflow-wrap: anywhere;
 }
 
+/* Действия раздела «Мои подключения»: под строкой проверки, слева. */
+.set-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
 .set-comment {
   display: flex;
   flex-wrap: wrap;

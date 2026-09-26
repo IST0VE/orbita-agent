@@ -228,6 +228,7 @@ OpenAI-совместимый шлюз подключается через `LLM_
 | Переменная | Шаблон | Назначение |
 | :--- | :--- | :--- |
 | `API_ADMIN_TOKEN` | пусто → HTTP 503 | Обязательный Bearer-токен всего API; 32–256 ASCII-символов, задаётся только на сервере |
+| `METRICS_TOKEN` | пусто → только обычный вход | Токен Prometheus: открывает только `GET /metrics`, от 16 символов; `up.cmd` / `up.sh` создают его сами. См. [MONITORING.md](MONITORING.md) |
 | `API_MAX_REQUEST_BYTES` | `65536` | Лимит тела запроса служебного API |
 | `CHECKPOINT_BACKEND` | `memory` | `memory` или `postgres` для собственного Python-рантайма |
 | `POSTGRES_URI` | Локальное подключение из шаблона | URI PostgreSQL для собственного рантайма |

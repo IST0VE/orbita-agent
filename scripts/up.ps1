@@ -91,7 +91,10 @@ if (-not (Test-Path -LiteralPath $envPath)) {
 }
 
 $settings = Read-DotEnv
-foreach ($name in "API_ADMIN_TOKEN", "NT_RUNNER_TOKEN") {
+# POSTGRES_PASSWORD — пароль базы при создании тома pgdata; USER_SECRETS_KEY —
+# ключ личных токенов. Оба нужны один раз и потом не меняются. METRICS_TOKEN —
+# токен Prometheus из профиля monitoring: без профиля он просто не нужен.
+foreach ($name in "API_ADMIN_TOKEN", "NT_RUNNER_TOKEN", "METRICS_TOKEN", "POSTGRES_PASSWORD", "USER_SECRETS_KEY") {
     if (-not $settings[$name]) {
         Set-DotEnvValue $name (New-Secret)
         Write-Host "В .env записан случайный $name."
@@ -187,6 +190,15 @@ $url = "http://localhost:$port"
 Write-Host ""
 Write-Host "Orbita запущена: $url" -ForegroundColor Green
 Write-Host "При первом входе браузер спросит токен API — это значение API_ADMIN_TOKEN из .env."
+# Профиль monitoring — Prometheus и Grafana (docker-compose.yml).
+$profiles = $env:COMPOSE_PROFILES
+if (-not $profiles) { $profiles = $settings["COMPOSE_PROFILES"] }
+if ($profiles -and ($profiles -split "," | ForEach-Object { $_.Trim() }) -contains "monitoring") {
+    $grafanaPort = "3000"
+    if ($env:ORBITA_GRAFANA_PORT) { $grafanaPort = $env:ORBITA_GRAFANA_PORT }
+    elseif ($settings["ORBITA_GRAFANA_PORT"]) { $grafanaPort = $settings["ORBITA_GRAFANA_PORT"] }
+    Write-Host "Графики:        http://localhost:$grafanaPort  (Grafana, доска Orbita)"
+}
 Write-Host ""
 Write-Host "Журнал агента:  docker compose logs -f agent"
 Write-Host "Стенды для НТ:  config/nt-runner.json, после правки — docker compose restart runner"

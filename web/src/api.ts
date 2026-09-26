@@ -21,6 +21,71 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /* ------------------------------------------------------------------ */
+/* Кто вошёл                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Пользователь с точки зрения сервера. `admin` — правит настройки сервера и
+ * читает его журнал; `service` — вход админ-токеном, а не человеком: у него
+ * нет личных подключений, Jira он читает общим токеном из `.env`.
+ */
+export type Me = { subject: string; name: string; admin: boolean; service: boolean };
+
+export const loadMe = () => json<Me>("/api/me");
+
+/* ------------------------------------------------------------------ */
+/* Мои подключения                                                     */
+/* ------------------------------------------------------------------ */
+
+export type ConnectionCheck = { ok: boolean; detail: string; checked_at?: string };
+
+/** Одно личное поле. `token` — пропуск, `email` — часть пропуска, `place` — куда писать. */
+export type ConnectionField = {
+  name: string;
+  kind: "token" | "email" | "place";
+  label: string;
+  hint: string;
+  /** Сам токен с сервера не приходит никогда — только «задан» и когда. */
+  secret: boolean;
+  filled: boolean;
+  value: string;
+  /** Общее значение из `.env`: его возьмёт прогон, пока своё пусто. Только у `place`. */
+  default: string;
+  updated_at: string | null;
+  error: string | null;
+};
+
+export type Connection = {
+  id: "jira" | "confluence";
+  title: string;
+  /** Куда уйдёт токен: адрес задаёт администратор, и видеть его надо до вставки. */
+  base_url: string;
+  /** Личный токен задан. */
+  connected: boolean;
+  fields: ConnectionField[];
+  check: ConnectionCheck | null;
+};
+
+export type ConnectionsDoc = {
+  /** Почему личные подключения выключены на сервере; null — включены. */
+  unavailable: string | null;
+  systems: Connection[];
+  check?: ConnectionCheck;
+};
+
+export const loadConnections = () => json<ConnectionsDoc>("/api/me/connections");
+
+/** Как у настроек: только тронутые поля, пустая строка стирает значение. */
+export const saveConnections = (values: Record<string, string>) =>
+  json<ConnectionsDoc>("/api/me/connections", { method: "PUT", body: JSON.stringify({ values }) });
+
+export const checkConnection = (system: string) =>
+  json<ConnectionsDoc>(`/api/me/connections/${encodeURIComponent(system)}/check`, { method: "POST" });
+
+export const forgetConnection = (system: string) =>
+  json<ConnectionsDoc>(`/api/me/connections/${encodeURIComponent(system)}`, { method: "DELETE" });
+
+/* ------------------------------------------------------------------ */
 /* Настройки                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -35,6 +100,8 @@ export type Setting = {
   secret: boolean;
   /** false для имён, которые правятся только на сервере (PYTHONPATH и такие). */
   editable: boolean;
+  /** Почему поле закрыто, если его задаёт развёртывание: «задаёт docker-compose.yml». */
+  locked?: string;
   /** Комментарий над переменной в самом `.env`: его пишет оператор. */
   comment: string;
   /** В `.env` что-то лежит. Для секрета это единственный способ узнать. */
@@ -74,6 +141,8 @@ export type SettingsDoc = {
   /** Хоть одна настройка в файле отличается от применённой. */
   restart_required?: boolean;
   note?: string;
+  /** Как применить сохранённое: «перезапустите сервер агента» или команда Compose. */
+  apply?: string;
 };
 
 export const loadSettings = () => json<SettingsDoc>("/api/settings");
@@ -82,6 +151,7 @@ export type SaveResult = {
   saved: string[];
   path: string;
   restart_required: string[];
+  apply?: string;
 };
 
 /**

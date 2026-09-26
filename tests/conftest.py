@@ -50,6 +50,9 @@ _PREFIXES = (
     "JIRA_",
     "ATLASSIAN_",
     "NT_",
+    "OIDC_",
+    "SETTINGS_",
+    "METRICS_",
 )
 _NAMES = (
     "DEEPSEEK_API_KEY",

@@ -25,7 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from agent import config as cfg
-from agent import confluence, drafts, publishers, roles
+from agent import confluence, credentials, drafts, publishers, roles
 from agent.documents import (
     document_header,
     page_title,
@@ -130,7 +130,7 @@ def _publish_skip(
 
     absent = publisher.missing()
     if absent:
-        return ("skipped", "не заданы в .env: " + ", ".join(absent))
+        return ("skipped", credentials.missing_message(absent))
     return None
 
 

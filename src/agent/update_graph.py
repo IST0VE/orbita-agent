@@ -15,9 +15,11 @@ from langgraph.types import interrupt
 
 from agent import config as cfg
 from agent import (
+    credentials,
     drafts,
     inputs,
     llm_retry,
+    metrics,
     nodes,
     outgoing,
     pause,
@@ -197,7 +199,7 @@ def prepare_node(state: State) -> dict:
         }
     absent = publisher.missing()
     if absent:
-        return failed("Публикация не настроена: " + ", ".join(absent))
+        return failed("Публикация не настроена: " + credentials.missing_message(absent))
     title = state["source"]["title"]
     document = (
         state["document"]
@@ -307,4 +309,4 @@ def build_graph(llm: Any = None) -> StateGraph:
     return builder
 
 
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "update")

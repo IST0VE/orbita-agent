@@ -26,6 +26,7 @@ import { ChevronDown, ChevronRight, Search, TriangleAlert, X } from "../../ui/ic
 import { AiSettings } from "./AiSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { groupOf, SETTINGS_GROUPS, sectionTitle, settingLabel } from "./groups";
+import { PersonalConnections } from "./PersonalConnections";
 import { SettingsField } from "./SettingsField";
 
 export function SettingsPage({
@@ -36,6 +37,8 @@ export function SettingsPage({
   animated,
   onToggleAnimation,
   onResetLayout,
+  admin,
+  service,
 }: {
   open: boolean;
   /** С какого раздела открыть: меню профиля ведёт либо к модели, либо к оформлению. */
@@ -45,7 +48,17 @@ export function SettingsPage({
   animated: boolean;
   onToggleAnimation: () => void;
   onResetLayout: () => void;
+  /** Правит настройки сервера. Остальным страница — свои подключения и оформление. */
+  admin: boolean;
+  /** Вход админ-токеном: личных подключений у него нет. */
+  service: boolean;
 }) {
+  const groups = useMemo(
+    () => SETTINGS_GROUPS.filter((item) => (admin || !item.server) && !(service && item.id === "personal")),
+    [admin, service],
+  );
+  const fallback: SettingsGroupId = groups[0]?.id ?? "appearance";
+  const visible = (id: SettingsGroupId | undefined) => (id && groups.some((item) => item.id === id) ? id : fallback);
   const [doc, setDoc] = useState<SettingsDoc | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -53,25 +66,32 @@ export function SettingsPage({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState("");
-  const [group, setGroup] = useState<SettingsGroupId>(wanted ?? "ai");
+  const [group, setGroup] = useState<SettingsGroupId>(() => visible(wanted));
   const savingRef = useRef(false);
   const loadVersion = useRef(0);
   const page = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open || savingRef.current) return;
+    // Настройки сервера сервер отдаёт только администратору: не спрашиваем зря.
+    if (!open || !admin || savingRef.current) return;
     let live = true;
     const version = ++loadVersion.current;
     loadSettings().then((value) => {
       if (live && version === loadVersion.current) { setDoc(value); setError(null); }
     }).catch((e: Error) => { if (live && version === loadVersion.current) setError(e.message); });
     return () => { live = false; };
-  }, [open]);
+  }, [open, admin]);
 
   useEffect(() => {
-    if (open && wanted) { setGroup(wanted); setFilter(""); }
-  }, [open, wanted]);
+    // Роль приходит с сервера после первого кадра: раздел пересчитывается и тогда.
+    if (open && wanted) { setGroup(visible(wanted)); setFilter(""); }
+  }, [open, wanted, groups]);
+
+  // Раздел, которого у этого пользователя нет, — на первый доступный.
+  useEffect(() => {
+    if (!groups.some((item) => item.id === group)) setGroup(fallback);
+  }, [groups, group, fallback]);
 
   // Фокус уходит на страницу и возвращается туда, откуда её открыли: раздел
   // открывается из меню профиля, и вернуться после Escape нужно именно туда.
@@ -129,7 +149,7 @@ export function SettingsPage({
       setStatus(
         `записано ${result.saved.length} в ${result.path}` +
           (restart.length
-            ? ` · перезапустите сервер, чтобы применить: ${restart.join(", ")}`
+            ? ` · чтобы применить ${restart.join(", ")}, ${result.apply ?? "перезапустите сервер агента"}`
             : ""),
       );
     } catch (e) {
@@ -179,7 +199,9 @@ export function SettingsPage({
     />
   );
 
-  const current = SETTINGS_GROUPS.find((item) => item.id === group);
+  const current = groups.find((item) => item.id === group);
+  // Поиск, файл и «Сохранить» относятся к `.env`: без прав на него их нет.
+  const serverTools = admin;
 
   return (
     <div
@@ -197,26 +219,34 @@ export function SettingsPage({
     >
       <div className="settings-bar">
         <h1 className="settings-title">Настройки</h1>
-        <span className="hint mono" title="файл, в который пишутся значения">{doc?.path ?? "…"}</span>
-        <label className="canvas-search">
-          <Search size={15} aria-hidden="true" />
-          <input
-            type="text"
-            value={filter}
-            aria-label="Поиск настройки"
-            placeholder="Найти настройку…"
-            onChange={(event) => setFilter(event.target.value)}
-          />
-        </label>
+        {serverTools ? (
+          <>
+            <span className="hint mono" title="файл, в который пишутся значения">{doc?.path ?? "…"}</span>
+            <label className="canvas-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="text"
+                value={filter}
+                aria-label="Поиск настройки"
+                placeholder="Найти настройку…"
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            </label>
+          </>
+        ) : null}
         <span className="settings-bar-spacer" />
         {status ? <span className="ok">{status}</span> : null}
         {error ? <span className="error">{error}</span> : null}
-        <button onClick={() => { setDrafts({}); setNotes({}); }} disabled={!dirty || saving}>
-          Сбросить правки
-        </button>
-        <button className="btn-primary" onClick={save} disabled={!dirty || saving}>
-          {saving ? "Запись…" : `Сохранить${dirty ? ` (${dirty})` : ""}`}
-        </button>
+        {serverTools ? (
+          <>
+            <button onClick={() => { setDrafts({}); setNotes({}); }} disabled={!dirty || saving}>
+              Сбросить правки
+            </button>
+            <button className="btn-primary" onClick={save} disabled={!dirty || saving}>
+              {saving ? "Запись…" : `Сохранить${dirty ? ` (${dirty})` : ""}`}
+            </button>
+          </>
+        ) : null}
         <button className="btn-ghost btn-icon" aria-label="Закрыть настройки" title="Закрыть · esc" onClick={onClose}>
           <X size={17} aria-hidden="true" />
         </button>
@@ -224,7 +254,7 @@ export function SettingsPage({
 
       <div className="settings-body">
         <nav className="settings-nav" aria-label="Разделы настроек">
-          {SETTINGS_GROUPS.map((item) => (
+          {groups.map((item) => (
             <button
               key={item.id}
               className="settings-nav-item"
@@ -234,7 +264,7 @@ export function SettingsPage({
             >
               <item.icon size={16} aria-hidden="true" />
               <span className="truncate">{item.title}</span>
-              {item.id !== "appearance" && item.id !== "ai" ? (
+              {item.server && item.id !== "ai" ? (
                 <span className="settings-nav-count">
                   {item.id === "advanced"
                     ? (doc?.sections ?? []).reduce((total, section) => total + section.fields.length, 0)
@@ -246,7 +276,7 @@ export function SettingsPage({
         </nav>
 
         <div className="settings-content">
-          {!doc && !error ? (
+          {current?.server && !doc && !error ? (
             <div className="engine-widget">
               <span className="skeleton" style={{ width: "40%" }} />
               <span className="skeleton" style={{ width: "70%" }} />
@@ -254,12 +284,12 @@ export function SettingsPage({
             </div>
           ) : null}
 
-          {doc?.restart_required && !needle ? (
+          {current?.server && doc?.restart_required && !needle ? (
             <p className="settings-restart" role="status">
               <TriangleAlert size={15} aria-hidden="true" />
-              Файл разошёлся с работающим процессом: часть значений применится
-              после перезапуска сервера агента. Что именно применено сейчас —
-              в разделе «Продвинутые».
+              Файл разошёлся с работающим процессом. Чтобы применить,{" "}
+              {doc.apply ?? "перезапустите сервер агента"}. Что именно применено
+              сейчас — в разделе «Продвинутые».
             </p>
           ) : null}
 
@@ -286,6 +316,8 @@ export function SettingsPage({
               onAdvanced={(next, value) => { setGroup(next); setFilter(value); }}
             />
           ) : null}
+
+          {!needle && group === "personal" ? <PersonalConnections service={service} /> : null}
 
           {!needle && group === "appearance" ? (
             <AppearanceSettings
@@ -328,7 +360,7 @@ export function SettingsPage({
             </details>
           ) : null}
 
-          {needle || (group !== "ai" && group !== "appearance") ? (
+          {needle || (current?.server && group !== "ai") ? (
             sections.length ? (
               sections.map((section) => {
                 const heading = sectionTitle(section.title);

@@ -22,8 +22,9 @@
  */
 
 import type { Assistant, ServerStatus } from "../api";
-import { Bell, BrandMark, Bug, Palette, Settings } from "../ui/icons";
-import { Menu } from "../ui/Menu";
+import { currentUser, logout } from "../oidc";
+import { Bell, BrandMark, Bug, KeyRound, LogOut, Palette, Settings } from "../ui/icons";
+import { Menu, type MenuItem } from "../ui/Menu";
 import { StatusDot } from "../ui";
 import { ScenarioSwitcher } from "./ScenarioSwitcher";
 import type { AppSection, SettingsGroupId } from "./sections";
@@ -53,6 +54,8 @@ export function GlobalHeader({
   onOpenJournal,
   alerts,
   onOpenAlerts,
+  admin,
+  service,
 }: {
   assistants: Assistant[];
   assistantId: string;
@@ -69,10 +72,22 @@ export function GlobalHeader({
   /** Сколько в текущем прогоне того, о чём стоит сказать: отказы и остановки. */
   alerts: number;
   onOpenAlerts: () => void;
+  /** Правит настройки сервера и читает его журнал. */
+  admin: boolean;
+  /** Вход админ-токеном: личных подключений нет. */
+  service: boolean;
 }) {
   const connection = online === null
     ? { label: "Связь…", tone: "idle" as const }
     : CONNECTION[online] ?? CONNECTION.offline;
+  // С OIDC в профиле тот, кто вошёл, и выход; без него — безымянный оператор.
+  const user = currentUser();
+  const initials = user
+    ? user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase()
+    : "ОП";
+  const account: MenuItem[] = user
+    ? [{ id: "logout", label: "Выйти", icon: LogOut, hint: user.username, onSelect: logout }]
+    : [];
 
   return (
     <header className="app-header">
@@ -119,16 +134,23 @@ export function GlobalHeader({
 
       <Menu
         className="menu-avatar"
-        label="Оператор и настройки"
-        trigger={<span className="avatar" aria-hidden="true">ОП</span>}
+        label={user ? `${user.name} и настройки` : "Оператор и настройки"}
+        trigger={<span className="avatar" aria-hidden="true">{initials}</span>}
         items={[
-          {
+          ...(service ? [] : [{
+            id: "my-connections",
+            label: "Мои подключения",
+            icon: KeyRound,
+            hint: "Ваши токены Jira и Confluence",
+            onSelect: () => onOpenSettings("personal"),
+          }]),
+          ...(admin ? [{
             id: "app-settings",
-            label: "Настройки приложения",
+            label: "Настройки сервера",
             icon: Settings,
             hint: "Модель, подключения, интеграции, выполнение",
             onSelect: () => onOpenSettings("ai"),
-          },
+          }] : []),
           {
             id: "appearance",
             label: "Оформление",
@@ -140,9 +162,12 @@ export function GlobalHeader({
             id: "journal",
             label: "Журнал и ошибки",
             icon: Bug,
-            hint: "Что записали сервер и интерфейс, отчёт для разработчика",
+            hint: admin
+              ? "Что записали сервер и интерфейс, отчёт для разработчика"
+              : "Ошибки интерфейса и отчёт для разработчика",
             onSelect: onOpenJournal,
           },
+          ...account,
         ]}
       />
     </header>

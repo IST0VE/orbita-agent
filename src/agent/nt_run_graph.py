@@ -16,7 +16,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import confluence, llm_retry, nodes, pause, tool_compat, tools
+from agent import confluence, llm_retry, metrics, nodes, pause, tool_compat, tools
 from agent.cost import charge, cost_summary, extract_usage
 from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
@@ -540,4 +540,9 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
     return builder
 
 
-graph = build_graph().compile().with_config({"recursion_limit": 10000})
+# execute_tools зовёт инструменты сам, мимо ToolNode — набор тот же, что в build_graph.
+graph = metrics.observe(
+    build_graph().compile().with_config({"recursion_limit": 10000}),
+    "nt_run",
+    tools=[*tools.RESEARCH_TOOLS, write_test_files],
+)

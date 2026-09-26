@@ -48,7 +48,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from agent import config as cfg
-from agent import outgoing, request_pacing
+from agent import credentials, outgoing, request_pacing
 
 REQUIRED_VARS = cfg.CONFLUENCE_REQUIRED_VARS
 
@@ -93,9 +93,22 @@ class Settings:
 # Конфигурация снимается единым снимком перед публикацией. Изменения окружения
 # процесса видны следующему вызову; отредактированный `.env` требует перезапуска.
 # --------------------------------------------------------------------------
-def missing_vars() -> list[str]:
+#: Без пространства: чтобы проверить вход, публиковать некуда и не нужно.
+_CONNECTION_VARS = ("CONFLUENCE_BASE_URL", "CONFLUENCE_TOKEN")
+
+
+def _value(name: str) -> str:
+    """Токен и e-mail — того, кто работает (`credentials`); остальное — из `.env`."""
+    try:
+        return credentials.value(name)
+    except credentials.CredentialsError as exc:
+        raise ConfluenceError(str(exc)) from exc
+
+
+def missing_vars(required: tuple[str, ...] | None = None) -> list[str]:
     """Каких обязательных переменных не хватает для публикации."""
-    return [name for name in cfg.confluence_required_vars() if not cfg.env_str(name)]
+    names = cfg.confluence_required_vars() if required is None else required
+    return [name for name in names if not _value(name)]
 
 
 def is_enabled() -> bool:
@@ -107,10 +120,10 @@ def is_configured() -> bool:
     return is_enabled() and not missing_vars()
 
 
-def load_settings() -> Settings:
-    absent = missing_vars()
+def load_settings(*, require_space: bool = True) -> Settings:
+    absent = missing_vars() if require_space else missing_vars(_CONNECTION_VARS)
     if absent:
-        raise ConfluenceError("не заданы переменные окружения: " + ", ".join(absent))
+        raise ConfluenceError(credentials.missing_message(absent))
     base_url = cfg.confluence_base_url()
     parsed = urlsplit(base_url)
     local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
@@ -127,11 +140,13 @@ def load_settings() -> Settings:
         )
     return Settings(
         base_url=base_url,
-        token=cfg.confluence_token(),
-        space_key=cfg.confluence_space_key(),
-        space_id=cfg.confluence_space_id(),
-        email=cfg.confluence_email(),
-        parent_id=cfg.confluence_parent_id(),
+        token=_value("CONFLUENCE_TOKEN"),
+        # Пространство и родитель — тоже того, кто работает: у каждого своё
+        # место публикации, общее из `.env` — только по умолчанию.
+        space_key=_value("CONFLUENCE_SPACE_KEY"),
+        space_id=_value("CONFLUENCE_SPACE_ID") or None,
+        email=_value("CONFLUENCE_EMAIL") or None,
+        parent_id=_value("CONFLUENCE_PARENT_PAGE_ID") or None,
         api_path=cfg.confluence_api_path(),
         api_version=cfg.confluence_api_version(),
         timeout_s=cfg.confluence_timeout_s(),
@@ -190,7 +205,7 @@ def _call(method: str, path: str, s: Settings, **kwargs) -> dict:
     try:
         response = request_pacing.send(
             method, url, headers=headers, auth=auth, timeout=s.timeout_s,
-            interval=s.interval_s, **kwargs
+            interval=s.interval_s, system="confluence", **kwargs
         )
     except requests.RequestException as exc:
         # Разорванное соединение — та же блокировка, только до HTTP-ответа:
@@ -498,6 +513,33 @@ def _cql_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+#: (адрес Confluence, id пространства) → ключ. Ключ у пространства постоянный,
+#: и спрашивать его перед каждым поиском незачем.
+_SPACE_KEYS: dict[tuple[str, str], str] = {}
+
+
+def _space_key(s: Settings) -> str:
+    """
+    Ключ пространства публикации — CQL знает пространство только по ключу.
+
+    REST v2 публикует по числовому id, и свой id пользователь задаёт без ключа
+    (`credentials`). Ключ тогда спрашивается у самой Confluence: без него поиск
+    ушёл бы в общее пространство из `.env` или во все сразу.
+    """
+    if s.space_key or s.api_version != "v2" or not s.space_id:
+        return s.space_key
+    if not s.space_id.isdecimal():
+        raise ConfluenceError(f"CONFLUENCE_SPACE_ID должен быть числом, получено {s.space_id!r}")
+    cache = (s.base_url, s.space_id)
+    if cache not in _SPACE_KEYS:
+        data = _call("GET", f"{s.api_path}/spaces/{s.space_id}", s)
+        key = str(data.get("key") or "").strip()
+        if not key:
+            raise ConfluenceError(f"Confluence не назвал ключ пространства {s.space_id}")
+        _SPACE_KEYS[cache] = key
+    return _SPACE_KEYS[cache]
+
+
 def search(query: str, settings: Settings | None = None) -> list[dict]:
     """
     Страницы пространства по тексту запроса.
@@ -505,7 +547,7 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
     CQL собирается здесь, а не приходит от модели: свободный CQL — чужой язык
     запросов под нашим токеном, и `space = OTHER` в нём выносит поиск за
     пределы пространства, которое разрешил оператор. Ограничение по
-    CONFLUENCE_SPACE_KEY ставится тут, и снять его изнутри запроса нельзя.
+    пространству публикации ставится тут, и снять его изнутри запроса нельзя.
     """
     s = settings or load_settings()
     text = (query or "").strip()
@@ -513,8 +555,9 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
         return []
 
     parts = ['type = "page"', f'text ~ "{_cql_escape(text)}"']
-    if s.space_key:
-        parts.insert(1, f'space = "{_cql_escape(s.space_key)}"')
+    space_key = _space_key(s)
+    if space_key:
+        parts.insert(1, f'space = "{_cql_escape(space_key)}"')
     data = _call(
         "GET",
         s.search_path,

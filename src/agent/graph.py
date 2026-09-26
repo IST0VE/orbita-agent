@@ -78,6 +78,7 @@ from __future__ import annotations
 # на них ссылаются тесты, и молча увести их в другой модуль значило бы
 # сломать вызывающих ради чистоты списка.
 # ruff: noqa: F401
+from agent import metrics
 from agent.builder import build_graph
 from agent.cost import (
     cost_summary,
@@ -135,4 +136,4 @@ from agent.tools import list_task_files, read_task_file
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера.
 # Персистентность на сервере своя, свой чекпоинтер тут только конфликтует.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "agent")

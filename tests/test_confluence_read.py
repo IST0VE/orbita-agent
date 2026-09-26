@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import responses
 
@@ -107,6 +109,35 @@ def test_v2_still_searches_through_v1():
     confluence.search("что угодно", V2)
 
     assert responses.calls[0].request.url.startswith(BASE + SEARCH)
+
+
+@responses.activate
+def test_v2_without_a_key_learns_it_from_the_space_id(monkeypatch):
+    """CQL знает пространство только по ключу, а v2 публикует по id."""
+    monkeypatch.setattr(confluence, "_SPACE_KEYS", {})
+    responses.add(responses.GET, BASE + "/api/v2/spaces/777", json={"id": "777", "key": "OWN"})
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+    by_id = dataclasses.replace(V2, space_key="")
+
+    confluence.search("вебхук", by_id)
+    confluence.search("вебхук", by_id)
+
+    searched = [call.request.params["cql"] for call in responses.calls if "cql" in call.request.params]
+    assert searched == ['type = "page" AND space = "OWN" AND text ~ "вебхук"'] * 2
+    # Ключ пространства постоянный: спрошен один раз на оба поиска.
+    assert len(responses.calls) == 3
+
+
+@responses.activate
+def test_v2_without_a_known_key_does_not_search_everywhere(monkeypatch):
+    monkeypatch.setattr(confluence, "_SPACE_KEYS", {})
+    responses.add(responses.GET, BASE + "/api/v2/spaces/777", json={"id": "777"})
+
+    with pytest.raises(confluence.ConfluenceError, match="ключ пространства 777"):
+        confluence.search("вебхук", dataclasses.replace(V2, space_key=""))
+
+    # Поиск без `space = …` прошёл бы по всем пространствам, куда пускает токен.
+    assert [call.request.url for call in responses.calls] == [BASE + "/api/v2/spaces/777"]
 
 
 @responses.activate

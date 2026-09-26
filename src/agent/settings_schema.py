@@ -100,7 +100,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("JIRA_EPIC_TYPE", kind="text"),
     Setting("JIRA_JOURNAL_PATH", kind="text"),
     Setting("JIRA_MAX_ISSUES", kind="int", minimum=1, maximum=200),
-    Setting("JIRA_PROJECT_KEY", kind="text", secret=True),
+    Setting("JIRA_PROJECT_KEY", kind="text"),
     Setting("JIRA_READ_MAX_CHARS", kind="int", minimum=500),
     Setting("JIRA_REQUEST_INTERVAL_S", kind="float", minimum=0.0),
     Setting("JIRA_SEARCH_LIMIT", kind="int", minimum=1, maximum=50),
@@ -127,6 +127,12 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("MEMORY_ENABLED", kind="bool"),
     Setting("MEMORY_MAX_FACTS", kind="int", minimum=0),
     Setting("MEMORY_NAMESPACE", kind="text"),
+    Setting("METRICS_TOKEN", kind="text", secret=True),
+    Setting("OIDC_ADMIN_ROLE", kind="text"),
+    Setting("OIDC_CLIENT_ID", kind="text"),
+    Setting("OIDC_ISSUER", kind="text"),
+    Setting("OIDC_JWKS_URL", kind="text"),
+    Setting("OIDC_REQUIRED_ROLE", kind="text"),
     Setting(
         "PIPELINE_APPROVAL_STAGES", kind="choice", choices=cfg.PIPELINE_APPROVAL_STAGES_MODES
     ),
@@ -140,6 +146,8 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("PUBLISH_REQUIRE_APPROVAL", kind="bool"),
     Setting("PUBLISH_TARGET", kind="choice", choices=cfg.PUBLISH_TARGETS),
     Setting("TOOL_TURNS_PER_RUN", kind="int", minimum=0),
+    Setting("USER_SECRETS_KEY", kind="text", secret=True),
+    Setting("USER_SECRETS_OLD_KEYS", kind="text", secret=True),
 )
 
 BY_NAME: dict[str, Setting] = {item.name: item for item in SETTINGS}

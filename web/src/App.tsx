@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 
-import { API_URL, loadAssistants, type Assistant } from "./api";
+import { API_URL, loadAssistants, loadMe, type Assistant, type Me } from "./api";
 import { authorizedFetch } from "./auth";
+import { currentUser } from "./oidc";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
   cancelPause,
@@ -56,7 +57,12 @@ const GRAPH_KEY = "orbita.graph";
 const TASK_KEY = "orbita.task";
 const DEFAULT_GRAPH = "agent";
 const apiUrl = API_URL || window.location.origin;
-const threadKey = (graphId: string) => `orbita.thread.${graphId}`;
+// Тред свой у каждого пользователя: на общем компьютере следующий вошедший
+// не должен открывать тред предыдущего — сервер его всё равно не отдаст.
+const threadKey = (graphId: string) => {
+  const owner = currentUser()?.subject;
+  return owner ? `orbita.thread.${owner}.${graphId}` : `orbita.thread.${graphId}`;
+};
 
 function pickAssistant(list: Assistant[], wanted: string): Assistant | undefined {
   return list.find((item) => item.assistant_id === wanted || item.graph_id === wanted) ?? list[0];
@@ -98,6 +104,14 @@ export function App() {
     task: localStorage.getItem(TASK_KEY) || "",
   }));
   const online = useServerStatus();
+  /** Кто вошёл с точки зрения сервера: от этого зависят настройки и журнал. */
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    if (online !== "ok" || me) return;
+    let live = true;
+    loadMe().then((value) => live && setMe(value)).catch(() => undefined);
+    return () => { live = false; };
+  }, [online, me]);
   /** Где находится оператор: рабочая область, настройки или журнал. */
   const [section, setSection] = useState<AppSection>("workspace");
   /** На что он смотрит внутри рабочей области. */
@@ -747,6 +761,8 @@ export function App() {
           onSection={setSection}
           onOpenSettings={openSettings}
           onOpenJournal={openJournal}
+          admin={me?.admin ?? false}
+          service={me?.service ?? false}
           alerts={alerts}
           onOpenAlerts={() => openConsole("events")}
         />
@@ -885,11 +901,14 @@ export function App() {
         animated={animated}
         onToggleAnimation={toggleAnimation}
         onResetLayout={resetLeftWidth}
+        admin={me?.admin ?? false}
+        service={me?.service ?? false}
       />
       <JournalPage
         open={section === "journal"}
         onClose={() => setSection("workspace")}
         context={journalContext}
+        serverLog={me?.admin ?? false}
       />
       {/*
         Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на

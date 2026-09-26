@@ -35,8 +35,18 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from agent import config as cfg
-from agent import inputs, jira_writer, logbook, pause, publishers, settings_io
-from agent.security import ApiSecurityMiddleware, auth_error
+from agent import (
+    credentials,
+    inputs,
+    jira_writer,
+    logbook,
+    metrics,
+    pause,
+    publishers,
+    settings_io,
+)
+from agent.auth import owns_thread
+from agent.security import ApiSecurityMiddleware, admin_error, auth_error, principal_of
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
 from agent.ui_engine.forms import FormValidationError, validate_value
@@ -71,7 +81,11 @@ def _error(
 
 
 def _auth_error(request: Request) -> JSONResponse | None:
-    return auth_error(request.headers)
+    return auth_error(request.headers, request.scope)
+
+
+def _admin_error(request: Request) -> JSONResponse | None:
+    return _auth_error(request) or admin_error(request.scope)
 
 
 async def _json_body(request: Request) -> dict:
@@ -109,9 +123,16 @@ async def _json_body(request: Request) -> dict:
 # операции цикл событий подвешивает вместе с настройками ещё и чужие ходы.
 # Поэтому вся работа с диском уезжает в поток.
 async def get_settings(request: Request) -> JSONResponse:
-    if denied := _auth_error(request):
+    # Настройки сервера — одни на всех, и значения в них не только секреты:
+    # адрес Jira, куда уйдёт токен, правит администратор, а не любой вошедший.
+    if denied := _admin_error(request):
         return denied
-    return JSONResponse(await asyncio.to_thread(settings_io.describe))
+    try:
+        return JSONResponse(await asyncio.to_thread(settings_io.describe))
+    except PermissionError as exc:
+        # В Compose файл принадлежит хосту: на Linux `up.sh` ставит ему 600, и
+        # пользователь контейнера его не читает. Пустая страница молчала бы об этом.
+        return _error(f"нет доступа к файлу настроек {exc.filename}: см. docs/DEPLOYMENT.md", 503)
 
 
 def _env_name_error(name: object) -> str | None:
@@ -145,7 +166,7 @@ async def put_settings(request: Request) -> JSONResponse:
     похожее на неё, отбивается здесь.
     ---
     """
-    if denied := _auth_error(request):
+    if denied := _admin_error(request):
         return denied
     try:
         body = await _json_body(request)
@@ -181,7 +202,9 @@ async def put_settings(request: Request) -> JSONResponse:
         notes[name] = "" if text is None else str(text)
 
     if not updates and not notes:
-        return JSONResponse({"saved": [], "path": ".env", "restart_required": []})
+        return JSONResponse(
+            {"saved": [], "path": ".env", "restart_required": [], "apply": settings_io.apply_hint()}
+        )
 
     try:
         result = await asyncio.to_thread(settings_io.save, updates, notes)
@@ -192,6 +215,136 @@ async def put_settings(request: Request) -> JSONResponse:
     # которого на самом деле в процессе нет.
     result["restart_required"] = sorted(updates)
     return JSONResponse(result)
+
+
+async def get_me(request: Request) -> JSONResponse:
+    """
+    Кто вошёл и что ему можно: интерфейс прячет то, что сервер всё равно не отдаст.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    principal = principal_of(request.scope)
+    return JSONResponse(
+        {
+            "subject": principal.subject,
+            "name": principal.name,
+            "admin": principal.admin,
+            "service": principal.service,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Мои подключения: личные токены Jira и Confluence (credentials.py)
+# ---------------------------------------------------------------------------
+_NO_PERSONAL = (
+    "админ-токен работает общими токенами Jira и Confluence из .env — "
+    "личные подключения есть у пользователей, вошедших через Keycloak"
+)
+
+
+def _personal_subject(request: Request) -> str | JSONResponse:
+    if denied := _auth_error(request):
+        return denied
+    principal = principal_of(request.scope)
+    if principal.service:
+        return _error(_NO_PERSONAL, 400, error_code="connections_service")
+    return principal.subject
+
+
+async def _connections(subject: str, **extra) -> JSONResponse:
+    try:
+        described = await asyncio.to_thread(credentials.describe, subject)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return JSONResponse({**described, **extra})
+
+
+async def get_connections(request: Request) -> JSONResponse:
+    """
+    Мои подключения: задан ли токен, e-mail, куда уйдёт токен и последняя проверка.
+
+    Сам токен не отдаётся никогда — ни маской, ни началом.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    return await _connections(subject)
+
+
+async def put_connections(request: Request) -> JSONResponse:
+    """
+    Записать личные значения: `{"values": {"JIRA_TOKEN": "...", "JIRA_EMAIL": ""}}`.
+
+    Как у настроек: приходит только тронутое, пустая строка стирает значение.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc))
+    values = body.get("values")
+    if not isinstance(values, dict):
+        return _error("ожидается объект `values` вида {ПЕРЕМЕННАЯ: значение}")
+    try:
+        saved = await asyncio.to_thread(credentials.save, subject, values)
+    except ValueError as exc:
+        return _error(str(exc))
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject, saved=saved)
+
+
+def _system(request: Request) -> str | JSONResponse:
+    system = request.path_params["system"]
+    if system not in credentials.SYSTEMS:
+        return _error(f"{system!r}: подключения бывают " + ", ".join(credentials.SYSTEMS), 404)
+    return system
+
+
+async def delete_connection(request: Request) -> JSONResponse:
+    """
+    Отключить систему: стереть и токен, и e-mail, и прошлую проверку.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    system = _system(request)
+    if isinstance(system, JSONResponse):
+        return system
+    try:
+        await asyncio.to_thread(credentials.forget, subject, system)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject)
+
+
+async def check_connection(request: Request) -> JSONResponse:
+    """
+    Проверить подключение запросом «кто я» (`/myself`, `/user/current`) с личным токеном.
+
+    Отказ самой Jira — не ошибка запроса: он и есть ответ, и приходит в `check`.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    system = _system(request)
+    if isinstance(system, JSONResponse):
+        return system
+    try:
+        result = await asyncio.to_thread(credentials.check, subject, system)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject, check=result)
 
 
 def _inputs_snapshot() -> dict:
@@ -295,9 +448,12 @@ async def get_logs(request: Request) -> JSONResponse:
     `after` — последний `next`, который клиент уже получил: опрос забирает
     только новое. `level` — нижняя граница важности, `thread_id` — записи
     одного треда. Секреты вычищены ещё при записи (`logbook.scrub`).
+
+    Только администратору: в журнале трассировки всех прогонов, а значит и
+    куски чужих задач.
     ---
     """
-    if denied := _auth_error(request):
+    if denied := _admin_error(request):
         return denied
     params = request.query_params
     try:
@@ -471,12 +627,15 @@ async def get_ui_resource(request: Request) -> JSONResponse:
         # Ненастроенная Jira — не ошибка запроса: интерфейс показывает поле
         # ключа проекта и подсказку, а не красный экран. Ошибкой отвечает
         # только сам трекер, и тогда её видно как есть.
-        absent = await asyncio.to_thread(jira_writer.missing_vars)
+        try:
+            absent = await asyncio.to_thread(jira_writer.missing_vars)
+        except jira_writer.JiraError as exc:
+            return _error(str(exc), 503, error_code="ui_resource_unavailable")
         if absent:
             return JSONResponse(
                 {
                     "projects": [],
-                    "reason": "не заданы " + ", ".join(absent),
+                    "reason": credentials.missing_message(absent),
                     "default": "",
                 }
             )
@@ -484,9 +643,11 @@ async def get_ui_resource(request: Request) -> JSONResponse:
             found = await asyncio.to_thread(jira_writer.projects)
         except jira_writer.JiraError as exc:
             return _error(str(exc), 502, error_code="ui_resource_unavailable")
-        return JSONResponse(
-            {"projects": found, "default": await asyncio.to_thread(cfg.jira_project_key)}
-        )
+        try:
+            default = await asyncio.to_thread(jira_writer.jira.default_project)
+        except jira_writer.JiraError as exc:
+            return _error(str(exc), 503, error_code="ui_resource_unavailable")
+        return JSONResponse({"projects": found, "default": default})
     return _error("resource operation not implemented", 501, error_code="ui_resource_unavailable")
 
 
@@ -612,6 +773,10 @@ async def ui_pause(request: Request) -> JSONResponse:
             400,
             error_code="ui_pause_context_missing",
         )
+    # Роут свой, и фильтры LangGraph его не касаются: без этой сверки пауза
+    # останавливала бы и чужой прогон, стоило узнать id треда.
+    if not await owns_thread(principal_of(request.scope), thread_id):
+        return _error("тред не найден", 404, error_code="ui_pause_not_found")
     if request.method == "GET":
         return JSONResponse(pause.board.status(thread_id))
     if request.method == "DELETE":
@@ -625,8 +790,12 @@ async def ui_pause(request: Request) -> JSONResponse:
 
 
 async def get_ui_events(request: Request) -> JSONResponse:
-    """Bounded replay window for events emitted through the optional adapter."""
-    if denied := _auth_error(request):
+    """Bounded replay window for events emitted through the optional adapter.
+
+    События адресуются прогоном, а не тредом, и владельца у них не проверить:
+    поэтому окно открыто только администратору.
+    """
+    if denied := _admin_error(request):
         return denied
     run_id = request.path_params["run_id"]
     try:
@@ -638,23 +807,35 @@ async def get_ui_events(request: Request) -> JSONResponse:
     return JSONResponse({"events": result, "next_sequence": result[-1]["sequence"] if result else after})
 
 
+routes = [
+    Route("/api/me", get_me, methods=["GET"]),
+    Route("/api/me/connections", get_connections, methods=["GET"]),
+    Route("/api/me/connections", put_connections, methods=["PUT"]),
+    Route("/api/me/connections/{system}", delete_connection, methods=["DELETE"]),
+    Route("/api/me/connections/{system}/check", check_connection, methods=["POST"]),
+    Route("/api/settings", get_settings, methods=["GET"]),
+    Route("/api/settings", put_settings, methods=["PUT"]),
+    Route("/api/inputs", get_inputs, methods=["GET"]),
+    Route("/api/inputs", post_inputs, methods=["POST"]),
+    Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
+    Route("/api/published", get_published, methods=["GET"]),
+    Route("/api/published/file", get_published_file, methods=["GET"]),
+    Route("/api/logs", get_logs, methods=["GET"]),
+    Route("/api/ui/capabilities", get_ui_capabilities, methods=["GET"]),
+    Route("/api/ui/graphs/{graph_id}/manifest", get_ui_manifest, methods=["GET"]),
+    Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),
+    Route("/api/ui/resources/{resource_id}", get_ui_resource, methods=["GET", "POST"]),
+    Route("/api/ui/actions/validate", validate_ui_action, methods=["POST"]),
+    Route("/api/ui/pause", ui_pause, methods=["GET", "POST", "DELETE"]),
+    Route("/api/ui/runs/{run_id}/events", get_ui_events, methods=["GET"]),
+]
+
+# Middleware отсюда LangGraph ставит на весь сервер, первым — внешний. Метрики
+# снаружи проверки входа: отказы 401 и 403 тоже запросы, и их всплеск важен.
 app = Starlette(
-    middleware=[Middleware(ApiSecurityMiddleware)],
-    routes=[
-        Route("/api/settings", get_settings, methods=["GET"]),
-        Route("/api/settings", put_settings, methods=["PUT"]),
-        Route("/api/inputs", get_inputs, methods=["GET"]),
-        Route("/api/inputs", post_inputs, methods=["POST"]),
-        Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
-        Route("/api/published", get_published, methods=["GET"]),
-        Route("/api/published/file", get_published_file, methods=["GET"]),
-        Route("/api/logs", get_logs, methods=["GET"]),
-        Route("/api/ui/capabilities", get_ui_capabilities, methods=["GET"]),
-        Route("/api/ui/graphs/{graph_id}/manifest", get_ui_manifest, methods=["GET"]),
-        Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),
-        Route("/api/ui/resources/{resource_id}", get_ui_resource, methods=["GET", "POST"]),
-        Route("/api/ui/actions/validate", validate_ui_action, methods=["POST"]),
-        Route("/api/ui/pause", ui_pause, methods=["GET", "POST", "DELETE"]),
-        Route("/api/ui/runs/{run_id}/events", get_ui_events, methods=["GET"]),
-    ]
+    middleware=[
+        Middleware(metrics.HttpMetricsMiddleware, routes=routes),
+        Middleware(ApiSecurityMiddleware),
+    ],
+    routes=routes,
 )

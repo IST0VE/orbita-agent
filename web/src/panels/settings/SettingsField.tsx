@@ -109,9 +109,9 @@ export function SettingsField({
   const control = () => {
     if (!field.editable) {
       return (
-        <span className="swatch" title="поле отсутствует в .env.example">
+        <span className="swatch" title={field.locked ?? "поле отсутствует в .env.example"}>
           {field.secret ? (field.filled ? field.value : "не задано") : field.value || "не задано"}
-          {" · только вручную"}
+          {field.locked ? ` · ${field.locked}` : " · только вручную"}
         </span>
       );
     }

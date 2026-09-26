@@ -92,8 +92,8 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
+from agent import credentials, inputs, jira, metrics, prep_roles, sources
 from agent import graph as common_graph
-from agent import inputs, jira, prep_roles, sources
 
 
 class State(common_graph.State, total=False):
@@ -131,11 +131,10 @@ def missing_source(state: State, config: RunnableConfig) -> str:
     absent = jira.missing_vars()
     if absent:
         return (
-            "Читать задачу нечем: не заданы " + ", ".join(absent) + ". Этот конвейер "
-            "начинается с чтения тикета в Jira — без доступа он выпустит пять "
-            "документов из `TBD` и возьмёт за них деньги. Заполните переменные "
-            "в .env и перезапустите сервер. Прогон остановлен до первого вызова "
-            "модели — деньги не потрачены."
+            "Читать задачу нечем: " + credentials.missing_message(absent) + ". Этот "
+            "конвейер начинается с чтения тикета в Jira — без доступа он выпустит "
+            "пять документов из `TBD` и возьмёт за них деньги. Прогон остановлен до "
+            "первого вызова модели — деньги не потрачены."
         )
 
     if state.get("artifacts"):
@@ -279,4 +278,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "prep")

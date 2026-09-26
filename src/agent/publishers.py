@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agent import config as cfg
-from agent import confluence, outgoing, render
+from agent import confluence, credentials, outgoing, render
 
 
 class PublishError(RuntimeError):
@@ -297,9 +297,10 @@ def destination(publisher: Publisher) -> dict:
     if publisher.name == "confluence":
         return {
             "base_url": cfg.confluence_base_url(),
-            "space_key": cfg.confluence_space_key(),
-            "space_id": cfg.confluence_space_id(),
-            "parent_id": cfg.confluence_parent_id(),
+            # Место — того, кто публикует: одобряется ровно то, куда уедет документ.
+            "space_key": credentials.value("CONFLUENCE_SPACE_KEY"),
+            "space_id": credentials.value("CONFLUENCE_SPACE_ID") or None,
+            "parent_id": credentials.value("CONFLUENCE_PARENT_PAGE_ID") or None,
             "api_path": cfg.confluence_api_path(),
             "version": cfg.confluence_api_version(),
         }

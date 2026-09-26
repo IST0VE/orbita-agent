@@ -5,6 +5,18 @@ const ADMIN_TOKEN_KEY = "orbita.adminApiToken";
 type AuthState = { revision: number; prompt: Promise<void> | null };
 const sessions = new WeakMap<Storage, AuthState>();
 
+/** Токены вошедшего пользователя: их ставит `oidc.ts`, когда сервер включил OIDC. */
+export type UserTokens = {
+  token: () => Promise<string | null>;
+  /** Сервер отверг токен: пора входить заново. */
+  unauthorized: () => void;
+};
+let userTokens: UserTokens | null = null;
+
+export function setUserTokens(source: UserTokens | null): void {
+  userTokens = source;
+}
+
 function requestLine(input: RequestInfo | URL, init: RequestInit): string {
   const method = init.method ?? (input instanceof Request ? input.method : "GET");
   try {
@@ -68,6 +80,14 @@ async function exchange(input: RequestInfo | URL, init: RequestInit, promptOnUna
   const send = (token: string | null) => fetch(input instanceof Request ? input.clone() : input, {
     ...init, headers: requestHeaders(token), redirect: "error", cache: "no-store",
   });
+  if (userTokens) {
+    // With OIDC there is no token prompt: a rejected user token means a new login.
+    const response = await send(await userTokens.token());
+    if (promptOnUnauthorized && response.status === 401 && response.headers.get("www-authenticate") === "Bearer") {
+      userTokens.unauthorized();
+    }
+    return response;
+  }
   let response = await send(initialToken);
   // Background health checks must never interrupt the user with token prompts.
   if (!promptOnUnauthorized) return response;

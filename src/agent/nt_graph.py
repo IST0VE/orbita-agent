@@ -28,7 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
-from agent import confluence, jira, nodes, nt_roles
+from agent import confluence, jira, metrics, nodes, nt_roles
 from agent.nt import (
     anomaly_detector,
     assessment,
@@ -56,7 +56,7 @@ from agent.nt.models import failure, window
 from agent.nt.report import render_report
 from agent.nt.settings import Settings, load_settings
 from agent.nt_state import State
-from agent.nt_tools import build_tools
+from agent.nt_tools import NT_TOOLS, build_tools
 from agent.routes import budget_gate
 from agent.runtime import options
 
@@ -686,4 +686,6 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     return builder
 
 
-graph = build_graph().compile()
+# Инструменты исследования завёрнуты в свой узел, а не в ToolNode графа:
+# их ряды заводятся по набору по умолчанию.
+graph = metrics.observe(build_graph().compile(), "nt", tools=NT_TOOLS)

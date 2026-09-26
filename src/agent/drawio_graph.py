@@ -65,7 +65,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
 from agent import config as cfg
-from agent import diagram_roles, drawio, inputs, sources
+from agent import diagram_roles, drawio, inputs, metrics, sources
 from agent import graph as g
 
 PIPELINE = diagram_roles.PIPELINE
@@ -277,4 +277,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "drawio")

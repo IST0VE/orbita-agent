@@ -21,6 +21,7 @@ import type { SettingsGroupId } from "../../app/sections";
 import {
   Blocks,
   Cpu,
+  KeyRound,
   Palette,
   Server,
   SlidersHorizontal,
@@ -33,15 +34,21 @@ export type SettingsGroup = {
   title: string;
   hint: string;
   icon: LucideIcon;
+  /**
+   * Раздел настроек сервера — `.env`, один на всех. Их видит и правит только
+   * администратор: сервер остальным их и не отдаст.
+   */
+  server?: boolean;
 };
 
 export const SETTINGS_GROUPS: SettingsGroup[] = [
-  { id: "ai", title: "Модель", hint: "Провайдер, модель и подключение к ней", icon: Cpu },
-  { id: "connections", title: "Подключения", hint: "Служебный API, хранилище и источники метрик", icon: Server },
-  { id: "integrations", title: "Интеграции", hint: "Confluence, Jira и публикация", icon: Blocks },
-  { id: "execution", title: "Выполнение", hint: "Материалы, бюджет, память и этапы", icon: Wrench },
+  { id: "personal", title: "Мои подключения", hint: "Ваши токены Jira и Confluence: агент работает с вашими правами", icon: KeyRound },
+  { id: "ai", title: "Модель", hint: "Провайдер, модель и подключение к ней", icon: Cpu, server: true },
+  { id: "connections", title: "Подключения", hint: "Служебный API, хранилище и источники метрик", icon: Server, server: true },
+  { id: "integrations", title: "Интеграции", hint: "Адреса Confluence и Jira, общие токены и публикация", icon: Blocks, server: true },
+  { id: "execution", title: "Выполнение", hint: "Материалы, бюджет, память и этапы", icon: Wrench, server: true },
   { id: "appearance", title: "Оформление", hint: "Как ведёт себя интерфейс", icon: Palette },
-  { id: "advanced", title: "Продвинутые", hint: "Все переменные окружения целиком", icon: SlidersHorizontal },
+  { id: "advanced", title: "Продвинутые", hint: "Все переменные окружения целиком", icon: SlidersHorizontal, server: true },
 ];
 
 const PREFIX: Array<[RegExp, SettingsGroupId]> = [

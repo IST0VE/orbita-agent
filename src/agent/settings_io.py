@@ -23,10 +23,16 @@
 Имена из `_RESERVED_*` не запишутся никогда: `.env` уезжает в окружение
 процесса, поэтому `PYTHONPATH` или `LD_PRELOAD` — это подмена кода, который
 выполнится, а не настройка агента.
+
+В Compose файл другой: процесс получает `.env` хоста через `env_file`, а сам
+файл смонтирован отдельно (SETTINGS_ENV_FILE), и правка применяется
+пересозданием контейнера (SETTINGS_APPLY_HINT). Без этого страница в образе
+искала файлы от `site-packages` и оставалась пустой.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import tempfile
@@ -44,8 +50,9 @@ from agent import settings_schema
 _SECRET_WORDS = frozenset({"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"})
 _SECRET_NAMES = frozenset({"POSTGRES_URI"})
 # Имя выглядит как секрет, но им не является: ключ пространства Confluence —
-# это `DOCS`, его видно в любой ссылке на wiki.
-_PUBLIC_NAMES = frozenset({"CONFLUENCE_SPACE_KEY"})
+# это `DOCS`, его видно в любой ссылке на wiki; ключ проекта Jira — `ORB` в
+# номере каждой задачи.
+_PUBLIC_NAMES = frozenset({"CONFLUENCE_SPACE_KEY", "JIRA_PROJECT_KEY"})
 
 # Имена, которые интерфейс не запишет никогда.
 #
@@ -53,7 +60,15 @@ _PUBLIC_NAMES = frozenset({"CONFLUENCE_SPACE_KEY"})
 # `PYTHONPATH`, `LD_PRELOAD` или подменённый `SSL_CERT_FILE` — это не настройка
 # агента, а выбор кода, который выполнится, и доверия, с которым он пойдёт
 # наружу. Такие переменные правятся руками на сервере, а не по HTTP.
-_RESERVED_PREFIXES = ("PYTHON", "LD_", "DYLD_", "NODE_")
+# OIDC_ — кому API верит: сменив issuer из интерфейса, можно впустить себя
+# токенами своего Keycloak. USER_SECRETS_ — ключ личных токенов: сменённый из
+# интерфейса, он сделал бы нечитаемыми подключения всех пользователей разом.
+# Пароли между сервисами (runner, база, Keycloak, Prometheus и Grafana) — часть
+# развёртывания, их меняют вместе с сервисом на другом конце, а не одной
+# стороной по HTTP.
+_RESERVED_PREFIXES = (
+    "PYTHON", "LD_", "DYLD_", "NODE_", "OIDC_", "USER_SECRETS_", "KEYCLOAK_", "GRAFANA_"
+)
 _RESERVED_NAMES = frozenset(
     {
         "PATH",
@@ -73,7 +88,10 @@ _RESERVED_NAMES = frozenset(
         "HTTPS_PROXY",
         "NO_PROXY",
         "API_ADMIN_TOKEN",
+        "METRICS_TOKEN",
+        "NT_RUNNER_TOKEN",
         "POSTGRES_PASSWORD",
+        "POSTGRES_URI",
     }
 )
 _NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
@@ -115,15 +133,19 @@ def named_secret(name: str) -> bool:
 
 
 def is_secret(name: str) -> bool:
+    """
+    Секрет для страницы настроек: по имени, по схеме — и всякое незнакомое имя.
+
+    Слово в имени решает для всех переменных, а не только для объявленных в
+    схеме. Раньше условие читалось как «(имя или схема) если в схеме, иначе
+    незнакомо» — и POSTGRES_PASSWORD, NT_RUNNER_TOKEN и токены НТ, которых в
+    схеме нет, уезжали в браузер открытым текстом.
+    """
     if name in _PUBLIC_NAMES:
         return False
-    return (
-        name in _SECRET_NAMES
-        or bool(_SECRET_WORDS & set(name.split("_")))
-        or settings_schema.BY_NAME[name].secret
-        if name in settings_schema.BY_NAME
-        else name not in known_names()
-    )
+    if named_secret(name):
+        return True
+    return name not in settings_schema.BY_NAME and name not in known_names()
 
 
 def mask(value: str) -> str:
@@ -140,20 +162,51 @@ def known_names() -> frozenset[str]:
 # Разбор .env.example: разделы, описания, значения по умолчанию
 # --------------------------------------------------------------------------
 _FENCE = re.compile(r"^#\s*=+\s*$")
+#: Сколько строк текста может стоять между рамками заголовка раздела.
+_HEADER_LINES = 3
 _SECTION = re.compile(r"^#\s*(.+?)\s*$")
 _ASSIGN = re.compile(r"^(?P<export>export\s+)?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>.*)$")
 
 
 def _root() -> Path:
-    """Корень проекта: там, где лежит `.env` (а если его нет — по структуре)."""
+    """Корень проекта: там, где лежит `.env`, иначе рабочая папка с `.env.example`.
+
+    Рабочая папка нужна образу: `.env` в `/app` нет, а пакет установлен в
+    `site-packages`, и путь «по структуре» уводил в `/usr/local/lib/python3.12`.
+    """
     found = find_dotenv(usecwd=True)
     if found:
         return Path(found).parent
+    if (Path.cwd() / ".env.example").exists():
+        return Path.cwd()
     return Path(__file__).resolve().parents[2]
 
 
 def env_path() -> Path:
-    return _root() / ".env"
+    """Файл, который правит интерфейс.
+
+    В Compose это `.env` хоста, смонтированный вне `/app`: `langgraph dev`
+    загружает `./.env` поверх окружения процесса, и личные `PUBLISH_DIR` или
+    `NT_RUNNER_URL` перебили бы пути, которые задаёт Compose.
+    """
+    explicit = os.environ.get("SETTINGS_ENV_FILE", "").strip()
+    return Path(explicit) if explicit else _root() / ".env"
+
+
+def fixed_names() -> frozenset[str]:
+    """Что задаёт само развёртывание (`environment:` в Compose), а не `.env`.
+
+    Их правка в файле не меняет ничего и никогда: `docker compose up -d`
+    снова поставит значение из docker-compose.yml. Поле, которое можно
+    поменять без последствий, хуже поля, которое поменять нельзя.
+    """
+    listed = os.environ.get("SETTINGS_FIXED", "")
+    return frozenset(name.strip() for name in listed.split(",") if name.strip())
+
+
+def apply_hint() -> str:
+    """Как применить сохранённое: без Docker — перезапуск, в Compose — пересоздание."""
+    return os.environ.get("SETTINGS_APPLY_HINT", "").strip() or "перезапустите сервер агента"
 
 
 def _example_path() -> Path:
@@ -180,13 +233,20 @@ def _parse_example() -> list[dict]:
     while i < len(lines):
         line = lines[i]
 
-        # Заголовок раздела — три строки: рамка, текст, рамка.
-        if _FENCE.match(line) and i + 2 < len(lines) and _FENCE.match(lines[i + 2]):
-            title = _SECTION.match(lines[i + 1])
-            if title:
-                section = title.group(1)
+        # Заголовок раздела: рамка, строки текста, рамка. Строк бывает и две —
+        # у НТ под названием стоит пояснение. Читалась только одна, и тогда
+        # весь заголовок вместе с рамками прилипал описанием к NT_PROMETHEUS_URL.
+        if _FENCE.match(line):
+            end = next(
+                (j for j in range(i + 2, min(i + 2 + _HEADER_LINES, len(lines)))
+                 if _FENCE.match(lines[j])),
+                None,
+            )
+            text = [_SECTION.match(lines[j]) for j in range(i + 1, end)] if end else []
+            if text and all(text) and not any(_FENCE.match(lines[j]) for j in range(i + 1, end)):
+                section = " ".join(match.group(1) for match in text)
                 comments = []
-                i += 3
+                i = end + 1
                 continue
 
         assign = _ASSIGN.match(line)
@@ -296,15 +356,29 @@ def _read_env_file() -> dict[str, str]:
 
 
 def _encode_env_value(value: str) -> str:
-    """Serialize a value so python-dotenv reads it back without truncation."""
+    """Записать значение так, чтобы python-dotenv и Docker Compose прочли одно и то же.
+
+    `.env` читают двое: агент без Docker (python-dotenv) и Compose через
+    `env_file`. Одинарные кавычки у Compose буквальные, а python-dotenv
+    раскрывает в них `\\\\` и `\\'`; в двойных Compose подставляет `$`. Прежняя
+    запись удваивала `\\` для python-dotenv, и в контейнер JSON с `\\"` приезжал
+    сломанным. Значение, которое не записать одинаково, отклоняется — молча
+    испортить его хуже.
+    """
     if "\n" in value or "\r" in value:
         raise ValueError("значение переменной окружения не может содержать перенос строки")
     if "${" in value or "\x00" in value:
         raise ValueError("подстановка переменных и NUL в значении запрещены")
     if re.fullmatch(r"[A-Za-z0-9_./:@%+?,=-]*", value):
         return value
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
+    if "'" not in value and "\\\\" not in value and not value.endswith("\\"):
+        return f"'{value}'"
+    if "\\" not in value and "$" not in value:
+        return '"' + value.replace('"', '\\"') + '"'
+    raise ValueError(
+        "значение с апострофом и обратной косой чертой или `$` Docker Compose и "
+        "python-dotenv прочтут по-разному — задайте его в .env вручную"
+    )
 
 
 def described_names() -> frozenset[str]:
@@ -328,6 +402,7 @@ def applied() -> dict:
     Значения секретов наружу не отдаются: только маска и признак «задано».
     """
     file_values = _read_env_file()
+    pinned = fixed_names()
     rows = []
     for name in sorted(known_names()):
         process = (os.environ.get(name) or "").strip()
@@ -341,10 +416,13 @@ def applied() -> dict:
             "secret": secret,
             # Откуда взялось применённое значение: окружение процесса сильнее
             # файла, и правка файла его не отменит.
-            "source": "окружение" if process and process != stored else "файл" if stored else "умолчание",
+            "source": "docker-compose.yml" if name in pinned
+                      else "окружение" if process and process != stored
+                      else "файл" if stored else "умолчание",
             # Файл разошёлся с процессом: нужен перезапуск, а для значения
-            # из окружения — правка там, где оно задано.
-            "restart_required": process != stored and bool(stored),
+            # из окружения — правка там, где оно задано. Закреплённое
+            # развёртыванием перезапуском не догнать — и не нужно.
+            "restart_required": process != stored and bool(stored) and name not in pinned,
         })
     return {
         "applied": rows,
@@ -380,9 +458,11 @@ def describe() -> dict:
     ]
 
     sections: dict[str, list[dict]] = {}
+    pinned = fixed_names()
     for field in [*described, *extra]:
         name = field["name"]
-        value = current.get(name, "")
+        # Закреплённое развёртыванием показывается таким, каким применено.
+        value = os.environ.get(name, "") if name in pinned else current.get(name, "")
         secret = is_secret(name)
         item = {
             "name": name,
@@ -394,7 +474,9 @@ def describe() -> dict:
             "kind": "enum" if settings_schema.kind_of(name) == "choice"
                     else settings_schema.kind_of(name),
             "secret": secret,
-            "editable": can_edit(name),
+            "editable": can_edit(name) and name not in pinned,
+            # Почему поле не правится, если причина не «нет в .env.example».
+            **({"locked": "задаёт docker-compose.yml"} if name in pinned else {}),
             "comment": written.get(name, ""),
             "filled": bool(value),
             # Секрет наружу не отдаётся никогда: только маска.
@@ -409,6 +491,8 @@ def describe() -> dict:
         "sections": [{"title": title, "fields": fields} for title, fields in sections.items()],
         # Куда попадёт переменная, заведённая из интерфейса.
         "new_section": _MANUAL_SECTION,
+        # Как применить сохранённое: в Compose `restart` не перечитывает env_file.
+        "apply": apply_hint(),
         # Что применено прямо сейчас: файл и процесс — разные вещи, и разница
         # между ними и есть ответ на «я же поменял, а оно работает по-старому».
         **applied(),
@@ -434,13 +518,20 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
     forbidden = sorted(name for name in {*updates, *texts} if not can_edit(name))
     if forbidden:
         raise ValueError("запрещённые переменные: " + ", ".join(forbidden))
+    pinned = sorted(name for name in updates if name in fixed_names())
+    if pinned:
+        raise ValueError("задаёт docker-compose.yml, правка .env не подействует: " + ", ".join(pinned))
     # Комментарии кодируются до захвата блокировки: слишком длинный текст
     # обязан отказать, а не оставить файл наполовину переписанным.
     encoded = {name: _encode_comment(text) for name, text in texts.items()}
 
     path = env_path()
     with _SAVE_LOCK:
-        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        raw = path.read_bytes() if path.exists() else b""
+        existing = raw.decode("utf-8").splitlines()
+        # `.env`, заведённый в Блокноте, — с CRLF. Первое же сохранение из
+        # интерфейса не должно переписывать концы всех его строк.
+        eol = "\r\n" if b"\r\n" in raw else "\n"
 
         pending = dict(updates)
         waiting = dict(encoded)
@@ -493,15 +584,37 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
                 out.extend(waiting.pop(name, []))
                 out.append(f"{name}={_encode_env_value(value)}")
 
-        # Замена готового файла атомарна: параллельный GET увидит старую или
-        # новую версию целиком, но не половину оборванной записи.
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _write(path, eol.join(out) + eol)
+    return {"saved": sorted({*updates, *texts}), "path": path.name, "apply": apply_hint()}
+
+
+def _write(path: Path, text: str) -> None:
+    """Заменить файл атомарно, а смонтированный по отдельности — на месте.
+
+    Атомарная замена: параллельный GET увидит старую или новую версию целиком,
+    но не половину оборванной записи. Файл, смонтированный в контейнер сам по
+    себе (`.env` хоста в Compose), переименованием не заменить: Linux отвечает
+    EBUSY, а папка точки монтирования принадлежит root. Тогда пишем в тот же
+    файл, под той же блокировкой, что и чтение перед сохранением.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
         descriptor, temporary_name = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=path.parent)
+    except PermissionError:
+        descriptor = None
+    if descriptor is not None:
         temporary = Path(temporary_name)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write("\n".join(out) + "\n")
-            os.replace(temporary, path)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                stream.write(text)
+            try:
+                os.replace(temporary, path)
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EBUSY, errno.EXDEV):
+                    raise
         finally:
             temporary.unlink(missing_ok=True)
-    return {"saved": sorted({*updates, *texts}), "path": path.name}
+    with path.open("r+" if path.exists() else "w", encoding="utf-8", newline="") as stream:
+        stream.write(text)
+        stream.truncate()

@@ -6,20 +6,21 @@
 
 ## Что запускает штатный Compose
 
-[`docker-compose.yml`](../docker-compose.yml) содержит backend `agent`, frontend `web`, runner `runner` и отдельный профиль `demo` с PostgreSQL. Обычный `docker compose up` не запускает ни платное демо, ни базу: серверу она не нужна.
+[`docker-compose.yml`](../docker-compose.yml) содержит backend `agent`, frontend `web`, runner `runner`, базу `postgres` и отдельные профили: `demo`, `auth` (Keycloak) и `monitoring` (Prometheus и Grafana). Обычный `docker compose up` ни один из них не запускает; профили для `up.cmd` / `up.sh` перечисляются в `COMPOSE_PROFILES` в `.env`.
 
 | Компонент | Адрес / хранение |
 | :--- | :--- |
 | `web` | Порт `127.0.0.1:8080`: собранный frontend и прокси API к `agent`, nginx из [`web/nginx.conf`](../web/nginx.conf) |
 | `agent` | Порт `127.0.0.1:2024`, внутри работает `langgraph dev`; к нему же подключается Studio |
 | `runner` | Runner для `nt_run` с k6 внутри; порт на хост не опубликован, агент обращается к `http://runner:8077` |
-| `postgres` | Только с профилем `demo`; порт 5432 на хост не опубликован |
+| `postgres` | База приложения: личные подключения пользователей. На хост — только `127.0.0.1:5433` (`ORBITA_POSTGRES_PORT`); `agent` стартует после её готовности |
 | `data` | Именованный том на `/data`: документы и журнал операций Jira |
 | `threads` | Именованный том на `/app/.langgraph_api`: треды сервера разработки |
 | `nt-runs` | Именованный том на `/data/nt-runs` у `runner`: журнал runner, сценарии, `test.js`, `summary.json` |
-| `pgdata` | Именованный том данных PostgreSQL для `demo` |
+| `pgdata` | Именованный том данных PostgreSQL: личные подключения и чекпоинты `demo` |
 | `./input` | Папка репозитория, подключённая к `/data/input` на запись |
 | `./config` | Папка репозитория, подключённая к `runner` только на чтение: `nt-runner.json` со списком стендов |
+| `prometheus`, `grafana` | Профиль `monitoring`: порты `127.0.0.1:9090` и `127.0.0.1:3000`, тома с рядами метрик и базой Grafana. Подробнее — в [метриках и графиках](MONITORING.md) |
 
 `web` стартует, когда `agent` прошёл проверку здоровья: запрос к `/ok` с токеном из `API_ADMIN_TOKEN`. Поэтому пустой или короткий токен виден сразу — `agent` остаётся `unhealthy`, и `up --wait` завершается ошибкой, а не открывает интерфейс, который отказывает на каждом запросе. Порт интерфейса меняется переменной `ORBITA_WEB_PORT` в окружении или в `.env`, например `ORBITA_WEB_PORT=8088`.
 
@@ -81,22 +82,50 @@
 
 Для Jira и Confluence тоже используйте HTTPS. HTTP по имени `host.docker.internal` требует явного `JIRA_ALLOW_INSECURE_HTTP=1` или `CONFLUENCE_ALLOW_INSECURE_HTTP=1` и допустим только в доверенной тестовой сети. Скрипт предупреждает об адресах loopback, но не меняет протокол и политику доступа.
 
-## Демо и PostgreSQL
+## PostgreSQL и демо
 
-PostgreSQL нужен только `run_demo.py`: это замер кеша по трём ходам, в котором чекпоинты и store переживают перезапуск. Сервер его не использует, поэтому база в обычный запуск не входит.
+PostgreSQL — база самого приложения. Сейчас в ней личные подключения Jira и Confluence каждого пользователя (см. [ниже](#пользователи-роли-и-личные-подключения)); таблицы сервер заводит сам при первом обращении. Треды `langgraph dev` в ней не живут — у них свой том `threads`. Пароль базы (`POSTGRES_PASSWORD`) `up.cmd` и `up.sh` генерируют сами; при ручном `docker compose up` без него Compose остановится с подсказкой.
+
+Демо берёт из той же базы чекпоинтер и store — это замер кеша по трём ходам, который переживает перезапуск:
 
 ```text
 docker compose run --rm demo
 ```
 
-Команда собирает отдельный образ `orbita-demo:local`, поднимает базу из профиля `demo` и тратит деньги на вызовы модели. Предварительный запуск `agent` не нужен; слои Dockerfile используются из общего кеша. Для неё задайте в `.env` случайный URL-safe `POSTGRES_PASSWORD`. Без пароля PostgreSQL откажется стартовать.
+Команда собирает отдельный образ `orbita-demo:local` и тратит деньги на вызовы модели. Предварительный запуск `agent` не нужен; слои Dockerfile используются из общего кеша.
 
-**Пароль запоминается томом.** Образ PostgreSQL применяет `POSTGRES_PASSWORD` только при первом создании тома `pgdata`. Если том остался от прежнего запуска или пароль потом поменяли, база продолжит ждать старый пароль, и демо упадёт с `password authentication failed`. Выровнять пароль базы с `.env` без потери данных можно так (команда для `sh`/`bash`; из PowerShell запускайте её через Git Bash или WSL):
+**Пароль запоминается томом.** Образ PostgreSQL применяет `POSTGRES_PASSWORD` только при первом создании тома `pgdata`. Если том остался от прежнего запуска или пароль потом поменяли, база продолжит ждать старый пароль: агент ответит «база Orbita недоступна … password authentication failed», демо упадёт с той же ошибкой. Выровнять пароль базы с `.env` без потери данных можно так (команда для `sh`/`bash`; из PowerShell запускайте её через Git Bash или WSL):
 
 ```text
-docker compose --profile demo up -d postgres
+docker compose up -d postgres
 docker compose exec postgres sh -c 'psql -U orbita -d orbita -c "ALTER USER orbita PASSWORD '"'"'$POSTGRES_PASSWORD'"'"'"'
 ```
+
+**Агент без Docker** ходит в ту же базу через опубликованный порт: `POSTGRES_URI=postgresql://orbita:<POSTGRES_PASSWORD>@localhost:5433/orbita` в `.env` и `docker compose up -d postgres`.
+
+## Пользователи, роли и личные подключения
+
+Без `OIDC_ISSUER` в `.env` всё как раньше: интерфейс спрашивает `API_ADMIN_TOKEN`, это один оператор, и Jira с Confluence он читает общими токенами из `.env`.
+
+С входом через Keycloak (`OIDC_*` в `.env`, локальный realm — `docker compose --profile auth up -d`) у каждого вошедшего своё:
+
+| Что | Кому видно |
+| :--- | :--- |
+| Треды | Только создателю. Сервер LangGraph фильтрует их сам (`src/agent/auth.py`): чужой тред не находится ни поиском, ни по id, ни запуском прогона в нём |
+| Токен и e-mail Jira и Confluence | Только владельцу: «Настройки → Мои подключения». Прогон ходит в Jira с токеном того, кто его запустил, и видит ровно то, что видит этот человек |
+| Проект Jira и пространство Confluence | Свои у каждого там же. Пустое поле — общее значение из `.env` (`JIRA_PROJECT_KEY`, `CONFLUENCE_SPACE_KEY`), оно написано прямо в поле. Со своим пространством общий `CONFLUENCE_PARENT_PAGE_ID` не подставляется: страница из чужого пространства не родитель. С REST v2 пространство задаётся числовым id; общий ключ к своему id не подставляется, ключ для поиска сервер узнаёт у Confluence |
+| Настройки сервера (`.env`) и журнал сервера | Роль `orbita-admin` (`OIDC_ADMIN_ROLE`). Остальным сервер их не отдаёт |
+| Всё сразу | `API_ADMIN_TOKEN`: healthcheck, скрипты, CI. Работает общими токенами из `.env` |
+
+Роль администратора — про настройки сервера, а не про чужие данные: треды и подключения администратора такие же личные, как у всех. Тестовые пользователи локального realm: `analyst` и `tester` (обычные), `lead` (администратор), `guest` (без роли).
+
+**Корпоративный Keycloak на своём домене.** Браузер попадает в Keycloak только переходами: на вход и на выход. Код входа на токены меняет и токены обновляет сервер (`POST /api/auth/token`). Политика безопасности страницы пускает браузер только к API, адрес которого известен при сборке, а адрес Keycloak задаётся на сервере. Поэтому серверу нужен доступ к realm: к ключам подписи и к token endpoint. Если сервер видит Keycloak по другому адресу, чем браузер, задайте `OIDC_JWKS_URL`: token endpoint сервер возьмёт рядом с ключами.
+
+Нет личного токена — прогон, которому нужна Jira, останавливается с просьбой добавить его в «Мои подключения». Общий токен из `.env` за пользователя не подставляется: иначе человек действовал бы в Jira под чужим именем и с чужими правами.
+
+**Как хранятся токены.** Таблица `user_secrets` в PostgreSQL. Каждое значение зашифровано AES-256-GCM ключом `USER_SECRETS_KEY` и привязано к паре «пользователь, поле»: переставленная в чужую строку запись не расшифруется. Ключ лежит только в `.env` хоста, отдельно от базы, — дамп без него бесполезен. В браузер токен не возвращается: страница видит «задан» и дату. Кнопка «Проверить» спрашивает у Jira `/myself`, у Confluence `/rest/api/user/current` этим же токеном.
+
+**Ключ.** `up.cmd` и `up.sh` создают `USER_SECRETS_KEY` сами; из интерфейса он не меняется. Сменить: новый — в `USER_SECRETS_KEY`, прежний — в `USER_SECRETS_OLD_KEYS` (через запятую), записи перешифруются при следующем сохранении. Потерянный ключ не восстановить, но и катастрофы нет: пользователи перевыпустят токены и введут их заново.
 
 ## Пошаговый запуск в Docker
 
@@ -139,15 +168,24 @@ npm.cmd --prefix web run dev -- --host 127.0.0.1
 
 ## Как менять настройки в Docker
 
-В этом варианте источником настроек является **`.env` на хосте**. Отредактируйте его и пересоздайте backend:
+Источник настроек — **`.env` на хосте**. Править его можно двумя способами:
+
+- в интерфейсе, в разделе «Настройки»: `.env` хоста смонтирован в контейнер агента (`/host/.env`), и сохранение пишет прямо в него;
+- в любом редакторе на машине.
+
+Применяет изменения команда
 
 ```text
-docker compose up -d --force-recreate agent
+docker compose up -d
 ```
 
-`docker compose restart` не перечитывает переданные через `env_file` переменные. Изменённое значение попадёт в процесс при пересоздании контейнера.
+(или `up.cmd` / `up.sh`): Compose сам пересоздаёт сервисы, у которых изменилось окружение. `docker compose restart` не подходит — он не перечитывает `env_file`. После сохранения интерфейс показывает эту команду, а блок «Применено сейчас» в разделе «Продвинутые» — какие значения ещё ждут пересоздания.
 
-Редактор настроек UI использует `.env.example`, который есть в образе. Рабочий `.env` хоста внутрь не смонтирован, а настройки Compose имеют приоритет над файлом контейнера. Для описанного Docker-варианта редактируйте `.env` на хосте и пересоздавайте контейнер; сохранение через UI не изменяет этот файл.
+Файл смонтирован в `/host/.env`, а не в `/app/.env`, намеренно: `langgraph dev` загружает `./.env` поверх окружения процесса, и личные `PUBLISH_DIR` или `NT_RUNNER_URL` перебили бы пути, которые задаёт Compose. Эти переменные (список — `SETTINGS_FIXED` в `docker-compose.yml`) в интерфейсе закрыты с пометкой «задаёт docker-compose.yml».
+
+Значение интерфейс записывает в форме, которую одинаково читают Compose и python-dotenv. Значение с апострофом и одновременно `\` или `$` так не записать — его интерфейс отклонит, задайте его в `.env` вручную.
+
+Без `.env` на хосте Compose не запустит агента («bind source path does not exist»): `up.cmd` и `up.sh` создают файл сами. На Linux `up.sh` ставит `.env` права 600, и пользователь контейнера с другим uid файл не прочтёт — раздел «Настройки» ответит «нет доступа к файлу настроек». Дайте файлу права на чтение и запись для uid пользователя `orbita` в образе или правьте `.env` на машине.
 
 ## Что сохраняется после остановки
 
@@ -157,6 +195,7 @@ docker compose up -d --force-recreate agent
 | Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/` | `/data/published` в томе `data` |
 | Журнал операций Jira | `JIRA_JOURNAL_PATH`, обычно `data/jira-operations.sqlite3` | `/data/jira-operations.sqlite3` в томе `data` |
 | Треды dev-сервера | `.langgraph_api/` рядом с рабочей папкой | `/app/.langgraph_api` в томе `threads` |
+| Личные подключения Jira и Confluence | PostgreSQL по `POSTGRES_URI` | PostgreSQL в томе `pgdata`; ключ — `USER_SECRETS_KEY` в `.env` |
 | Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, только профиль `demo` |
 | Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | `/data/nt-runs` в томе `nt-runs` |
 | Список стендов runner | `config/nt-runner.json` | `./config` хоста → `/app/config`, только чтение |
@@ -170,18 +209,16 @@ docker compose up -d --force-recreate agent
 
 ## Резервная копия и восстановление
 
-Копируются три тома — `data`, `threads`, `nt-runs` — и файлы настроек `.env` и `config/nt-runner.json`. Если пользуетесь демо, добавьте дамп PostgreSQL. Контейнеры при этом можно не останавливать только для документов; для тредов и журнала runner остановите их, иначе копия окажется снятой на середине записи.
+Копируются три тома — `data`, `threads`, `nt-runs`, — дамп PostgreSQL и файлы настроек `.env` и `config/nt-runner.json`. Дамп читается только с `USER_SECRETS_KEY` из того же `.env`: храните их порознь, но не теряйте ключ. Контейнеры при этом можно не останавливать только для документов; для тредов и журнала runner остановите их, иначе копия окажется снятой на середине записи.
 
 ```text
 docker compose stop agent runner
 docker run --rm -v claude_langgraph_data:/from -v "$PWD/backup":/to alpine tar czf /to/data.tar.gz -C /from .
 docker run --rm -v claude_langgraph_threads:/from -v "$PWD/backup":/to alpine tar czf /to/threads.tar.gz -C /from .
 docker run --rm -v claude_langgraph_nt-runs:/from -v "$PWD/backup":/to alpine tar czf /to/nt-runs.tar.gz -C /from .
-docker compose --profile demo exec -T postgres pg_dump -U orbita orbita > backup/orbita.sql
+docker compose exec -T postgres pg_dump -U orbita orbita > backup/orbita.sql
 docker compose start agent runner
 ```
-
-Строка с `pg_dump` нужна, только если база запущена: `docker compose --profile demo up -d postgres`.
 
 Имена томов Compose составляет из имени проекта: проверьте их `docker volume ls`. Восстановление — в обратном порядке, при остановленных `agent` и `runner`:
 
@@ -190,7 +227,7 @@ docker compose stop agent runner
 docker run --rm -v claude_langgraph_data:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/data.tar.gz -C /to"
 docker run --rm -v claude_langgraph_threads:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/threads.tar.gz -C /to"
 docker run --rm -v claude_langgraph_nt-runs:/to -v "$PWD/backup":/from alpine sh -c "rm -rf /to/* && tar xzf /from/nt-runs.tar.gz -C /to"
-docker compose --profile demo exec -T postgres psql -U orbita orbita < backup/orbita.sql
+docker compose exec -T postgres psql -U orbita orbita < backup/orbita.sql
 docker compose start agent runner
 ```
 
@@ -247,6 +284,6 @@ Dev-прокси описан только в `server.proxy` Vite. **`npm run pr
 
 ## Общий доступ
 
-Штатная конфигурация предназначена для локального оператора. Обязательный `API_ADMIN_TOKEN` защищает весь API, включая `/threads` и `/runs`; задайте случайный токен длиной 32–256 ASCII-символов до запуска. Для доступа команды разместите перед API reverse proxy с TLS, индивидуальной аутентификацией и ограничением частоты запросов.
+Без входа через Keycloak штатная конфигурация предназначена для локального оператора. Обязательный `API_ADMIN_TOKEN` защищает весь API, включая `/threads` и `/runs`; задайте случайный токен длиной 32–256 ASCII-символов до запуска. Для команды включите вход через Keycloak ([пользователи и роли](#пользователи-роли-и-личные-подключения)) и разместите перед API reverse proxy с TLS и ограничением частоты запросов.
 
 Границы доступа, ключи и материалы описаны в [SECURITY.md](../SECURITY.md). План production-хранения и резервного восстановления нужно определить отдельно от локального dev-сервера.

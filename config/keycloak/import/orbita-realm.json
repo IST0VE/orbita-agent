@@ -1,0 +1,88 @@
+{
+  "realm": "orbita",
+  "displayName": "ORBITA",
+  "enabled": true,
+  "sslRequired": "external",
+  "loginTheme": "orbita",
+  "internationalizationEnabled": true,
+  "supportedLocales": ["ru"],
+  "defaultLocale": "ru",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "orbita-user",
+        "description": "Вход в Orbita (OIDC_REQUIRED_ROLE)"
+      },
+      {
+        "name": "orbita-admin",
+        "description": "Настройки сервера и журнал (OIDC_ADMIN_ROLE)"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "orbita-web",
+      "name": "Orbita",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8080/*",
+        "http://127.0.0.1:8080/*",
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "analyst",
+      "enabled": true,
+      "email": "analyst@orbita.local",
+      "emailVerified": true,
+      "firstName": "Анна",
+      "lastName": "Аналитик",
+      "credentials": [{ "type": "password", "value": "analyst", "temporary": false }],
+      "realmRoles": ["orbita-user"]
+    },
+    {
+      "username": "tester",
+      "enabled": true,
+      "email": "tester@orbita.local",
+      "emailVerified": true,
+      "firstName": "Тимур",
+      "lastName": "Тестировщик",
+      "credentials": [{ "type": "password", "value": "tester", "temporary": false }],
+      "realmRoles": ["orbita-user"]
+    },
+    {
+      "username": "lead",
+      "enabled": true,
+      "email": "lead@orbita.local",
+      "emailVerified": true,
+      "firstName": "Лидия",
+      "lastName": "Администратор",
+      "credentials": [{ "type": "password", "value": "lead", "temporary": false }],
+      "realmRoles": ["orbita-user", "orbita-admin"]
+    },
+    {
+      "username": "guest",
+      "enabled": true,
+      "email": "guest@orbita.local",
+      "emailVerified": true,
+      "firstName": "Гость",
+      "lastName": "Без роли",
+      "credentials": [{ "type": "password", "value": "guest", "temporary": false }]
+    }
+  ]
+}

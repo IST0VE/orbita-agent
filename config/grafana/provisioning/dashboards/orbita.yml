@@ -1,0 +1,14 @@
+# Доски из репозитория: config/grafana/dashboards подключена в контейнер
+# только на чтение. Правка в интерфейсе Grafana не сохраняется — меняйте JSON
+# здесь (или экспортируйте изменённую доску поверх файла).
+apiVersion: 1
+
+providers:
+  - name: orbita
+    folder: Orbita
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

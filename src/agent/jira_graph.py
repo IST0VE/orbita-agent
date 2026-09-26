@@ -69,12 +69,15 @@ from langgraph.types import interrupt
 from agent import config as cfg
 from agent import (
     confluence,
+    credentials,
     drafts,
     inputs,
+    jira,
     jira_journal,
     jira_plan,
     jira_roles,
     jira_writer,
+    metrics,
     sources,
 )
 from agent import graph as common_graph
@@ -156,9 +159,9 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
         if not absent:
             return ""
         return (
-            "В запросе есть ссылка на страницу Confluence, но читать её нечем: не "
-            "заданы " + ", ".join(absent) + ". Заполните переменные в .env и "
-            "перезапустите сервер — или приложите документ файлом в папку задачи. "
+            "В запросе есть ссылка на страницу Confluence, но читать её нечем: "
+            + credentials.missing_message(absent)
+            + ". Или приложите документ файлом в папку задачи. "
             "Прогон остановлен до первого вызова модели — деньги не потрачены."
         )
 
@@ -328,9 +331,9 @@ def _source_note(picked: dict) -> str:
 # чтобы не спрашивать дважды об одном и том же.
 # --------------------------------------------------------------------------
 def _project(config: RunnableConfig) -> str:
-    """Проект хода: выбранный в интерфейсе, иначе — из настроек."""
+    """Проект хода: выбранный в интерфейсе, иначе — проект по умолчанию пользователя."""
     chosen = str(common_graph.options(config).get("jira_project") or "").strip()
-    return (chosen or cfg.jira_project_key()).upper()
+    return chosen.upper() or jira.default_project()
 
 
 def _known_projects() -> list[dict]:
@@ -409,7 +412,7 @@ def create_node(state: State, config: RunnableConfig) -> dict:
         return skip("disabled", "заведение выключено через JIRA_CREATE_ISSUES")
     absent = jira_writer.missing_vars()
     if absent:
-        return skip("skipped", "не заданы в .env: " + ", ".join(absent))
+        return skip("skipped", credentials.missing_message(absent))
 
     try:
         plan = jira_plan.parse(document)
@@ -444,7 +447,8 @@ def create_node(state: State, config: RunnableConfig) -> dict:
     if not project:
         return skip(
             "skipped",
-            "не указан проект: выберите его в интерфейсе или задайте JIRA_PROJECT_KEY",
+            "не указан проект: выберите его в интерфейсе или задайте проект по умолчанию "
+            "в «Настройки» → «Мои подключения»",
         )
 
     # Ключ прогона: тред, проект и сам план. Повтор узла после падения даёт тот
@@ -516,4 +520,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "jira")

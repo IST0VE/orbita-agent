@@ -13,6 +13,10 @@
     "nt_run": "./src/agent/nt_run_graph.py:graph"
   },
   "env": ".env",
+  "auth": {
+    "path": "./src/agent/auth.py:auth",
+    "disable_studio_auth": true
+  },
   "http": {
     "app": "./src/agent/api.py:app",
     "middleware_order": "middleware_first"

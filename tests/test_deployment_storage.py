@@ -37,6 +37,9 @@ def mounts(service: str) -> dict[str, str]:
     """Точка монтирования → источник."""
     found = {}
     for row in COMPOSE["services"][service].get("volumes", []):
+        if isinstance(row, dict):
+            found[row["target"]] = row["source"]
+            continue
         source, target = row.split(":")[:2]
         found[target] = source
     return found
@@ -68,11 +71,10 @@ def test_every_stored_path_lands_on_a_volume_or_the_host():
 def test_the_dev_server_threads_have_their_own_volume():
     """Postgres не делает треды `langgraph dev` постоянными — это делает том."""
     assert "threads" in COMPOSE["volumes"]
-    # Сервер базу не использует, поэтому и не зависит от неё; Postgres — для демо.
+    # База у сервера своя — личные подключения, — но треды он в неё не пишет:
+    # чекпоинтер Postgres включается только у демо.
     assert "CHECKPOINT_BACKEND" not in COMPOSE["services"]["agent"]["environment"]
-    assert "postgres" not in COMPOSE["services"]["agent"].get("depends_on", {})
     assert COMPOSE["services"]["demo"]["environment"]["CHECKPOINT_BACKEND"] == "postgres"
-    assert COMPOSE["services"]["postgres"]["profiles"] == ["demo"]
     assert "PostgreSQL не делает треды `langgraph dev` постоянными" in DEPLOYMENT
 
 

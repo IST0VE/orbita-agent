@@ -187,3 +187,24 @@ def test_overlong_comment_is_refused_before_the_file_is_touched(settings_root: P
         settings_io.save({"AGENT_NAME": "Updated"}, {"AGENT_NAME": "x" * 5000})
 
     assert (settings_root / ".env").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    "name", ["POSTGRES_PASSWORD", "NT_RUNNER_TOKEN", "NT_PROMETHEUS_TOKEN", "USER_SECRETS_KEY"]
+)
+def test_a_secret_word_masks_the_value_even_outside_the_schema(name):
+    """Пароль базы и токены НТ в схеме не объявлены — и уезжали в браузер открытым текстом."""
+    assert settings_io.is_secret(name) is True
+
+
+@pytest.mark.parametrize("name", ["JIRA_PROJECT_KEY", "CONFLUENCE_SPACE_KEY"])
+def test_a_key_that_everyone_sees_is_not_masked(name):
+    assert settings_io.is_secret(name) is False
+
+
+def test_a_two_line_section_header_is_a_header_not_a_description():
+    fields = {item["name"]: item for item in settings_io._parse_example()}
+
+    first = fields["NT_PROMETHEUS_URL"]
+    assert first["section"].startswith("НТ: анализ завершённого теста")
+    assert "=" not in first["description"]

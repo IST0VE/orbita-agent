@@ -1114,3 +1114,11 @@
     width: auto;
   }
 }
+
+/* Вход через OIDC не удался: приложения ещё нет, есть только причина. */
+.auth-failed {
+  max-width: 560px;
+  margin: 15vh auto 0;
+  padding: 0 16px;
+  color: var(--text-primary);
+}
