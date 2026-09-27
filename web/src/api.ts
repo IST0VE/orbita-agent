@@ -15,7 +15,11 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await authorizedFetch(API_URL + path, { ...init, headers });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);
+    const error = new Error((body as { error?: string })?.error ?? `HTTP ${res.status}`);
+    // Код отказа сервера — по нему отличают «чата нет» от сбоя, не разбирая текст.
+    const code = (body as { error_code?: string })?.error_code;
+    if (code) error.name = code;
+    throw error;
   }
   return body as T;
 }
@@ -335,3 +339,156 @@ export const loadServerLog = ({ after = 0, level = "info", threadId, limit }: Se
   if (limit) query.set("limit", String(limit));
   return json<ServerLog>(`/api/logs?${query}`);
 };
+
+/* ------------------------------------------------------------------ */
+/* Чаты и их файлы                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Чат — это тред LangGraph. Список, создание и название идут в API самого
+ * сервера: владельца треда там проверяют правила `auth.py`, и чужих тредов
+ * поиск не вернёт. Файлы чата — свои роуты `/api/chats/*`: у LangGraph
+ * файлов нет, а владельца треда они сверяют так же.
+ */
+export type Chat = {
+  thread_id: string;
+  /** Пусто — чату ещё не дали названия: первый запрос его не задавал. */
+  title: string;
+  created_at?: string;
+  updated_at?: string;
+  status?: string;
+};
+
+export type ChatFile = {
+  name: string;
+  size: number;
+  text?: boolean;
+  diagram?: boolean;
+  suffix?: string;
+  /** Загрузка заменила файл с тем же именем. */
+  replaced?: boolean;
+};
+
+export type ChatFiles = {
+  thread_id: string;
+  files: ChatFile[];
+  limits: { max_bytes: number; max_files: number; suffixes: string[] };
+};
+
+/** Что можно добавить в чат копией: общие примеры и свои опубликованные документы. */
+export type Library = {
+  examples: Array<{ name: string; title: string; files: ChatFile[] }>;
+  published: Array<{ name: string; title: string; size: number; modified: number }>;
+};
+
+type ThreadRow = {
+  thread_id: string;
+  created_at?: string;
+  updated_at?: string;
+  status?: string;
+  metadata?: Record<string, unknown> | null;
+  extracted?: { first?: unknown } | null;
+};
+
+/** Сколько знаков первого запроса хватает, чтобы узнать чат в списке. */
+const TITLE_CHARS = 80;
+
+/**
+ * Название чата из его первого запроса — для чатов, заведённых до того, как
+ * у чата появилось своё название. Нода контекста дописывает к запросу справку
+ * и список файлов после строки `---`: в названии их быть не должно.
+ */
+export function titleOf(text: string): string {
+  const question = text.split("\n\n---\n")[0];
+  const flat = question.split(/\s+/).join(" ").trim();
+  return flat.length > TITLE_CHARS ? `${flat.slice(0, TITLE_CHARS - 1)}…` : flat;
+}
+
+const chatRow = (row: ThreadRow): Chat => {
+  const own = typeof row.metadata?.title === "string" ? row.metadata.title : "";
+  const first = row.extracted?.first;
+  return {
+    thread_id: row.thread_id,
+    title: own || (typeof first === "string" ? titleOf(first) : ""),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    status: row.status,
+  };
+};
+
+/** Свои чаты этого сценария, свежие сверху. Историю сообщений не тянем: только шапки. */
+export async function searchChats(graphId: string): Promise<Chat[]> {
+  const rows = await json<ThreadRow[]>("/threads/search", {
+    method: "POST",
+    body: JSON.stringify({
+      metadata: { graph_id: graphId },
+      limit: 200,
+      sort_by: "updated_at",
+      sort_order: "desc",
+      select: ["thread_id", "created_at", "updated_at", "status", "metadata"],
+      // Первый запрос — название для старых чатов, у которых своего нет.
+      extract: { first: "values.messages[0].content" },
+    }),
+  });
+  return rows.map(chatRow);
+}
+
+/** Завести чат заранее — до первого прогона, чтобы было куда загрузить файлы. */
+export async function createChat(graphId: string, title = ""): Promise<Chat> {
+  const row = await json<ThreadRow>("/threads", {
+    method: "POST",
+    body: JSON.stringify({ metadata: { graph_id: graphId, title } }),
+  });
+  return chatRow(row);
+}
+
+export async function renameChat(threadId: string, title: string): Promise<Chat> {
+  const row = await json<ThreadRow>(`/threads/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ metadata: { title } }),
+  });
+  return chatRow(row);
+}
+
+/** Чат удаляется вместе с файлами: своим роутом, а не `DELETE /threads`. */
+export const deleteChat = (threadId: string) =>
+  json<{ deleted: string; files_removed: boolean }>(`/api/chats/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
+  });
+
+const chatFilesPath = (threadId: string) => `/api/chats/${encodeURIComponent(threadId)}/files`;
+
+export const loadChatFiles = (threadId: string) => json<ChatFiles>(chatFilesPath(threadId));
+
+/**
+ * Загрузить файл в чат. Тело запроса — сам файл, имя — в адресе: одному
+ * файлу на запрос multipart ничего не добавляет.
+ */
+export async function uploadChatFile(threadId: string, file: File): Promise<ChatFiles & { file: ChatFile }> {
+  const response = await authorizedFetch(
+    `${API_URL}${chatFilesPath(threadId)}?name=${encodeURIComponent(file.name)}`,
+    { method: "PUT", body: file, headers: { "content-type": "application/octet-stream" } },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error((body as { error?: string })?.error ?? `${file.name}: HTTP ${response.status}`);
+  }
+  return body as ChatFiles & { file: ChatFile };
+}
+
+export const readChatFile = (threadId: string, name: string) =>
+  json<{ name: string; text: string }>(`${chatFilesPath(threadId)}/content?name=${encodeURIComponent(name)}`);
+
+export const deleteChatFile = (threadId: string, name: string) =>
+  json<ChatFiles>(`${chatFilesPath(threadId)}?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+
+export const attachToChat = (
+  threadId: string,
+  source: { source: "examples" | "published"; name: string; example?: string },
+) =>
+  json<ChatFiles & { file: ChatFile }>(`/api/chats/${encodeURIComponent(threadId)}/attach`, {
+    method: "POST",
+    body: JSON.stringify(source),
+  });
+
+export const loadLibrary = () => json<Library>("/api/library");

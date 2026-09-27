@@ -6,7 +6,9 @@ No live backend, model calls, credentials or real settings writes.
 
 import base64
 import json
+import threading
 import time
+import urllib.parse
 
 import browser_smoke as smoke
 
@@ -91,6 +93,16 @@ base_manifest = smoke.manifest
 
 def manifest(graph):
     value = base_manifest(graph)
+    # Файлы чата: по ним видно, чей список на экране и не потерян ли он.
+    value["input"].append(
+        {
+            "id": "task",
+            "target": "configurable.input_dir",
+            "widget": "chat-files",
+            "title": "Файлы чата",
+            "options": {"fixed": "@chat"},
+        }
+    )
     value["input"].append(
         {
             "id": "array",
@@ -138,6 +150,18 @@ def manifest(graph):
 
 
 REJECT_RUN = False
+# Ответ «кто вошёл» придерживается, пока проверка его не отпустит: меню
+# профиля открывается раньше, и набор его пунктов меняется под открытым меню.
+ME_RELEASED = threading.Event()
+ME_RELEASED.set()
+# Сколько сервер заводит чат под первый файл черновика: за это время оператор
+# успевает уйти в другой чат.
+CREATE_DELAY = 0.0
+# Куда уехали загруженные файлы: тред на каждый файл.
+UPLOADS: list[str] = []
+# Чьи списки чатов запрашивал интерфейс: сценарий на каждый запрос.
+SEARCHES: list[str] = []
+LIMITS = {"max_bytes": 1024, "max_files": 10, "suffixes": [".md"]}
 
 
 class Handler(smoke.Handler):
@@ -148,6 +172,38 @@ class Handler(smoke.Handler):
             smoke.REQUESTS.append(self.path)
             self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
             return self.reply({"error": "Fixture run rejected"}, 409)
+        if self.path == "/threads/search":
+            # У каждого сценария свой чат: по названию видно, чей список на экране.
+            smoke.REQUESTS.append(self.path)
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            graph = body.get("metadata", {}).get("graph_id", "agent")
+            SEARCHES.append(graph)
+            return self.reply(
+                [
+                    {
+                        "thread_id": "saved-thread",
+                        "status": "idle",
+                        "created_at": "2026-09-26T08:00:00+00:00",
+                        "updated_at": "2026-09-26T09:00:00+00:00",
+                        "metadata": {
+                            "graph_id": graph,
+                            "title": "Сохранённый чат" if graph == "agent" else f"Чат {graph}",
+                        },
+                    }
+                ]
+            )
+        if self.path == "/threads":
+            smoke.REQUESTS.append(self.path)
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            time.sleep(CREATE_DELAY)
+            return self.reply(
+                {
+                    "thread_id": "late-chat",
+                    "status": "idle",
+                    "created_at": "2026-09-27T08:00:00+00:00",
+                    "metadata": body.get("metadata", {}),
+                }
+            )
         return super().do_POST()
 
     def reply(self, value, status=200):
@@ -161,6 +217,9 @@ class Handler(smoke.Handler):
         return super().reply(value, status)
 
     def do_GET(self):
+        if self.path == "/api/me":
+            ME_RELEASED.wait(timeout=30)
+            return super().do_GET()
         if self.path == "/api/settings":
             return self.reply(
                 {
@@ -220,6 +279,13 @@ class Handler(smoke.Handler):
         return super().do_GET()
 
     def do_PUT(self):
+        if self.path.startswith("/api/chats/") and "/files?" in self.path:
+            thread = self.path.split("/")[3]
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)["name"][0]
+            size = len(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            UPLOADS.append(thread)
+            file = {"name": name, "size": size, "text": True}
+            return self.reply({"thread_id": thread, "files": [file], "limits": LIMITS, "file": file})
         assert self.path == "/api/settings"
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         time.sleep(0.8)
@@ -303,8 +369,11 @@ def regressions(call, js, until, click, shell):
         )
 
     # Поле ввода, которому манифест не назначил поверхность, — это параметр
-    # прогона, и стоит он среди параметров, а не в поле задачи.
-    until("!!document.querySelector('.sidebar [data-widget=form]')")
+    # прогона, и стоит он среди параметров чата в правой колонке, а не в поле
+    # задачи. На этой ширине правая колонка по умолчанию закрыта.
+    if not js("!!document.querySelector('.inspector')"):
+        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+    until("!!document.querySelector('.inspector [data-widget=form]')")
     array = '[data-widget="form"] textarea'
     fill(array, '["')
     time.sleep(0.1)
@@ -433,8 +502,16 @@ def regressions(call, js, until, click, shell):
     )
     close_settings()
 
-    PUBLICATIONS_OK = False
+    # Результаты чата — во вкладке «Чат» правой колонки: выбор узла выше
+    # переключил её на «Подробности». Список монтируется со вкладкой, и
+    # первая загрузка должна пройти до того, как фикстура начнёт отказывать.
+    if not js("!!document.querySelector('.inspector')"):
+        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+    js("document.querySelector('.inspector-tab').click()")
+    until("!!document.querySelector('.engine-outline')")
     js("document.querySelector('.engine-outline').open=true")
+    until("[...document.querySelectorAll('.engine-outline button')].some(b=>b.textContent.includes('Обновить список'))")
+    PUBLICATIONS_OK = False
     click("Обновить список")
     until(
         "document.querySelector('.engine-outline [role=alert]')?.textContent.includes('Publication fixture unavailable')"
@@ -498,6 +575,8 @@ def regressions(call, js, until, click, shell):
     assert js("document.activeElement.classList.contains('btn-yes')")
     assert js("document.querySelector('.btn-yes').disabled === false")
     APPROVAL = False
+    # Роль оператора приедет позже, чем откроется меню профиля.
+    ME_RELEASED.clear()
     call("Page.reload")
     until("document.querySelector('.approve') === null")
 
@@ -510,17 +589,37 @@ def regressions(call, js, until, click, shell):
     until("!!document.querySelector('.menu-avatar .menu-trigger')", seconds=30)
     js("document.querySelector('.menu-avatar .menu-trigger').click()")
     until("!!document.querySelector('.menu-list .menu-item')")
-    assert js("document.activeElement.textContent.includes('Настройки приложения')"), (
+    # Текст сфокусированного пункта. Не `activeElement.textContent`: у
+    # страницы, на которую падает потерянный фокус, в тексте есть всё меню.
+    item = (
+        "(document.activeElement.classList.contains('menu-item')"
+        " ? document.activeElement.textContent : '')"
+    )
+    # Меню открыто до того, как сервер назвал роль: первым в нём стоит пункт
+    # не для служебного входа. С ответом он исчезает, а на его место встаёт
+    # пункт администратора. Раньше фокус уходил вместе с исчезнувшим пунктом
+    # на страницу, и стрелки листали её, а не меню.
+    assert js(f"{item}.includes('Мои подключения')"), (
         "Menu did not take focus on open"
     )
+    ME_RELEASED.set()
+    until(
+        "[...document.querySelectorAll('.menu-list .menu-item')]"
+        ".some(b=>b.textContent.includes('Настройки сервера'))",
+        seconds=5,
+    )
+    assert js(f"{item}.includes('Настройки сервера')"), (
+        "Menu lost focus when its items changed: "
+        + str(js("document.activeElement.tagName + '.' + document.activeElement.className"))
+    )
     key("ArrowDown", 40)
-    assert js("document.activeElement.textContent.includes('Оформление')"), (
+    assert js(f"{item}.includes('Оформление')"), (
         "Arrow key did not move the real focus"
     )
     # Подсветка и фокус — одно и то же, а не два независимых состояния.
-    assert js(
-        "document.querySelector('.menu-item[data-active=true]') === document.activeElement"
-    ), "Highlight and focus disagree"
+    # Подсветка идёт за фокусом через перерисовку, поэтому ждём, а не
+    # проверяем в тот же миг: иначе проверка ловит кадр между ними.
+    until("document.querySelector('.menu-item[data-active=true]') === document.activeElement")
     key("Enter", 13, text="\r")
     # Страница появляется раньше, чем эффект SettingsPage применит выбранный
     # раздел: первый кадр ещё показывает «Модель». Ждём сам переход в
@@ -557,6 +656,82 @@ def regressions(call, js, until, click, shell):
     REJECT_RUN = False
     fill(composer, "")
 
+    # Файлы чата. Счётчик в заголовке списка — «…», пока список не приехал.
+    global CREATE_DELAY
+    if not js("!!document.querySelector('.inspector')"):
+        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+    until("!!document.querySelector('.inspector-tab')")
+    js("document.querySelector('.inspector-tab').click()")
+    count = "document.querySelector('.chat-files-title .hint')?.textContent"
+    active = "document.querySelector('.chat-item.active .chat-item-title')?.textContent"
+    saved = (
+        "[...document.querySelectorAll('.chat-item-open')]"
+        ".find(b=>b.textContent.includes('Сохранённый чат'))"
+    )
+    until(f"{active} === 'Сохранённый чат' && {count} === '0'")
+
+    # Повторный клик по открытому чату очищал его список, а перечитывался
+    # список по смене треда, которой не было: «…» оставалось навсегда.
+    js(f"{saved}.click()")
+    time.sleep(0.5)
+    assert js(count) == "0", f"Файлы открытого чата пропали: {js(count)!r}"
+
+    # Файл брошен в черновик, и пока сервер заводит под него чат, оператор
+    # уходит в другой. Поздний ответ не должен переключать его обратно.
+    CREATE_DELAY = 1.5
+    js("document.querySelector('.chat-new').click()")
+    until("!!document.querySelector('.chat-item.active.draft')")
+    js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
+        const data=new DataTransfer();
+        data.items.add(new File(['# note'],'note.md',{type:'text/markdown'}));
+        input.files=data.files;
+        input.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+    deadline = time.monotonic() + 5
+    while "/threads" not in smoke.REQUESTS and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "/threads" in smoke.REQUESTS, "Загрузка в черновик не завела чат"
+    until(f"!!{saved}")
+    js(f"{saved}.click()")
+    until(f"{active} === 'Сохранённый чат'")
+    deadline = time.monotonic() + 5
+    while "late-chat" not in UPLOADS and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert UPLOADS == ["late-chat"], UPLOADS
+    time.sleep(0.5)
+    assert js(active) == "Сохранённый чат", f"Поздний ответ переключил чат: {js(active)!r}"
+    assert js(count) == "0", f"На экране чужие файлы: {js(count)!r}"
+
+    # То же, но оператор уходит в другой сценарий. Поздний ответ перечитывал
+    # список чатов прежнего сценария и подставлял его в новый.
+    # Только сохранённые чаты: у черновика тот же класс, но не кнопка.
+    titles = "[...document.querySelectorAll('button.chat-item-open .chat-item-title')].map(t=>t.textContent)"
+    created = smoke.REQUESTS.count("/threads")
+    js("document.querySelector('.chat-new').click()")
+    until("!!document.querySelector('.chat-item.active.draft')")
+    js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
+        const data=new DataTransfer();
+        data.items.add(new File(['# note'],'note.md',{type:'text/markdown'}));
+        input.files=data.files;
+        input.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+    deadline = time.monotonic() + 5
+    while smoke.REQUESTS.count("/threads") == created and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert smoke.REQUESTS.count("/threads") > created, "Загрузка в черновик не завела чат"
+    switched = len(SEARCHES)
+    js("document.querySelector('.pick-button').click()")
+    until("!!document.querySelector('.pick-menu [data-graph=demo]')")
+    js("document.querySelector('.pick-menu [data-graph=demo]').click()")
+    until(f"document.querySelector('.pick-button').dataset.graph === 'demo'"
+          f" && JSON.stringify({titles}) === '[\"Чат demo\"]'")
+    deadline = time.monotonic() + 5
+    while len(UPLOADS) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert UPLOADS == ["late-chat", "late-chat"], UPLOADS
+    time.sleep(0.5)
+    assert js(titles) == ["Чат demo"], f"В сценарии demo список чужого: {js(titles)!r}"
+    assert "agent" not in SEARCHES[switched:], SEARCHES[switched:]
+    CREATE_DELAY = 0.0
+
     (smoke.ARTIFACTS / "regressions.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
@@ -576,6 +751,9 @@ def regressions(call, js, until, click, shell):
         "parameter form does not start a run",
         "menu keyboard: Enter runs the focused item",
         "refused run keeps the unsent task",
+        "active chat click keeps its files",
+        "late chat creation does not switch the chat",
+        "late chat creation keeps the other scenario's chat list",
     ]
 
 

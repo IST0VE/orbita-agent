@@ -15,7 +15,7 @@ import { RUN_LABELS, RUN_TONES } from "../engine/runtime/labels";
 import type { RunStatus } from "../engine/runtime/types";
 import {
   ChevronRight,
-  FolderOpen,
+  MessageSquare,
   PanelLeft,
   PanelRight,
   Pause,
@@ -26,8 +26,9 @@ import {
 import { StatusDot } from "../ui";
 
 export function ContextBar({
-  task,
-  onPickTask,
+  chat,
+  fileCount,
+  onShowChat,
   scenario,
   scenarioHint,
   runStatus,
@@ -48,9 +49,11 @@ export function ContextBar({
   inspectorOpen,
   onToggleInspector,
 }: {
-  /** Папка задачи: с чем я работаю. Пусто — материалы ещё не выбраны. */
-  task: string;
-  onPickTask: () => void;
+  /** Открытый чат: с чем я работаю. */
+  chat: string;
+  /** Сколько файлов загружено в этот чат. */
+  fileCount: number;
+  onShowChat: () => void;
   /** Сценарий: чем я работаю. */
   scenario: string;
   scenarioHint: string;
@@ -79,20 +82,20 @@ export function ContextBar({
   return (
     <div className="context-bar">
       {/*
-        Крошка начинается с папки задачи. Корнем стояло название раздела —
-        неподвижная надпись «Проекты», которая никуда не вела и называла
-        сущность, которой нет. Крошка из двух шагов, каждый из которых
-        что-то делает, честнее крошки из трёх, где первый шаг декоративный.
+        Крошка начинается с открытого чата: раньше здесь стояла папка задачи,
+        общая для всех вошедших. Чат свой, и его файлы видны только в нём —
+        щелчок открывает их в правой колонке.
       */}
       <nav className="crumbs" aria-label="Контекст работы">
         <button
           type="button"
           className="crumb crumb-action"
-          title={task ? `Папка задачи: ${task}. Показать материалы` : "Выбрать папку задачи в материалах"}
-          onClick={onPickTask}
+          title={`Чат «${chat}». Файлов: ${fileCount}. Показать файлы чата`}
+          onClick={onShowChat}
         >
-          <FolderOpen size={14} aria-hidden="true" />
-          <span className="truncate">{task || "Материалы не выбраны"}</span>
+          <MessageSquare size={14} aria-hidden="true" />
+          <span className="truncate">{chat}</span>
+          {fileCount ? <span className="crumb-count">{fileCount}</span> : null}
         </button>
         <ChevronRight className="crumb-sep" size={14} aria-hidden="true" />
         <span className="crumb crumb-current truncate" title={scenarioHint}>{scenario}</span>
@@ -145,11 +148,11 @@ export function ContextBar({
         <button
           className="btn-ghost btn-sm"
           disabled={newThreadDisabled}
-          title="Начать новый прогон: очистить тред, сообщения и результаты"
+          title="Начать новый чат: прежний останется в списке слева вместе с файлами"
           onClick={onNewThread}
         >
           <Plus size={15} aria-hidden="true" />
-          Новый прогон
+          Новый чат
         </button>
 
         {/*
@@ -160,18 +163,18 @@ export function ContextBar({
         <span className="panel-toggles">
           <button
             className="btn-ghost btn-icon btn-sm"
-            aria-label="Колонка материалов"
+            aria-label="Колонка чатов"
             aria-pressed={sidebarOpen}
-            title={sidebarOpen ? "Скрыть материалы" : "Показать материалы"}
+            title={sidebarOpen ? "Скрыть список чатов" : "Показать список чатов"}
             onClick={onToggleSidebar}
           >
             <PanelLeft size={15} aria-hidden="true" />
           </button>
           <button
             className="btn-ghost btn-icon btn-sm"
-            aria-label="Колонка подробностей"
+            aria-label="Колонка файлов и подробностей"
             aria-pressed={inspectorOpen}
-            title={inspectorOpen ? "Скрыть подробности" : "Показать подробности"}
+            title={inspectorOpen ? "Скрыть файлы и подробности" : "Показать файлы чата и подробности"}
             onClick={onToggleInspector}
           >
             <PanelRight size={15} aria-hidden="true" />

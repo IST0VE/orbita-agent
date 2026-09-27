@@ -18,6 +18,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -65,6 +66,8 @@ export function Menu({
    * пункт, иначе в меню не остаётся ни одного элемента в порядке обхода.
    */
   const focused = Math.min(active, Math.max(0, enabled.length - 1));
+  /** Набор доступных пунктов: по его смене фокус сверяется заново. */
+  const itemsKey = enabled.map((item) => item.id).join("\n");
 
   const hide = useCallback((restoreFocus = true) => {
     setOpen(false);
@@ -81,12 +84,26 @@ export function Menu({
   }, [open]);
 
   // Открытие уводит фокус в список: иначе стрелки листали бы страницу, а не
-  // пункты, и первое же нажатие Enter ушло бы кнопке-триггеру.
-  useEffect(() => {
-    if (open) options.current[focused]?.focus();
-    // Наводится один раз на раскрытие: дальше фокусом двигают стрелки и мышь.
+  // пункты, и первое же нажатие Enter ушло бы кнопке-триггеру. Наводится он
+  // один раз на раскрытие, дальше фокусом двигают стрелки и мышь.
+  //
+  // Кроме одного случая: набор пунктов сменился при открытом меню. Меню
+  // профиля открывают раньше, чем сервер назовёт роль, и с ответом пункт
+  // «Мои подключения» уступает место «Настройкам сервера». Сфокусированный
+  // пункт остался — подсветка идёт за ним на его новое место. Исчез — фокус
+  // встаёт на пункт, занявший его место; раньше он падал на страницу, и меню
+  // оставалось открытым, но стрелки листали страницу.
+  //
+  // До отрисовки, а не после: между кадром с новым набором и фокусом нажатие
+  // клавиши досталось бы не тому элементу.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const nodes = options.current.slice(0, enabled.length);
+    const kept = nodes.findIndex((node) => node !== null && node === document.activeElement);
+    if (kept >= 0) setActive(kept);
+    else nodes[focused]?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, itemsKey]);
 
   const show = (position: number) => {
     setActive(position);
@@ -144,6 +161,11 @@ export function Menu({
             }
           }}
           onBlur={(event) => {
+            // Пункт, исчезнувший или ставший недоступным, теряет фокус сам —
+            // это не уход оператора из меню: фокус вернёт эффект выше.
+            const left: EventTarget = event.target;
+            const lost = left instanceof HTMLButtonElement && (!left.isConnected || left.disabled);
+            if (!event.relatedTarget && lost) return;
             if (!root.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
           }}
         >

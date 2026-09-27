@@ -307,16 +307,30 @@ def _forget_cache(subject: str) -> None:
 # --------------------------------------------------------------------------
 # Чей токен
 # --------------------------------------------------------------------------
+#: Чем конфиг прогона отличается от конфига, который сервер LangGraph ставит
+#: каждому HTTP-запросу ради `get_store()` (`EnsureStoreAccessible`): в том
+#: нет ни треда, ни прогона, ни пользователя — только хранилище.
+_RUN_KEYS = ("langgraph_auth_user_id", "run_id", "thread_id")
+
+
 def current_subject() -> str | None:
-    """Кто сейчас работает: пользователь прогона, запроса или никто."""
+    """
+    Кто сейчас работает: пользователь прогона, запроса или никто.
+
+    Наличие конфига ещё не значит, что идёт прогон: сервер ставит конфиг с
+    одним хранилищем и нашим роутам. Раньше этого хватало, чтобы потерять
+    пользователя запроса: список публикаций читался из общего корня, а
+    личные значения подменялись общими из `.env`.
+    """
     try:
         from langgraph.config import get_config
 
         config = get_config()
     except (ImportError, RuntimeError):
         config = None
-    if config is not None:
-        return (config.get("configurable") or {}).get("langgraph_auth_user_id") or None
+    configurable = (config or {}).get("configurable") or {}
+    if any(key in configurable for key in _RUN_KEYS):
+        return configurable.get("langgraph_auth_user_id") or None
     principal = security.current()
     return principal.subject if principal else None
 

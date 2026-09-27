@@ -125,23 +125,54 @@ async def manage_assistants(ctx: Auth.types.AuthContext, value: dict) -> bool:
 # нужны: их закрывает запрет по умолчанию выше.
 
 
-async def owns_thread(principal: Principal, thread_id: str) -> bool:
+def _service_client():
+    """Внутрипроцессный клиент сервера LangGraph с правами админ-токена."""
+    return get_client(
+        url=None, api_key=None, headers={"Authorization": f"Bearer {cfg.api_admin_token()}"}
+    )
+
+
+async def _thread(thread_id: str) -> dict | None:
+    """Тред по id или None, если его нет."""
+    try:
+        return await _service_client().threads.get(thread_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (404, 422):
+            return None
+        raise
+
+
+async def owns_thread(principal: Principal, thread_id: str, *, must_exist: bool = False) -> bool:
     """
     Тред этого пользователя — для своих роутов, которые принимают `thread_id`.
 
     Правила выше применяет сервер LangGraph к своим роутам, а `/api/*` он не
     проверяет. Поэтому тред читается у него же, внутрипроцессным клиентом
     админ-токеном, и владелец сверяется здесь.
+
+    `must_exist` — и админ-токену тред обязан существовать. Так проверяют
+    файлы чата: они лежат в папке треда, и загрузка в тред, которого нет,
+    оставила бы папку, которую никто не откроет.
     """
+    if principal.service and not must_exist:
+        return True
+    thread = await _thread(thread_id)
+    if thread is None:
+        return False
     if principal.service:
         return True
-    client = get_client(
-        url=None, api_key=None, headers={"Authorization": f"Bearer {cfg.api_admin_token()}"}
-    )
-    try:
-        thread = await client.threads.get(thread_id)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code in (404, 422):
-            return False
-        raise
     return (thread.get("metadata") or {}).get(OWNER) == principal.subject
+
+
+async def thread_exists(thread_id: str) -> bool:
+    """Есть ли тред вообще — для уборки папок удалённых чатов."""
+    return await _thread(thread_id) is not None
+
+
+async def delete_thread(thread_id: str) -> None:
+    """Удалить тред. Владельца проверяет вызывающий: здесь права админ-токена."""
+    try:
+        await _service_client().threads.delete(thread_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise

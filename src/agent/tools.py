@@ -49,11 +49,11 @@ def list_task_files(config: RunnableConfig) -> str:
     if not task:
         return "к задаче не приложено файлов: папка не выбрана"
     try:
-        files = next((t["files"] for t in inputs.list_tasks() if t["name"] == task), [])
-    except OSError as exc:
+        files = inputs.files_of(task)
+    except (inputs.InputError, OSError) as exc:
         return _unavailable("папка задачи", exc)
     if not files:
-        return f"в папке задачи {task!r} нет файлов"
+        return f"в папке «{inputs.title_for(task)}» нет файлов"
     # Выбор оператора видно и здесь, а не только в списке, подставленном в конец
     # задачи: роль могла дойти до инструмента на втором круге, когда до начала
     # сообщения ей уже далеко, — и решить по списку без пометки, что выбора

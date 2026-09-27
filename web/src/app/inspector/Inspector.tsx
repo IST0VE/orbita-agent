@@ -1,15 +1,18 @@
 /**
- * Правая колонка: подробности выбранного, а не постоянный набор карточек.
+ * Правая колонка: открытый чат и подробности выбранного.
  *
- * Раньше здесь всегда стояли четыре блока — состояние, стоимость, публикация
- * и «текущий проект», — и три из них чаще всего были пустыми. Пустая карточка
- * не сообщает «данных нет», она сообщает «здесь что-то сломано».
+ * Две вкладки. «Чат» — файлы, загруженные в этот чат, параметры прогона и то,
+ * что прогон создал (`ChatMaterials`). Раньше это была левая колонка с общими
+ * папками задач; её место заняли сами чаты, а файлы встали сюда, рядом с
+ * результатами того же чата.
  *
- * Теперь содержание зависит от того, что выбрано: узел — карточка узла,
- * прогон — его показатели, ничего — короткая справка о сценарии. Выбор
- * узла заодно и открывает колонку: подробности приходят к тому, кто их
- * запросил, а не ждут на экране весь день.
+ * «Подробности» — то, чем колонка была раньше, и содержание у неё зависит от
+ * выбора: узел — карточка узла, прогон — его показатели, ничего — короткая
+ * справка о сценарии. Выбор узла сам переключает на эту вкладку: подробности
+ * приходят к тому, кто их запросил.
  */
+
+import type { ReactNode } from "react";
 
 import type { GraphTopology } from "../../lib/graph";
 import { surfaceItems } from "../../engine/surfaces/SurfaceRenderer";
@@ -21,7 +24,13 @@ import { NodeInspector } from "./NodeInspector";
 import { RunInspector } from "./RunInspector";
 import { ScenarioInspector } from "./ScenarioInspector";
 
+export type RightTab = "chat" | "details";
+
 export function Inspector({
+  tab,
+  onTab,
+  materials,
+  fileCount,
   manifest,
   runtime,
   context,
@@ -35,6 +44,12 @@ export function Inspector({
   threadId,
   onClose,
 }: {
+  tab: RightTab;
+  onTab: (tab: RightTab) => void;
+  /** Вкладка «Чат»: файлы, параметры и результаты открытого чата. */
+  materials: ReactNode;
+  /** Сколько файлов в чате; null — ещё не известно. */
+  fileCount: number | null;
   manifest: UiManifest;
   runtime: RuntimeSnapshot;
   context: SafeWidgetContext;
@@ -58,12 +73,33 @@ export function Inspector({
     .filter((item) => isInspectorWidget(item.widget));
 
   const title = node ? "Узел" : started ? "Прогон" : "Сценарий";
+  const details = tab === "details";
 
   return (
-    <aside className="inspector" aria-label={`Инспектор: ${title.toLowerCase()}`}>
+    <aside className="inspector" aria-label={details ? `Подробности: ${title.toLowerCase()}` : "Открытый чат"}>
       <div className="inspector-head">
-        <span className="eyebrow">{title}</span>
-        {node ? (
+        <div className="inspector-tabs" role="tablist" aria-label="Правая колонка">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!details}
+            className={`inspector-tab${details ? "" : " active"}`}
+            onClick={() => onTab("chat")}
+          >
+            Чат
+            {fileCount ? <span className="inspector-tab-count">{fileCount}</span> : null}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={details}
+            className={`inspector-tab${details ? " active" : ""}`}
+            onClick={() => onTab("details")}
+          >
+            {title}
+          </button>
+        </div>
+        {details && node ? (
           <button
             className="btn-ghost btn-sm inspector-clear"
             title="Снять выбор узла и вернуться к показателям прогона"
@@ -82,15 +118,19 @@ export function Inspector({
         </button>
       </div>
 
-      <div className="inspector-scroll">
-        {node && topology ? (
-          <NodeInspector nodeId={node} topology={topology} manifest={manifest} runtime={runtime} />
-        ) : started ? (
-          <RunInspector runtime={runtime} threadId={threadId} items={measures} />
-        ) : (
-          <ScenarioInspector manifest={manifest} inputs={inputs} title={scenarioTitle} />
-        )}
-      </div>
+      {details ? (
+        <div className="inspector-scroll">
+          {node && topology ? (
+            <NodeInspector nodeId={node} topology={topology} manifest={manifest} runtime={runtime} />
+          ) : started ? (
+            <RunInspector runtime={runtime} threadId={threadId} items={measures} />
+          ) : (
+            <ScenarioInspector manifest={manifest} inputs={inputs} title={scenarioTitle} />
+          )}
+        </div>
+      ) : (
+        materials
+      )}
     </aside>
   );
 }

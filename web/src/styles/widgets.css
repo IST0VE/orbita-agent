@@ -1410,17 +1410,51 @@ pre[data-language] {
   gap: var(--space-1);
 }
 
-.artifact-list > details > summary {
+/* Действия строки стоят поверх неё справа, а не внутри summary: кнопка
+   в summary раскрывала бы документ тем же щелчком, которым его скачивают. */
+.artifact-item {
+  position: relative;
+}
+
+.artifact-item > details > summary {
+  min-width: 0;
+  padding-right: 60px;
   font-size: var(--type-body);
   color: var(--text-primary);
 }
 
-.artifact-list > details > summary svg {
+.artifact-item > details > summary svg {
+  flex: none;
   color: var(--text-muted);
 }
 
-.artifact-list > details[open] > summary {
+.artifact-item > details[open] > summary {
   color: var(--text-brand);
+}
+
+.artifact-actions {
+  position: absolute;
+  top: 5px;
+  right: 0;
+  display: flex;
+  gap: 2px;
+}
+
+.artifact-actions .btn-icon {
+  color: var(--text-muted);
+}
+
+.artifact-raw {
+  max-height: 320px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  font-size: var(--type-label);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
 }
 
 .artifact-list .safe-markdown {

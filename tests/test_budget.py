@@ -17,7 +17,10 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agent import roles
 from agent.graph import budget_gate, build_graph
+from agent.llm_retry import ResponseTruncated
+from agent.nodes import make_role_node, truncation_charge
 
 CONFIG = {"configurable": {"thread_id": "t-1"}}
 
@@ -248,3 +251,67 @@ def test_a_zero_ceiling_means_no_ceiling(monkeypatch: pytest.MonkeyPatch):
 
     assert result["usage"]["calls"] == 1
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
+
+
+# --------------------------------------------------------------------------
+# Оборванный ответ
+#
+# Ответ, упёршийся в потолок длины, роняет прогон: неполный документ дальше
+# не идёт. Но провайдер за него уже взял деньги, и ворота бюджета обязаны
+# это видеть.
+# --------------------------------------------------------------------------
+def truncated(text="Требов", miss=EXPENSIVE, output=8000):
+    message = answer(text, miss=miss, output=output)
+    message.response_metadata["finish_reason"] = "length"
+    return message
+
+
+def test_a_truncated_answer_is_charged_before_the_run_stops(monkeypatch: pytest.MonkeyPatch):
+    """
+    Исключение выбрасывало обновление узла вместе с `usage` и `spend`: два
+    оплаченных обрыва оставляли счётчики пустыми, и ворота пускали третий.
+    """
+    monkeypatch.setenv("BUDGET_USD_PER_THREAD", "0.01")
+    app = thread(truncated(), answer("Не должно прозвучать"))
+
+    with pytest.raises(ResponseTruncated, match="Генерация остановлена по лимиту"):
+        app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
+
+    values = app.get_state(CONFIG).values
+    assert values["usage"]["calls"] == 1
+    assert values["usage"]["output"] == 8000
+    assert values["spend"]["usd"] == values["cost"]["usd"] > 0.01
+    assert "requirements" not in (values.get("artifacts") or {}), "обрыв дальше не идёт"
+
+    second = app.invoke({"messages": [HumanMessage("ещё задача")]}, config=CONFIG)
+
+    assert "Бюджет треда исчерпан" in second["messages"][-1].content
+    assert second["usage"]["calls"] == 1
+
+
+def test_the_next_turn_after_a_truncation_runs_normally():
+    """Ошибка относится к прогону, в котором случилась: следующий ход её не наследует."""
+    app = thread(truncated(), *[answer(f"Этап {n}") for n in range(1, 6)])
+
+    with pytest.raises(ResponseTruncated):
+        app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
+    result = app.invoke({"messages": [HumanMessage("задача с LLM_MAX_TOKENS побольше")]}, config=CONFIG)
+
+    assert result["messages"][-1].content == "Этап 5"
+    assert result["usage"]["calls"] == 6
+    assert not result["failure"]
+
+
+def test_a_truncated_retry_is_charged_together_with_the_silent_answer():
+    """Переспрос роли оборвался — оплачены оба вызова, а не только последний."""
+    node = make_role_node(
+        roles.LAST, llm=GenericFakeChatModel(messages=iter([asks_for_tool(), truncated()]))
+    )
+
+    with pytest.raises(ResponseTruncated) as error:
+        node({"messages": [HumanMessage("задача")], "task": "задача"}, {})
+
+    charged = truncation_charge(error.value, {})
+    assert charged["usage"]["calls"] == 2
+    assert charged["usage"]["cache_miss"] == 2 * EXPENSIVE
+    assert charged["spend"]["usd"] == charged["cost"]["usd"] > 0

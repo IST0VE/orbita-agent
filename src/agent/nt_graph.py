@@ -277,7 +277,9 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         except Exception as exc:
             log.warning("nt_llm_failed node=understand_task run_id=%s test_id=%s",
                         state.get("run_id"), state.get("test_id"), exc_info=True)
-            return {"stage": "understand_task", "source_errors": _error(state, "LLM_UNAVAILABLE",
+            # Оборванный ответ оплачен: расход остаётся в треде и отказом.
+            return {**nodes.truncation_charge(exc, state), "stage": "understand_task",
+                    "source_errors": _error(state, "LLM_UNAVAILABLE",
                         _reason(exc, "context extraction unavailable"))}
 
     def discover_scope(state: State) -> dict:
@@ -485,7 +487,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             log.warning("nt_llm_failed node=investigate run_id=%s test_id=%s iteration=%s",
                         state.get("run_id"), state.get("test_id"), state.get("iteration", 0),
                         exc_info=True)
-            return {"investigation_history": settled(history), "stop_reason": "investigation_error",
+            return {**nodes.truncation_charge(exc, state),
+                    "investigation_history": settled(history), "stop_reason": "investigation_error",
                     "source_errors": _error(state, "LLM_UNAVAILABLE", _reason(
                         exc, "investigation unavailable; deterministic report retained")),
                     "stage": "investigate"}

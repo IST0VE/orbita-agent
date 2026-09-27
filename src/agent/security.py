@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -38,6 +39,9 @@ _TOKEN_BODY_BYTES = 16 * 1024
 #: Метрики сервера LangGraph и Orbita (metrics.py). Кроме обычного входа их
 #: открывает METRICS_TOKEN — и больше он не открывает ничего.
 METRICS_PATH = "/metrics"
+#: Загрузка файла в чат (`PUT /api/chats/{thread_id}/files`): единственный путь,
+#: где тело — не JSON служебного API, а сам файл, и потолок у него свой.
+_UPLOAD_PATH = re.compile(r"/api/chats/[^/]+/files")
 # Только асимметричные: с HS256 ключом стал бы публичный JWKS.
 _ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384"]
 _JWKS: dict[str, jwt.PyJWKClient] = {}
@@ -303,6 +307,13 @@ async def _read_body(
     return bytes(body)
 
 
+def _body_limit(scope: Scope) -> tuple[int, str]:
+    """Потолок тела запроса и имя настройки, которая его задаёт."""
+    if scope.get("method") == "PUT" and _UPLOAD_PATH.fullmatch(scope.get("path", "")):
+        return cfg.chat_file_max_bytes(), "CHAT_FILE_MAX_BYTES"
+    return cfg.api_max_request_bytes(), "API_MAX_REQUEST_BYTES"
+
+
 class ApiSecurityMiddleware:
     """LangGraph imports this middleware from http.app for the entire server.
 
@@ -361,9 +372,7 @@ class ApiSecurityMiddleware:
             await principal(scope, receive, secure_send)
             return
         scope[PRINCIPAL] = principal
-        body = await _read_body(
-            headers, receive, cfg.api_max_request_bytes(), "API_MAX_REQUEST_BYTES"
-        )
+        body = await _read_body(headers, receive, *_body_limit(scope))
         if body is None:
             return
         if isinstance(body, tuple):

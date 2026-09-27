@@ -146,10 +146,10 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
         return (
             f"{'Выбраны файлы' if many else 'Выбран файл'} "
             + ", ".join(lost)
-            + f", но в папке задачи {'их' if many else 'его'} нет или "
+            + f", но в файлах чата {'их' if many else 'его'} нет или "
             + ("они не читаются" if many else "он не читается")
             + ". Выберите другой файл или снимите выбор, чтобы конвейер прочитал "
-            "папку целиком. Прогон остановлен до первого вызова модели — деньги "
+            "все файлы чата. Прогон остановлен до первого вызова модели — деньги "
             "не потрачены."
         )
 
@@ -161,7 +161,7 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
         return (
             "В запросе есть ссылка на страницу Confluence, но читать её нечем: "
             + credentials.missing_message(absent)
-            + ". Или приложите документ файлом в папку задачи. "
+            + ". Или загрузите документ файлом в чат. "
             "Прогон остановлен до первого вызова модели — деньги не потрачены."
         )
 
@@ -174,9 +174,9 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
 
     return (
         f"Раскладывать нечего: в сообщении {len(question)} символов, ссылки на "
-        "страницу Confluence в нём нет, и в папке задачи нет ни одного текстового "
+        "страницу Confluence в нём нет, и в файлах чата нет ни одного текстового "
         "файла. Этот конвейер разбирает готовую аналитику, а не пишет её: дайте "
-        "ссылку на страницу, положите документ файлом в папку задачи или вставьте "
+        "ссылку на страницу, загрузите документ файлом в чат или вставьте "
         "его в сообщение. Прогон остановлен до первого вызова модели — деньги "
         "не потрачены."
     )
@@ -204,7 +204,7 @@ def source_block(picked: dict) -> str:
     if picked["kind"] == "confluence":
         parts.append(f"Источник: страница Confluence «{picked['title']}» — {picked['url']}")
     else:
-        parts.append("Источник: файлы папки задачи — " + ", ".join(picked["names"]))
+        parts.append("Источник: файлы чата — " + ", ".join(picked["names"]))
         if picked.get("chosen"):
             parts.append(
                 "Эти файлы выбраны оператором в интерфейсе как единственный источник. "
@@ -310,7 +310,7 @@ def _source_note(picked: dict) -> str:
     where = (
         f"страница Confluence «{picked['title']}» {picked['url']}"
         if picked["kind"] == "confluence"
-        else "файлы папки задачи: " + ", ".join(picked["names"])
+        else "файлы чата: " + ", ".join(picked["names"])
     )
     tail = " (текст обрезан по потолку чтения)" if picked.get("truncated") else ""
     return f"Прочитан источник: {where} — {len(picked['text'])} символов{tail}."

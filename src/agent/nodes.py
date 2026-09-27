@@ -188,6 +188,62 @@ def revision_block(previous: str) -> str:
     )
 
 
+def charged_update(state: dict, usage: dict, money: dict) -> dict:
+    """Приращения расхода узла и сводка треда с ними — в том виде, в каком их пишет узел."""
+    return {
+        "usage": usage,
+        "spend": money,
+        "cost": cost_summary(
+            _merge_usage(state.get("usage"), usage), _merge_spend(state.get("spend"), money)
+        ),
+    }
+
+
+def truncation_charge(error: BaseException, state: dict) -> dict:
+    """
+    Что записать в тред, остановившись на ошибке модели: расход оборванного ответа.
+
+    Обрыв на потолке длины — единственная ошибка модели, за которую взяли
+    деньги: ответ пришёл, просто не целиком. У остальных ответа нет, и
+    записывать нечего.
+    """
+    if not isinstance(error, llm_retry.ResponseTruncated):
+        return {}
+    if error.update is not None:
+        return error.update
+    if error.response is None:
+        return {}
+    usage = extract_usage(error.response)
+    return charged_update(state, usage, charge(usage, state=state))
+
+
+def charged_stop(node: Any) -> Any:
+    """
+    Узел графа, который на оборванном ответе сначала записывает расход, потом падает.
+
+    LangGraph не сохраняет обновление узла, поднявшего исключение: оплаченный
+    обрыв пропадал из треда вместе с `usage` и `spend`, и ворота бюджета
+    пускали следующий вызов. Поэтому обрыв здесь не поднимается, а
+    возвращается обновлением — расход и `failure`. Роутер роли
+    (`routes.make_role_router`) вторым шагом шлёт в этот же узел одну
+    `failure`, и узел поднимает её. Прогон кончается той же ошибкой, но к этому
+    моменту расход уже лежит в checkpoint'е.
+
+    Для узлов, которые зовут роль функцией (графы НТ), обёртка не нужна: они
+    ловят ошибку сами и пишут `truncation_charge` в своё обновление.
+    """
+
+    def charged(state: State, config: RunnableConfig) -> dict:
+        if failure := state.get("failure"):
+            raise llm_retry.ResponseTruncated(failure)
+        try:
+            return node(state, config)
+        except llm_retry.ResponseTruncated as error:
+            return {**truncation_charge(error, state), "failure": str(error)}
+
+    return charged
+
+
 def make_role_node(
     role: roles.Role,
     unstable_prefix: bool = False,
@@ -337,10 +393,29 @@ def make_role_node(
         tools = (pipeline.tools or TOOLS) if pipeline.has_tools else ()
         messages = [SystemMessage(content=prefix)] + history
 
-        def ask(messages: list) -> Any:
-            if llm is not None:
-                return llm_retry.invoke(llm, messages)
-            return tool_compat.invoke(model_for, messages, config, tools, allow_tools=asking)
+        def ask(messages: list, charged: dict = state, turn: dict | None = None,
+                money: dict | None = None) -> Any:
+            # `charged` — состояние, в которое вписаны прежние вызовы узла, а
+            # `turn` и `money` — их приращения: у переспроса они есть.
+            try:
+                if llm is not None:
+                    return llm_retry.invoke(llm, messages)
+                return tool_compat.invoke(model_for, messages, config, tools, allow_tools=asking)
+            except llm_retry.ResponseTruncated as error:
+                # Обрыв останавливает прогон, но оплачен — как и первый ответ,
+                # если оборвался переспрос. Начисление то же, что в штатном
+                # пути ниже; указание с паузы уезжает вместе с ним, иначе
+                # данное оператором пропало бы вместе с ходом.
+                cut = extract_usage(error.response)
+                error.update = {
+                    **paused,
+                    **charged_update(
+                        state,
+                        _merge_usage(turn, cut),
+                        _merge_spend(money, charge(cut, state=charged)),
+                    ),
+                }
+                raise
 
         response = ask(messages)
         # Счётчики за вызовы уедут в редьюсер, а деньги нужны уже готовыми:
@@ -384,7 +459,9 @@ def make_role_node(
             "spend": _merge_spend(state.get("spend"), money),
         }
         if tools and not asking and silent and budget_gate(charged) != "over_budget":
-            response = ask([*messages, HumanMessage(content=NO_TOOLS_NOW)])
+            response = ask(
+                [*messages, HumanMessage(content=NO_TOOLS_NOW)], charged, turn, money
+            )
             again = extract_usage(response)
             turn = _merge_usage(turn, again)
             money = _merge_spend(money, charge(again, state=charged))
@@ -463,8 +540,9 @@ def context_node(
     """
     # Счётчик обнуляется на любом исходе ноды: не состоявшаяся подстановка —
     # это всё равно начало нового прогона. Отказ по входу прошлого прогона
-    # (`refused`) снимается тем же доводом, что и остановка.
-    fresh = {"tool_turns": 0, "halt": {}, "refused": ""}
+    # (`refused`) и его ошибка (`failure`) снимаются тем же доводом, что и
+    # остановка.
+    fresh = {"tool_turns": 0, "halt": {}, "refused": "", "failure": ""}
     messages = state.get("messages") or []
     last = messages[-1] if messages else None
     if last is None or getattr(last, "type", "") != "human":
@@ -632,6 +710,8 @@ from agent.publish_nodes import (  # noqa: E402
 __all__ = [
     "approval_of",
     "approve_node",
+    "charged_stop",
+    "charged_update",
     "commitment_changes",
     "commitment_digest",
     "context_node",
@@ -645,5 +725,6 @@ __all__ = [
     "remember_node",
     "text_of",
     "trim_history",
+    "truncation_charge",
     "without_tool_calls",
 ]

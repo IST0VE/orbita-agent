@@ -61,10 +61,12 @@ def _openai(model: str, kwargs: dict) -> BaseChatModel:
 
 def _anthropic(model: str, kwargs: dict) -> BaseChatModel:
     """
-    Anthropic требует max_tokens на уровне API; ChatAnthropic подставляет свой
-    дефолт, если LLM_MAX_TOKENS не задан. Здесь это единственный провайдер,
-    где переменная влияет на длину ответа всегда, а не только как потолок.
+    Anthropic требует max_tokens на уровне API. Если LLM_MAX_TOKENS пуст
+    или равен 0, ChatAnthropic подставляет свой дефолт — у этого провайдера
+    ответ без потолка не бывает.
     """
+    if kwargs.get("extra_body"):
+        raise cfg.ConfigError("LLM_EXTRA_BODY поддерживается только OpenAI-совместимыми API")
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as exc:  # пакет не в зависимостях проекта — он опционален

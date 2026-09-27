@@ -205,8 +205,12 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
                     "cost": cost_summary(_merge_usage(state.get("usage"), usage),
                                          _merge_spend(state.get("spend"), money)),
                     "stage": "plan_next"}
-        except Exception:
-            return {"decision": {"action": "finish"}, "last_error": "Модель недоступна",
+        except Exception as exc:
+            # Оборванный ответ оплачен: расход остаётся в треде и при отказе,
+            # а причина называется своя — модель как раз ответила.
+            cut = isinstance(exc, llm_retry.ResponseTruncated)
+            return {**nodes.truncation_charge(exc, state), "decision": {"action": "finish"},
+                    "last_error": str(exc) if cut else "Модель недоступна",
                     "stage": "plan_next"}
 
     def plan_route(state):

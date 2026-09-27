@@ -59,13 +59,17 @@ def failed(reason: str) -> dict:
 
 def read_node(state: State, config: RunnableConfig) -> dict:
     chosen = options(config)
-    base_dir, base_file = chosen.get("base_dir"), chosen.get("base_file")
     extra_dir = chosen.get("input_dir")
+    # Основной документ лежит там же, где новые материалы, если его папка не
+    # названа отдельно: в чате папка одна, и оба выбора делаются в ней.
+    base_dir, base_file = chosen.get("base_dir") or extra_dir, chosen.get("base_file")
     extras = inputs.picked_names(chosen.get("input_file"))
     if not isinstance(base_file, str) or not base_file.strip() or not base_dir:
-        return failed("Выберите один основной документ и его папку.")
+        return failed("Отметьте в файлах чата один основной документ.")
     if not extra_dir or not extras:
-        return failed("Выберите новые материалы и их папку. Папка целиком не подставляется.")
+        return failed(
+            "Отметьте в файлах чата новые материалы: все файлы чата разом не подставляются."
+        )
     try:
         base_path = inputs.resolve(str(base_dir), base_file)
         if any(inputs.resolve(str(extra_dir), name) == base_path for name in extras):
@@ -140,18 +144,23 @@ def make_propose_node(llm: Any = None):
             "materials": source["materials"],
         }
         model = llm if llm is not None else nodes.model_for(config, ())
-        answer = llm_retry.invoke(
-            model,
-            [
-                SystemMessage(content=update_roles.PROMPT),
-                # Указания оператора — в конец сообщения, как и везде: префикс
-                # роли обязан остаться неподвижным.
-                HumanMessage(
-                    content=json.dumps(payload, ensure_ascii=False)
-                    + pause.notes_block(notes)
-                ),
-            ]
-        )
+        try:
+            answer = llm_retry.invoke(
+                model,
+                [
+                    SystemMessage(content=update_roles.PROMPT),
+                    # Указания оператора — в конец сообщения, как и везде: префикс
+                    # роли обязан остаться неподвижным.
+                    HumanMessage(
+                        content=json.dumps(payload, ensure_ascii=False)
+                        + pause.notes_block(notes)
+                    ),
+                ]
+            )
+        except llm_retry.ResponseTruncated as error:
+            # Оборванное предложение не применяется, но оплачено: расход
+            # уходит в тред той же веткой отказа, иначе бюджет его не увидит.
+            return {**paused, **failed(str(error)), **nodes.truncation_charge(error, state)}
         usage = extract_usage(answer)
         money = charge(usage, state=state)
         return {

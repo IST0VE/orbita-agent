@@ -135,6 +135,23 @@ def pipeline_nodes(pipeline: Pipeline) -> dict:
     return nodes
 
 
+def artifact_documents(pipeline: Pipeline) -> dict:
+    """Как называются документы этапов: по роли — её название."""
+    return {role.key: {"title": role.title} for role in pipeline.roles}
+
+
+def name_documents(manifest: dict, documents: dict) -> None:
+    """
+    Дописать документы, которые кладёт в `artifacts` не роль, а нода чтения.
+
+    Без записи здесь такой документ показывается ключом (`source`, `ticket`),
+    хотя соседние уже названы по-человечески.
+    """
+    for item in manifest["state"]:
+        if item["id"] == "artifacts":
+            item["options"]["documents"].update(documents)
+
+
 def base_manifest(pipeline: Pipeline) -> dict:
     """
     Манифест конвейера целиком: всё, что выводится из его описания.
@@ -145,7 +162,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
     """
     return {
         "schema_version": "1.0",
-        "manifest_version": "2026.09.03.1",
+        "manifest_version": "2026.09.27.1",
         "graph_id": pipeline.key,
         "title": {"ru": pipeline.title, "en": pipeline.key},
         "description": {"ru": pipeline.summary, "en": pipeline.summary},
@@ -169,28 +186,29 @@ def base_manifest(pipeline: Pipeline) -> dict:
             {
                 "id": "task",
                 "target": "configurable.input_dir",
-                "widget": "task-picker",
-                "title": "Папка задачи",
-                "source": {"resource_id": "orbita.tasks", "operation": "list"},
-                # Клик по файлу внутри папки выбирает источник, а не открывает
-                # его на просмотр. Куда уезжает выбор, что этому полю годится и
-                # сколько файлов в него влезает, сказано здесь: виджет не знает
-                # про `document` по имени, как не знает и про `task`.
+                "widget": "chat-files",
+                "title": "Файлы чата",
                 "options": {
-                    "document_input": "document",
-                    "document_kind": "text",
-                    "document_multiple": True,
+                    # Папку выбирает не интерфейс. `@chat` — «файлы этого
+                    # чата», и сервер находит их по треду прогона
+                    # (`runtime.options`): имя чужой папки из браузера до
+                    # графа не доезжает.
+                    "fixed": "@chat",
+                    # Куда уезжает отметка файла в списке, что этому полю
+                    # годится и сколько файлов в него влезает. Виджет не знает
+                    # про `document` по имени: связь объявлена здесь.
+                    "pick": [
+                        {"input": "document", "kind": "text", "multiple": True},
+                    ],
                 },
             },
             {
                 "id": "document",
                 "target": "configurable.input_file",
                 "widget": "file-picker",
-                # Панель показывает выбранное, а не всё содержимое папки: тот же
-                # список уже стоит деревом выше, и второй такой же — это не
-                # выбор, а шум, в котором выбранный файл ничем не выделен.
+                # Панель показывает выбранное, а не весь чат: список файлов
+                # уже стоит выше, и второй такой же — это не выбор, а шум.
                 "title": "Выбранные документы",
-                "source": {"resource_id": "orbita.tasks", "operation": "list"},
                 # Комплект документации это несколько файлов: требования без
                 # контракта API раскладываются в задачи, которых нет.
                 "options": {"kind": "text", "depends_on": "task", "multiple": True},
@@ -215,6 +233,10 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "surface": "left",
                 "order": 30,
                 "empty": "placeholder",
+                # Ключ состояния — имя для кода; человеку и файлу при
+                # скачивании нужно название этапа. Конвейер, кладущий в
+                # `artifacts` не только документы ролей, дописывает сюда своё.
+                "options": {"documents": artifact_documents(pipeline)},
             },
             {
                 "id": "published",

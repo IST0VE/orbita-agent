@@ -29,6 +29,8 @@ DEPLOYMENT = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
 PATHS = {
     "PUBLISH_DIR": "/data/published",
     "AGENT_INPUT_DIR": "/data/input",
+    # Файлы чатов — пользовательские данные: пересоздание контейнера их не стирает.
+    "CHAT_FILES_DIR": "/data/chats",
     "JIRA_JOURNAL_PATH": "/data/jira-operations.sqlite3",
 }
 
@@ -80,8 +82,14 @@ def test_the_dev_server_threads_have_their_own_volume():
 
 def test_the_image_creates_the_directories_it_declares():
     """Том монтируется на готовое место с нужным владельцем."""
-    assert "mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api" in DOCKERFILE
+    assert (
+        "mkdir -p /data/published /data/input /data/chats /data/nt-runs /app/.langgraph_api"
+        in DOCKERFILE
+    )
     assert "chown -R orbita:orbita /app /data" in DOCKERFILE
+    # Файлы чатов: без каталога в образе новый том получил бы /data/chats
+    # только при первой загрузке — и от того, кто её выполнил.
+    assert "CHAT_FILES_DIR=/data/chats" in DOCKERFILE
 
 
 def test_the_supported_flow_needs_no_extra_compose_file():

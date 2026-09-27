@@ -134,6 +134,25 @@ class Handler(SimpleHTTPRequestHandler):
             )
         if self.path.endswith("/manifest"):
             return self.reply(manifest(self.path.split("/")[-2]))
+        if self.path.startswith("/api/chats/") and "/files" in self.path:
+            thread = self.path.split("/")[3]
+            return self.reply(
+                {
+                    "thread_id": thread,
+                    "files": [],
+                    "limits": {"max_bytes": 1024, "max_files": 10, "suffixes": [".md"]},
+                }
+            )
+        if self.path == "/api/auth/config":
+            # Вход через Keycloak выключен: интерфейс работает админ-токеном.
+            return self.reply({"enabled": False})
+        if self.path == "/api/me":
+            # Вход админ-токеном: интерфейс без OIDC, как у фикстуры в целом.
+            return self.reply(
+                {"subject": "service", "name": "API_ADMIN_TOKEN", "admin": True, "service": True}
+            )
+        if self.path == "/api/library":
+            return self.reply({"examples": [], "published": []})
         if self.path.endswith("/graph"):
             ids = ["__start__", "context", "analyst", "__end__"]
             return self.reply(
@@ -168,6 +187,19 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/fixture/interrupt":
             INTERRUPTED = True
             return self.reply({})
+        if self.path == "/threads/search":
+            graph = body.get("metadata", {}).get("graph_id", "agent")
+            return self.reply(
+                [
+                    {
+                        "thread_id": "saved-thread",
+                        "status": "idle",
+                        "created_at": "2026-09-26T08:00:00+00:00",
+                        "updated_at": "2026-09-26T09:00:00+00:00",
+                        "metadata": {"graph_id": graph, "title": "Сохранённый чат"},
+                    }
+                ]
+            )
         if self.path == "/assistants/search":
             return self.reply(
                 [
@@ -294,7 +326,7 @@ def main(extra_checks=None):
 
             # Настройки стали разделом приложения, а не окном поверх работы:
             # вход в них один — меню профиля.
-            def open_settings(item="Настройки приложения", group=None):
+            def open_settings(item="Настройки сервера", group=None):
                 js("document.querySelector('.menu-avatar .menu-trigger').click()")
                 js(
                     "[...document.querySelectorAll('.menu-item')]"
@@ -420,7 +452,7 @@ def main(extra_checks=None):
             # отказа выше и отказ после preflight в browser_regressions.
             until("document.querySelector('.task-composer textarea').value === ''")
             assert js(
-                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
+                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый чат')).disabled"
             )
             click("Остановить")
             until("document.querySelector('.run-badge').textContent.includes('Остановлен')")
@@ -428,9 +460,9 @@ def main(extra_checks=None):
             assert js("document.querySelector('.run-badge').textContent.includes('Остановлен')")
             assert REQUESTS.count("/threads/saved-thread/runs/stream") == 1, "Duplicate submission"
             until(
-                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
+                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый чат')).disabled"
             )
-            click("Новый прогон")
+            click("Новый чат")
             until("document.querySelectorAll('.msg').length === 0")
             js("document.querySelector('.pick-button').click()")
             until("!!document.querySelector('.pick-menu [data-graph=demo]')")

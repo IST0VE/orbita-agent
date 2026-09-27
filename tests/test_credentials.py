@@ -149,6 +149,27 @@ def test_inside_a_run_the_run_owner_wins_over_the_request(rows):
     assert as_user(TIM, node.invoke, None, config) == "anna-pat"
 
 
+def test_the_servers_store_config_does_not_hide_the_request_user(rows):
+    """
+    Сервер LangGraph ставит конфиг каждому HTTP-запросу ради `get_store()`.
+    Прогоном он от этого не становится: пользователь — тот, кто прислал запрос.
+    """
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    credentials.save(ANNA.subject, {"JIRA_TOKEN": "anna-pat"})
+    token = var_child_runnable_config.set({"configurable": {"__pregel_store": object()}})
+    try:
+        assert as_user(ANNA, credentials.current_subject) == ANNA.subject
+        assert as_user(ANNA, jira.load_settings).token == "anna-pat"
+    finally:
+        var_child_runnable_config.reset(token)
+
+    # А прогон без пользователя остаётся прогоном без пользователя: запрос,
+    # в котором родился воркер, своего человека ему не подставляет.
+    node = RunnableLambda(lambda _: credentials.current_subject())
+    assert as_user(TIM, node.invoke, None, {"configurable": {"thread_id": "t"}}) is None
+
+
 def test_confluence_can_be_checked_without_a_space(rows, monkeypatch):
     monkeypatch.setenv("CONFLUENCE_BASE_URL", "https://wiki.example.test")
     credentials.save(ANNA.subject, {"CONFLUENCE_TOKEN": "anna-wiki"})

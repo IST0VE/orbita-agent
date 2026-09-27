@@ -117,7 +117,8 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    I["input/"] --> G["Граф"]
+    C["Файлы чата: CHAT_FILES_DIR/тред"] --> G["Граф"]
+    I["input/: библиотека примеров"] -. "копия в чат" .-> C
     G --> P["published/ или Confluence"]
     G --> J["Jira: задачи"]
     G --> R["Runtime: состояние треда"]
@@ -125,7 +126,7 @@ flowchart LR
     R --> S["Свой Python-код: memory / PostgreSQL"]
 ```
 
-Чекпоинт треда, файлы результатов и память между тредами — разные данные. Файл в `published/` не восстанавливает тред; наличие PostgreSQL рядом с dev-сервером не переносит туда его состояние. Таблица сохранности для Docker — в [развёртывании](DEPLOYMENT.md).
+Файлы, загруженные в чат, лежат в папке его треда, и граф получает её по треду прогона (`runtime.options`), а не по имени из запроса: чужой чат ни прочитать, ни запустить нельзя. Опубликованные файлы и долгая память тоже разложены по пользователям. Чекпоинт треда, файлы результатов и память между тредами — разные данные. Файл в `published/` не восстанавливает тред; наличие PostgreSQL рядом с dev-сервером не переносит туда его состояние. Таблица сохранности для Docker — в [развёртывании](DEPLOYMENT.md).
 
 Runner отдельно сохраняет `.nt-runs/`: SQLite и файлы k6 не входят в чекпоинт LangGraph и не заменяются отчётом в `published/`. История планировщика `run_history` хранится в состоянии треда; для разбора после завершения временного CLI-процесса нужна [выгрузка стенограммы](NT_RUN_TESTBED.md).
 
@@ -141,7 +142,7 @@ Runner отдельно сохраняет `.nt-runs/`: SQLite и файлы k6 
 | :--- | :--- |
 | Описание и сборка конвейеров | `pipeline.py`, `builder.py`, `roles.py`, `*_roles.py` |
 | Исполнение и переходы | `nodes.py`, `routes.py`, `runtime.py`, `state.py`, `pause.py` |
-| Вход и источники | `inputs.py`, `sources.py`, `drawio.py`, `checks.py` |
+| Вход и источники | `inputs.py`, `chat_files.py`, `sources.py`, `drawio.py`, `checks.py` |
 | LLM | `providers.py`, `tool_compat.py`, `prompts.py`, `*_prompts.py` |
 | Сохранение | `publishers.py`, `documents.py`, `render.py`, `drafts.py` |
 | Atlassian | `confluence.py`, `jira.py`, `jira_writer.py`, `jira_plan.py`, `jira_fields.py`, `jira_forms.py`, `request_pacing.py` |

@@ -31,6 +31,7 @@ import {
   FilePickerWidget,
   TaskPickerWidget,
 } from "./pickers";
+import { ChatFilesWidget } from "./chatFiles";
 import {
   CodeWidget,
   ErrorWidget,
@@ -81,6 +82,7 @@ export const BUILTIN_WIDGETS: WidgetDefinition[] = [
   definition("cost-summary", CostSummaryWidget), definition("publication", PublicationWidget),
   definition("jira-project", JiraProjectWidget, ["input"]), definition("issue-list", IssueListWidget),
   definition("file-picker", FilePickerWidget, ["input"]),
+  definition("chat-files", ChatFilesWidget, ["input"], true),
   definition("published-list", PublishedListWidget, ["view"], true),
   definition("error", ErrorWidget), definition("unknown", UnknownWidget),
 ];

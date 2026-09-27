@@ -215,6 +215,42 @@ export type SafeWidgetContext = {
     operation: string,
     payload: Record<string, unknown>,
   ) => Promise<unknown>;
+  /**
+   * Файлы текущего чата. Нет — интерфейс собран без чатов (тесты движка).
+   *
+   * Отдельно от `resource`: файл загружается телом запроса, а не JSON, и
+   * список один на весь экран — его показывают и панель файлов, и строка
+   * выбранного, и композер. Держать его в каждом виджете значило бы трижды
+   * спрашивать сервер и трижды расходиться после загрузки.
+   */
+  chat?: ChatFilesContext;
+};
+
+export type ChatFileEntry = {
+  name: string;
+  size: number;
+  text?: boolean;
+  diagram?: boolean;
+};
+
+export type ChatLibrary = {
+  examples: Array<{ name: string; title: string; files: ChatFileEntry[] }>;
+  published: Array<{ name: string; title: string; size: number }>;
+};
+
+export type ChatFilesContext = {
+  /** Тред чата; null — чат ещё не заведён, он появится с первым файлом или прогоном. */
+  threadId: string | null;
+  /** null — список ещё не пришёл. */
+  files: ChatFileEntry[] | null;
+  limits?: { max_bytes: number; max_files: number; suffixes: string[] };
+  loading: boolean;
+  error: string;
+  upload: (files: File[]) => Promise<void>;
+  remove: (name: string) => Promise<void>;
+  read: (name: string) => Promise<{ name: string; text: string }>;
+  library: () => Promise<ChatLibrary>;
+  attach: (source: { source: "examples" | "published"; name: string; example?: string }) => Promise<void>;
 };
 
 export type WidgetProps = {

@@ -5,8 +5,8 @@
 а не поднимается вторым сервером: второй процесс — это второй порт, второй
 CORS, вторая точка отказа и лишняя память ради трёх обработчиков.
 
-Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы задач
-и журнал сервера для интерфейса.
+Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы чатов,
+библиотека примеров и журнал сервера для интерфейса.
 Всё, что касается графа, тредов и прогонов, остаётся у самого сервера —
 дублировать его роуты незачем.
 
@@ -23,6 +23,7 @@ CORS, вторая точка отказа и лишняя память ради
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -34,8 +35,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from agent import config as cfg
 from agent import (
+    chat_files,
+    confluence,
     credentials,
     inputs,
     jira_writer,
@@ -45,7 +47,8 @@ from agent import (
     publishers,
     settings_io,
 )
-from agent.auth import owns_thread
+from agent import config as cfg
+from agent.auth import delete_thread, owns_thread, thread_exists
 from agent.security import ApiSecurityMiddleware, admin_error, auth_error, principal_of
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
@@ -358,7 +361,9 @@ async def get_inputs(request: Request) -> JSONResponse:
 
 
 async def post_inputs(request: Request) -> JSONResponse:
-    if denied := _auth_error(request):
+    # Папки задач — общая библиотека примеров: заводит их администратор.
+    # Пользователь кладёт файлы в свой чат (`/api/chats/{id}/files`).
+    if denied := _admin_error(request):
         return denied
     try:
         body = await _json_body(request)
@@ -384,6 +389,10 @@ async def get_input_file(request: Request) -> JSONResponse:
     name = request.query_params.get("name", "")
     if not name:
         return _error("не указан параметр `name`")
+    if inputs.is_chat(task):
+        # Файлы чата открываются только своим роутом, где сверяется владелец:
+        # здесь имя `@chat/<тред>` открыло бы чужой чат по id треда.
+        return _error("файлы чата читаются через /api/chats/{thread_id}/files", 404)
     try:
         # `preview`, а не `read`: оператору показывается и схема .drawio,
         # которую роль получает разобранной и потому не читает как текст.
@@ -393,9 +402,22 @@ async def get_input_file(request: Request) -> JSONResponse:
     return JSONResponse({"task": task, "name": name, "text": text})
 
 
+def _publish_target() -> str:
+    """
+    Цель публикации для списка, или `unknown`.
+
+    При `auto` цель зависит от личных настроек Confluence, а они лежат в базе.
+    База недоступна — не повод прятать файлы, которые уже лежат на диске.
+    """
+    try:
+        return publishers.resolve()
+    except confluence.ConfluenceError:
+        return "unknown"
+
+
 def _published_snapshot() -> dict:
     return {
-        "target": publishers.resolve(),
+        "target": _publish_target(),
         # Через прямые слэши: путь уезжает в интерфейс как текст, и разбирать
         # его там по разделителю, который зависит от системы сервера, незачем.
         "dir": publishers.directory().as_posix(),
@@ -435,6 +457,242 @@ async def get_published_file(request: Request) -> JSONResponse:
     except OSError as exc:
         return _error(f"документ не прочитан: {exc}", 500)
     return JSONResponse({"name": name, "text": text})
+
+
+# --------------------------------------------------------------------------
+# Файлы чата
+#
+# Чат — это тред LangGraph, файлы чата — папка этого треда (`chat_files.py`).
+# Роуты свои, и правила `auth.py` к ним сервер не применяет, поэтому владелец
+# треда сверяется в каждом. Чужой тред отвечает тем же 404, что и
+# несуществующий: по ответу нельзя узнать, что тред с таким id есть.
+# --------------------------------------------------------------------------
+async def _own_chat(request: Request) -> str | JSONResponse:
+    """Id треда из пути, если тред есть и принадлежит спросившему."""
+    if denied := _auth_error(request):
+        return denied
+    thread_id = request.path_params["thread_id"]
+    try:
+        thread_id = inputs.thread_id_of(thread_id)
+    except inputs.InputError:
+        return _error("чат не найден", 404, error_code="chat_not_found")
+    principal = principal_of(request.scope)
+    if principal is None or not await owns_thread(principal, thread_id, must_exist=True):
+        return _error("чат не найден", 404, error_code="chat_not_found")
+    return thread_id
+
+
+def _storage_error(thread_id: str, action: str, exc: OSError) -> JSONResponse:
+    """
+    Отказ диска при работе с файлами чата — словами, а не голым 500.
+
+    Чаще всего это права: том `data`, заведённый ещё тогда, когда контейнер
+    работал от root, принадлежит root, и процесс `orbita` не может создать
+    в нём `/data/chats`. Пользователь это не починит, а администратору нужно
+    знать, какая папка и что с ней делать.
+    """
+    _LOG.error("chat files: %s failed", action, extra={"ui_thread_id": thread_id}, exc_info=True)
+    if isinstance(exc, PermissionError):
+        where = exc.filename or cfg.chat_files_dir()
+        return _error(
+            f"{action}: у сервера нет прав на запись в {where}. Это настройка сервера, "
+            "а не файла: администратору — раздел «Права доступа» в docs/DEPLOYMENT.md",
+            503,
+            error_code="chat_storage_forbidden",
+        )
+    return _error(f"{action}: {exc}", 503, error_code="chat_file_unavailable")
+
+
+async def get_chat_files(request: Request) -> JSONResponse:
+    """
+    Файлы чата и ограничения на загрузку.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    return JSONResponse(await asyncio.to_thread(chat_files.listing, thread_id))
+
+
+async def put_chat_file(request: Request) -> JSONResponse:
+    """
+    Загрузить файл в чат: тело запроса — содержимое, имя — параметр `name`.
+
+    Не multipart: одному файлу на запрос он ничего не добавляет, а разбор
+    multipart — это ещё одна зависимость и ещё один разборщик на пути
+    непроверенных байтов. Потолок тела — CHAT_FILE_MAX_BYTES, его держит
+    `security.ApiSecurityMiddleware` ещё до этого обработчика.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    body = await request.body()
+    try:
+        saved = await asyncio.to_thread(chat_files.save, thread_id, name, body)
+    except (chat_files.ChatFileError, inputs.InputError) as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не сохранён", exc)
+    return JSONResponse({"file": saved, **await asyncio.to_thread(chat_files.listing, thread_id)})
+
+
+async def get_chat_file(request: Request) -> JSONResponse:
+    """
+    Содержимое файла чата — для предпросмотра.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    try:
+        text = await asyncio.to_thread(chat_files.preview, thread_id, name)
+    except chat_files.ChatFileError as exc:
+        return _error(str(exc), 404, error_code="chat_file_not_found")
+    return JSONResponse({"name": name, "text": text})
+
+
+async def delete_chat_file(request: Request) -> JSONResponse:
+    """
+    Удалить файл из чата.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    try:
+        await asyncio.to_thread(chat_files.remove, thread_id, name)
+    except chat_files.ChatFileError as exc:
+        return _error(str(exc), 404, error_code="chat_file_not_found")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не удалён", exc)
+    return JSONResponse(await asyncio.to_thread(chat_files.listing, thread_id))
+
+
+async def attach_chat_file(request: Request) -> JSONResponse:
+    """
+    Скопировать в чат пример из общей библиотеки или свой опубликованный документ.
+
+    Тело: `{"source": "examples" | "published", "name": ..., "example": ...}`.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    try:
+        saved = await asyncio.to_thread(
+            chat_files.attach,
+            thread_id,
+            str(body.get("source", "")),
+            str(body.get("name", "")),
+            str(body.get("example", "")),
+        )
+    except (chat_files.ChatFileError, inputs.InputError) as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не скопирован в чат", exc)
+    return JSONResponse({"file": saved, **await asyncio.to_thread(chat_files.listing, thread_id)})
+
+
+async def delete_chat(request: Request) -> JSONResponse:
+    """
+    Удалить чат: тред вместе с его файлами.
+
+    Удалять тред мимо этого роута можно (SDK, Studio), но тогда папка файлов
+    остаётся до уборки (`_sweep_chats`). Интерфейс удаляет здесь, и файлы
+    уходят сразу.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    await delete_thread(thread_id)
+    try:
+        removed = await asyncio.to_thread(chat_files.drop, thread_id)
+    except OSError as exc:
+        # Тред уже удалён; папку без треда подберёт уборка (`sweep_chats`).
+        return _storage_error(thread_id, "чат удалён, но его файлы остались на сервере", exc)
+    return JSONResponse({"deleted": thread_id, "files_removed": removed})
+
+
+async def get_library(request: Request) -> JSONResponse:
+    """
+    Что можно добавить в чат: общие примеры и свои опубликованные документы.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    try:
+        return JSONResponse(await asyncio.to_thread(chat_files.library))
+    except OSError as exc:
+        return _error(f"библиотека не прочитана: {exc}", 500)
+
+
+#: Первая уборка — не на старте: сервер ещё поднимает треды из хранилища.
+_SWEEP_FIRST_S = 300
+_SWEEP_EVERY_S = 6 * 3600
+#: Папку моложе часа не трогаем: тред мог появиться только что.
+_SWEEP_GRACE_S = 3600
+
+
+async def sweep_chats() -> int:
+    """
+    Удалить папки файлов тех чатов, тредов которых больше нет. Сколько удалено.
+
+    Тред удаляют и мимо `/api/chats/{id}` — через SDK или сбросом хранилища
+    `langgraph dev`, — и его файлы остаются на диске без владельца. Удаляется
+    только папка, про которую сервер ответил «треда нет»: сбой запроса — не
+    повод стирать чужие файлы.
+    """
+    removed = 0
+    for thread_id in await asyncio.to_thread(chat_files.folders, _SWEEP_GRACE_S):
+        try:
+            if await thread_exists(thread_id):
+                continue
+        except Exception:
+            _LOG.warning("chat sweep: thread lookup failed", extra={"ui_thread_id": thread_id})
+            continue
+        if await asyncio.to_thread(chat_files.drop, thread_id):
+            removed += 1
+            _LOG.info("chat sweep: files of a deleted thread removed", extra={"ui_thread_id": thread_id})
+    return removed
+
+
+async def _sweep_forever() -> None:
+    await asyncio.sleep(_SWEEP_FIRST_S)
+    while True:
+        try:
+            await sweep_chats()
+        except Exception:
+            _LOG.exception("chat sweep failed")
+        await asyncio.sleep(_SWEEP_EVERY_S)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: Starlette):
+    """Фоновая уборка папок удалённых чатов. LangGraph сливает её со своей."""
+    task = asyncio.create_task(_sweep_forever())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def get_logs(request: Request) -> JSONResponse:
@@ -571,6 +829,8 @@ async def get_ui_resource(request: Request) -> JSONResponse:
         name = request.query_params.get("name", "")
         if not task or not name:
             return _error("task and name are required", error_code="ui_resource_invalid")
+        if inputs.is_chat(task):
+            return _error("chat files are served by /api/chats", 404, error_code="ui_resource_not_found")
         try:
             text = await asyncio.to_thread(inputs.preview, task, name)
         except inputs.InputError as exc:
@@ -579,6 +839,8 @@ async def get_ui_resource(request: Request) -> JSONResponse:
     if resource_id == "orbita.tasks" and operation == "create":
         if request.method != "POST":
             return _error("resource operation requires POST", 405, error_code="ui_resource_method")
+        if denied := admin_error(request.scope):
+            return denied
         try:
             body = await _json_body(request)
         except RequestBodyTooLarge as exc:
@@ -818,6 +1080,13 @@ routes = [
     Route("/api/inputs", get_inputs, methods=["GET"]),
     Route("/api/inputs", post_inputs, methods=["POST"]),
     Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
+    Route("/api/chats/{thread_id}", delete_chat, methods=["DELETE"]),
+    Route("/api/chats/{thread_id}/files", get_chat_files, methods=["GET"]),
+    Route("/api/chats/{thread_id}/files", put_chat_file, methods=["PUT"]),
+    Route("/api/chats/{thread_id}/files", delete_chat_file, methods=["DELETE"]),
+    Route("/api/chats/{thread_id}/files/content", get_chat_file, methods=["GET"]),
+    Route("/api/chats/{thread_id}/attach", attach_chat_file, methods=["POST"]),
+    Route("/api/library", get_library, methods=["GET"]),
     Route("/api/published", get_published, methods=["GET"]),
     Route("/api/published/file", get_published_file, methods=["GET"]),
     Route("/api/logs", get_logs, methods=["GET"]),
@@ -838,4 +1107,5 @@ app = Starlette(
         Middleware(ApiSecurityMiddleware),
     ],
     routes=routes,
+    lifespan=lifespan,
 )

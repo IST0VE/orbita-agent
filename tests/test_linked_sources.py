@@ -66,7 +66,9 @@ def test_unavailable_source_is_visible_and_context_reentry_does_not_refetch(monk
     # Повторный вход в ноду в сеть не ходит и сообщение не трогает; обнуление
     # счётчика ходов в инструменты и снятие остановки и отказа — единственное, что он делает.
     again = nodes.context_node(result, {}, external_sources=True)
-    assert "messages" not in again and again == {"tool_turns": 0, "halt": {}, "refused": ""}
+    assert "messages" not in again and again == {
+        "tool_turns": 0, "halt": {}, "refused": "", "failure": "",
+    }
 
 
 def test_analysis_can_search_then_read_confluence_before_writing(monkeypatch):

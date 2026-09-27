@@ -23,6 +23,7 @@ from langgraph.prebuilt import ToolNode
 from agent import roles
 from agent.nodes import (
     approve_node,
+    charged_stop,
     context_node,
     make_gate_node,
     make_role_node,
@@ -144,10 +145,14 @@ def build_graph(
     builder.add_node("prepare_publish", partial(prepare_node, pipeline=pipeline))
     builder.add_node("approve", partial(approve_node, pipeline=pipeline))
     builder.add_node("publish", partial(publish_node, pipeline=pipeline))
+    # Роль, чей ответ оборвался на потолке длины, сперва записывает расход и
+    # только потом роняет прогон: см. `charged_stop`.
     for role in pipeline.roles:
         builder.add_node(
             role.key,
-            make_role_node(role, unstable_prefix, llm, pipeline=pipeline, revisions=True),
+            charged_stop(
+                make_role_node(role, unstable_prefix, llm, pipeline=pipeline, revisions=True)
+            ),
         )
 
     # Ворота бюджета на входе в тред ведут через ноду контекста: справка и

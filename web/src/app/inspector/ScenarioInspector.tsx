@@ -29,8 +29,11 @@ export function ScenarioInspector({
   title: string;
 }) {
   // Поле задачи в список не попадает: это не параметр, а сам вопрос, и стоит
-  // он в поле ввода внизу экрана, где его и заполняют.
-  const fields = (manifest.input ?? []).filter((input) => input.widget !== "chat-input");
+  // он в поле ввода внизу экрана, где его и заполняют. Файлы чата — тоже:
+  // значение у поля постоянное, а сами файлы видны во вкладке «Чат».
+  const fields = (manifest.input ?? []).filter(
+    (input) => input.widget !== "chat-input" && input.widget !== "chat-files",
+  );
   const description = manifest.description ? localized(manifest.description) : "";
 
   return (

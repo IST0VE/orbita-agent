@@ -233,7 +233,7 @@ def from_files(question: str, task: str, picked: str | Sequence[str] = ()) -> di
                 "error": (
                     f"{'выбраны файлы' if many else 'выбран файл'} "
                     + ", ".join(lost)
-                    + f", но в папке задачи {'их' if many else 'его'} нет "
+                    + f", но в файлах чата {'их' if many else 'его'} нет "
                     "(текстовых файлов там: " + (", ".join(names) or "нет") + ")"
                 ),
             }
@@ -268,7 +268,7 @@ def from_files(question: str, task: str, picked: str | Sequence[str] = ()) -> di
         budget.spend(text)
 
     if not read:
-        return {"kind": "files", "error": "ни один файл папки задачи не прочитан"}
+        return {"kind": "files", "error": "ни один файл чата не прочитан"}
     return {
         "kind": "files",
         "names": read,

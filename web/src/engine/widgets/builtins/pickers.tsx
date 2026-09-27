@@ -297,26 +297,27 @@ export function fileMatches(file: { text?: boolean; diagram?: boolean }, kind: s
 /**
  * Что выбрано источником — и ничего больше.
  *
- * Панель показывала весь каталог папки: тот же список, что стоит деревом
- * выше, только плоский. Второй такой же список — это не выбор, а шум, в
- * котором выбранный файл ничем не выделен; выбирают в дереве, где файлы
- * лежат по папкам. Здесь остаётся ответ на единственный вопрос, который
- * задают перед запуском: что именно уедет в прогон.
+ * Панель показывала весь каталог папки: тот же список, что стоит выше, только
+ * плоский. Второй такой же список — это не выбор, а шум, в котором выбранный
+ * файл ничем не выделен; отмечают в списке файлов. Здесь остаётся ответ на
+ * единственный вопрос, который задают перед запуском: что именно уедет в прогон.
  *
  * Два поля, один виджет, разница в `options.kind`: `diagram` — схема draw.io
  * для графа разбора схем, `text` — документы остальных конвейеров.
  * `options.multiple` говорит, сколько имён поле держит: схема одна, комплект
  * документации — сколько выбрали.
  *
- * Список папки всё-таки читается, но не рисуется: по нему видно, что
- * выбранного файла в папке больше нет — папку сменили, файл удалили. Молчать
- * об этом нельзя, а узнать это без списка неоткуда.
+ * Список файлов читается, но не рисуется: по нему видно, что отмеченного файла
+ * больше нет — его удалили из чата. Молчать об этом нельзя, а узнать это без
+ * списка неоткуда. Список — файлы чата (`context.chat`), если поле-источник не
+ * назвало папку задачи; папку называет только старое дерево `task-picker`.
  *
  * Пустой выбор — законное значение, и у полей оно значит разное: для схемы —
- * «возьми первую и скажи, какую», для документа — «читай папку целиком».
+ * «возьми единственную, а из нескольких не бери никакую», для документа —
+ * «читай все файлы».
  */
 export function FilePickerWidget({ binding, context, value, onChange, readonly }: WidgetProps) {
-  const [available, setAvailable] = useState<string[] | null>(null);
+  const [folderFiles, setFolderFiles] = useState<string[] | null>(null);
   const [hint, setHint] = useState("");
   const resourceId = text(binding.options?.resource_id);
   const operation = text(binding.options?.operation) || "list";
@@ -324,11 +325,13 @@ export function FilePickerWidget({ binding, context, value, onChange, readonly }
   const multiple = binding.options?.multiple === true;
   const dependsOn = text(binding.options?.depends_on);
   const task = text(dependsOn ? context.inputs[dependsOn] : "");
+  const chat = task ? undefined : context.chat;
   const resource = context.resource;
   useEffect(() => {
     let live = true;
+    if (chat) return;
     if (!task) {
-      setAvailable(null);
+      setFolderFiles(null);
       setHint("сначала выберите папку задачи");
       return;
     }
@@ -339,20 +342,30 @@ export function FilePickerWidget({ binding, context, value, onChange, readonly }
           tasks?: Array<{ name: string; files?: Array<{ name: string; diagram?: boolean }> }>;
         })?.tasks;
         const folder = (Array.isArray(tasks) ? tasks : []).find((item) => item.name === task);
-        setAvailable((folder?.files ?? []).filter((file) => fileMatches(file, kind)).map((file) => file.name));
+        setFolderFiles((folder?.files ?? []).filter((file) => fileMatches(file, kind)).map((file) => file.name));
         setHint("");
       })
       .catch((reason: Error) => live && setHint(reason.message));
     return () => { live = false; };
-  }, [kind, operation, resource, resourceId, task]);
+  }, [chat, kind, operation, resource, resourceId, task]);
+  const available = chat
+    ? chat.files === null ? null : chat.files.filter((file) => fileMatches(file, kind)).map((file) => file.name)
+    : folderFiles;
   const chosen = names(value);
-  // Выбранное имя не сбрасывается автоматически при смене папки: молча стереть
-  // выбор оператора хуже, чем показать, что в новой папке такого файла нет.
+  // Выбранное имя не сбрасывается автоматически: молча стереть выбор
+  // оператора хуже, чем показать, что такого файла больше нет.
   const missing = available ? chosen.filter((name) => !available.includes(name)) : [];
   const drop = (name: string) => {
     const rest = chosen.filter((item) => item !== name);
     onChange?.(multiple ? rest : "");
   };
+  const emptyHint = text(binding.options?.empty_hint) || (chat
+    ? kind === "diagram"
+      ? "не отмечена: единственную схему чата граф возьмёт сам, из нескольких — откажет"
+      : "не отмечены: прогон прочитает все файлы чата"
+    : kind === "diagram"
+      ? "не выбрана: граф возьмёт единственную схему папки"
+      : "не выбран: конвейер прочитает папку целиком");
   return <div className="file-picker">
     {chosen.length ? (
       <ul className="resource-list">
@@ -376,21 +389,19 @@ export function FilePickerWidget({ binding, context, value, onChange, readonly }
         ))}
       </ul>
     ) : null}
-    {!chosen.length && task ? (
-      <span className="hint">
-        {text(binding.options?.empty_hint) || (kind === "diagram"
-          ? "не выбрана: граф возьмёт первую и скажет, какую"
-          : "не выбран: конвейер прочитает папку целиком")}
-      </span>
-    ) : null}
+    {!chosen.length && (chat || task) ? <span className="hint">{emptyHint}</span> : null}
     {chosen.length ? (
       <span className="hint">
-        {multiple ? "выбрано в дереве файлов; клик по файлу добавляет и убирает" : "выбрано в дереве файлов"}
+        {chat
+          ? "отмечено в файлах чата"
+          : multiple ? "выбрано в дереве файлов; клик по файлу добавляет и убирает" : "выбрано в дереве файлов"}
       </span>
     ) : null}
     {missing.map((name) => (
-      <span className="error" key={name}>{name}: в папке {task} такого файла нет</span>
+      <span className="error" key={name}>
+        {chat ? `${name}: в чате такого файла нет` : `${name}: в папке ${task} такого файла нет`}
+      </span>
     ))}
-    {hint ? <span className="hint">{hint}</span> : null}
+    {hint && !chat ? <span className="hint">{hint}</span> : null}
   </div>;
 }

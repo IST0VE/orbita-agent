@@ -21,6 +21,76 @@ from agent import llm_pacing
 
 logger = logging.getLogger(__name__)
 
+#: Чем провайдеры помечают ответ, оборванный на потолке длины.
+_CUT_REASONS = frozenset({"length", "max_tokens"})
+
+
+class ResponseTruncated(RuntimeError):
+    """
+    Ответ модели упёрся в LLM_MAX_TOKENS: документ неполный, принимать его нельзя.
+
+    Оплачен он при этом целиком, поэтому исключение несёт сам ответ: узел,
+    который его поймал, обязан записать расход в тред до остановки
+    (`nodes.truncation_charge`). Иначе ворота бюджета не видят оборванных
+    вызовов и пускают следующий.
+    """
+
+    def __init__(self, message: str, response: Any = None) -> None:
+        super().__init__(message)
+        self.response = response
+        # Обновление состояния с расходом узла: `usage`, `spend`, `cost` и то,
+        # что узел успел принять до обрыва. Заполняет узел, у которого до
+        # оборванного вызова были свои (переспрос роли), — см. `make_role_node`.
+        self.update: dict | None = None
+
+
+def _truncated(result: Any) -> bool:
+    """
+    Ответ оборван на потолке длины.
+
+    OpenAI-совместимые API пишут `finish_reason: length`, Anthropic —
+    `stop_reason: max_tokens`; LangChain кладёт оба в `response_metadata`.
+    """
+    meta = getattr(result, "response_metadata", None) or {}
+    return meta.get("finish_reason") in _CUT_REASONS or meta.get("stop_reason") in _CUT_REASONS
+
+
+def _truncation_message(result: Any) -> str:
+    """Диагностика по счётчикам; текст задачи, ответа и рассуждений не раскрывается."""
+    meta = getattr(result, "response_metadata", None) or {}
+    usage = getattr(result, "usage_metadata", None) or {}
+    raw = meta.get("token_usage") or meta.get("usage") or {}
+    output = usage.get("output_tokens", raw.get("completion_tokens", raw.get("output_tokens")))
+    reasoning = (usage.get("output_token_details") or {}).get("reasoning")
+    if reasoning is None:
+        reasoning = (raw.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    cap = cfg.llm_max_tokens()
+    setting = "LLM_MAX_TOKENS=0" if cfg.env_opt("LLM_MAX_TOKENS") else "LLM_MAX_TOKENS не задан"
+    limit = f"LLM_MAX_TOKENS={cap}" if cap is not None else f"лимит модели/шлюза ({setting})"
+    counts = []
+    if isinstance(output, int):
+        counts.append(f"выходных токенов: {output}")
+    if isinstance(reasoning, int):
+        counts.append(f"из них reasoning: {reasoning}")
+    details = f" ({'; '.join(counts)})" if counts else ""
+    message = f"Генерация остановлена по лимиту: {limit}{details}. "
+    if isinstance(reasoning, int) and reasoning > 0:
+        message += (
+            "В лимит входят рассуждения модели, поэтому он может закончиться до готового ответа. "
+            "Настройте thinking/reasoning на шлюзе или через LLM_EXTRA_BODY, "
+            "либо увеличьте LLM_MAX_TOKENS. "
+        )
+    else:
+        message += (
+            "Ответ не завершён. Проверьте лимит вывода и контекста модели на шлюзе; "
+            "при необходимости увеличьте LLM_MAX_TOKENS. "
+        )
+    return message + (
+        "При увеличении лимита учитывайте LLM_TIMEOUT_S. "
+        "Прогон остановлен; неполный ответ не передан дальше. "
+        "Остановка по лимиту сама по себе не доказывает зацикливание."
+    )
+
 
 def _retryable(error: Exception) -> bool:
     connection_errors: tuple[type[Exception], ...] = (
@@ -112,4 +182,9 @@ def invoke(model: Any, messages: Any) -> Any:
         else:
             if attempt:
                 logger.info("Соединение с моделью восстановлено на попытке %d", attempt + 1)
+            if _truncated(result):
+                # Повтор без изменения настроек снова может потратить весь лимит.
+                message = _truncation_message(result)
+                logger.warning("%s", message)
+                raise ResponseTruncated(message, result)
             return result

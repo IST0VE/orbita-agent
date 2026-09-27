@@ -18,6 +18,8 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from agent import config as cfg
+from agent import inputs
+from agent.security import SERVICE_SUBJECT
 
 # Снимок окружения для совместимости с graph.MODEL / graph.PROVIDER и демо.
 # Рабочие вызовы модели и подписи документов используют cfg.model_name().
@@ -45,4 +47,45 @@ def options(config: RunnableConfig | None = None) -> dict:
         context = {}
     chosen = {**context, **explicit}
     chosen.pop("model", None)
+    _scope_folders(chosen, explicit or _run_configurable())
     return chosen
+
+
+#: Ключи, в которых приезжает папка с материалами: у графа обновления их две.
+FOLDER_KEYS = ("input_dir", "base_dir")
+
+
+def _run_configurable() -> dict:
+    """`configurable` идущего прогона — для вызова `options()` без config."""
+    try:
+        from langgraph.config import get_config
+
+        return dict(get_config().get("configurable") or {})
+    except Exception:  # вне прогона графа конфига нет — это нормально
+        return {}
+
+
+def _scope_folders(chosen: dict, configurable: dict) -> None:
+    """
+    Папка с материалами — файлы чата этого треда, а не имя из запроса.
+
+    Имя папки присылает браузер, и раньше оно доезжало до графа как есть: любой
+    вошедший мог вписать имя чужой папки и прочитать её прогоном. Теперь у
+    пользователя папка одна — файлы его чата, — и берётся она из треда
+    прогона. Тред и пользователя в `configurable` кладёт сервер LangGraph
+    поверх присланного (`thread_id` дописывается последним, а
+    `langgraph_auth_*` клиенту запрещены), и чужой тред он не запустит
+    (`auth.py`). Поэтому здесь ни одно значение из запроса не читается.
+
+    Админ-токену (`service`) и прогону без сервера — тестам, скриптам, демо —
+    по-прежнему можно назвать папку задачи: у них нет чужих файлов. Имя
+    `@chat` понимают все: так интерфейс просит файлы текущего чата.
+    """
+    thread = str(configurable.get("thread_id") or "")
+    user = configurable.get("langgraph_auth_user_id")
+    personal = bool(user) and user != SERVICE_SUBJECT
+    chat = inputs.chat_task(thread) if thread else ""
+    for key in FOLDER_KEYS:
+        value = str(chosen.get(key) or "")
+        if personal or inputs.is_chat(value):
+            chosen[key] = chat

@@ -93,6 +93,10 @@ build/
 .vite/
 .next/
 
+# Внутренние материалы для компании и рабочие обсуждения: репозиторий публичный.
+/docs/ORBITA_COMPANY_ROADMAP_DRAFT.md
+/docs/ORBITA_ARCHITECTURE_DISCUSSION.md
+
 # IDE / OS
 .idea/
 .vscode/

@@ -273,14 +273,54 @@ def legacy_slug(title: str, limit: int = 120) -> str:
     return flat[:limit] or "document"
 
 
-def directory() -> Path:
+#: Папка личных публикаций внутри `PUBLISH_DIR`: по подпапке на пользователя.
+USERS_DIR = "users"
+_OWNER_SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def root_directory() -> Path:
     """
-    Папка файловой цели. Относительный путь считается от рабочей папки —
+    Корень файловой цели. Относительный путь считается от рабочей папки —
     как и корень задач в `inputs.py`, и по той же причине: путь из `.env`
     обязан читаться одинаково у ноды публикации и у HTTP-роута.
     """
     path = Path(cfg.publish_dir()).expanduser()
     return path if path.is_absolute() else Path.cwd() / path
+
+
+def users_root() -> Path:
+    """Где лежат личные папки публикации."""
+    return root_directory() / USERS_DIR
+
+
+def owner_folder(subject: str) -> str:
+    """
+    Имя личной папки пользователя.
+
+    `sub` Keycloak — UUID и годится как есть: администратору проще найти папку
+    по id из консоли Keycloak, чем по отпечатку. Всё, что на безопасное имя
+    не похоже, заменяется отпечатком: в путь оно не попадает ни в каком виде.
+    """
+    if _OWNER_SAFE.fullmatch(subject):
+        return subject
+    return "u-" + hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+
+
+def directory() -> Path:
+    """
+    Папка файловой цели для того, кто сейчас работает.
+
+    Раньше папка была одна на всех: документы любого пользователя видел любой,
+    а одинаковый заголовок у двух пользователей перезаписывал чужой файл
+    (upsert по заголовку). Теперь у пользователя своя подпапка, а корень
+    остался админ-токену — скриптам, демо и интерфейсу без входа через Keycloak.
+    Кто работает, узнаётся так же, как для личных токенов Jira: из конфига
+    прогона или из HTTP-запроса (`credentials.current_subject`).
+    """
+    subject = credentials.current_subject()
+    if credentials.personal(subject):
+        return users_root() / owner_folder(str(subject))
+    return root_directory()
 
 
 def destination(publisher: Publisher) -> dict:

@@ -53,11 +53,13 @@ COPY --from=k6 /usr/bin/k6 /usr/local/bin/k6
 # те же пути заданы через `environment`, где их не перебьёт личный .env.
 ENV PUBLISH_DIR=/data/published \
     AGENT_INPUT_DIR=/data/input \
+    CHAT_FILES_DIR=/data/chats \
     JIRA_JOURNAL_PATH=/data/jira-operations.sqlite3
 # `.langgraph_api` — собственное хранилище тредов сервера разработки,
-# `/data/nt-runs` — журнал и файлы прогонов runner. Каталоги создаются здесь,
-# чтобы тома монтировались на готовое место с нужным владельцем.
-RUN mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api
+# `/data/nt-runs` — журнал и файлы прогонов runner, `/data/chats` — файлы
+# чатов. Каталоги создаются здесь, чтобы тома монтировались на готовое место
+# с нужным владельцем: пустой том Docker заполняет из образа вместе с правами.
+RUN mkdir -p /data/published /data/input /data/chats /data/nt-runs /app/.langgraph_api
 
 # Даже учебный сервер не должен выполнять разбор пользовательских файлов и
 # HTTP-запросы от root. /app остаётся доступен на запись из-за runtime-файлов

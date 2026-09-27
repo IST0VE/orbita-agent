@@ -41,7 +41,11 @@ export function matchInterrupt(rules: InterruptBinding[] = [], value: unknown): 
 }
 
 /** Поверхности по умолчанию для встроенных input-виджетов. */
-const INPUT_SURFACE: Record<string, SurfaceId> = { "task-picker": "left", "chat-input": "main" };
+const INPUT_SURFACE: Record<string, SurfaceId> = {
+  "task-picker": "left",
+  "chat-files": "left",
+  "chat-input": "main",
+};
 
 /**
  * Куда встаёт input-биндинг.
@@ -77,7 +81,11 @@ export function configurableOf(
   const config: Record<string, unknown> = {};
   for (const input of manifest.input ?? []) {
     const [scope, name] = String(input.target ?? "").split(".");
-    const value = inputs[input.id];
+    // Поле с постоянным значением: файлы чата шлют `@chat`, а какой это чат,
+    // сервер узнаёт по треду прогона. Выбирать тут нечего, и хранить
+    // значение в состоянии экрана незачем.
+    const fixed = input.options?.fixed;
+    const value = fixed !== undefined && fixed !== null ? fixed : inputs[input.id];
     if (scope !== "configurable" || !name || value === undefined || value === "") continue;
     if (Array.isArray(value) && value.length === 0) continue;
     if (isUnsafeToken(name)) continue;

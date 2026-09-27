@@ -70,6 +70,8 @@ services:
       # Значение из `environment` сильнее `env_file`, поэтому пути однозначны.
       PUBLISH_DIR: /data/published
       AGENT_INPUT_DIR: /data/input
+      # Файлы, загруженные в чаты: папка на тред, на том же томе, что и документы.
+      CHAT_FILES_DIR: /data/chats
       JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
       # Страница «Настройки» правит .env хоста, смонтированный ниже. Процесс
       # берёт значения не из него, а из env_file при создании контейнера, и
@@ -80,7 +82,7 @@ services:
       # Настройки, которые этот блок задаёт сам, а не берёт из .env: в
       # интерфейсе они закрыты, иначе правка молча ничего бы не меняла.
       # Список обязан совпадать с блоком — это проверяет test_settings_in_docker.
-      SETTINGS_FIXED: POSTGRES_URI,NT_RUNNER_URL,PUBLISH_DIR,AGENT_INPUT_DIR,JIRA_JOURNAL_PATH
+      SETTINGS_FIXED: POSTGRES_URI,NT_RUNNER_URL,PUBLISH_DIR,AGENT_INPUT_DIR,CHAT_FILES_DIR,JIRA_JOURNAL_PATH
     volumes:
       - data:/data
       # Не /app/.env: `langgraph dev` загружает ./.env поверх окружения, и
@@ -92,9 +94,10 @@ services:
         target: /host/.env
         bind:
           create_host_path: false
-      # Материалы задач — с хоста: их кладёт человек, и терять их вместе с
-      # контейнером незачем. Запись нужна кнопке «новая папка» в интерфейсе;
-      # если папки заводят только на хосте, добавьте `:ro`.
+      # Библиотека примеров — с хоста: её кладёт администратор, и терять её
+      # вместе с контейнером незачем. Пользователи загружают файлы в свои чаты
+      # (CHAT_FILES_DIR на томе `data`), а сюда пишет только администратор —
+      # запросом POST /api/inputs; если примеры заводят только на хосте, добавьте `:ro`.
       - ./input:/data/input
       # Своё хранилище `langgraph dev`. Postgres рядом его не заменяет: сервер
       # разработки держит треды сам и в свою папку. Без этого тома пересоздание
@@ -343,6 +346,7 @@ services:
       POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}@postgres:5432/orbita
       PUBLISH_DIR: /data/published
       AGENT_INPUT_DIR: /data/input
+      CHAT_FILES_DIR: /data/chats
       JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
     volumes:
       - data:/data
