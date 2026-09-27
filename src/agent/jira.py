@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 import requests
 
 from agent import config as cfg
-from agent import credentials, request_pacing
+from agent import credentials, request_pacing, text_search
 
 REQUIRED_VARS = cfg.JIRA_REQUIRED_VARS
 
@@ -261,7 +261,17 @@ def adf_to_text(node: object) -> str:
 
     kind = node.get("type")
     if kind == "text":
-        return str(node.get("text") or "")
+        text = str(node.get("text") or "")
+        for mark in node.get("marks") or []:
+            if not isinstance(mark, dict) or mark.get("type") != "link":
+                continue
+            href = (mark.get("attrs") or {}).get("href")
+            if isinstance(href, str) and href.strip():
+                # У ссылки с подписью URL лежит в mark, а не в text. Он нужен
+                # и читателю, и предварительному чтению страниц Confluence.
+                href = href.strip()
+                return text if text.strip() == href else f"{text} ({href})"
+        return text
     if kind == "hardBreak":
         return "\n"
     # У упоминаний и карточек текста в `content` нет: он лежит в атрибутах.
@@ -361,8 +371,27 @@ def foreign_hosts(text: str) -> list[str]:
 _FIELDS = (
     "summary,description,status,issuetype,priority,labels,components,"
     "assignee,reporter,parent,subtasks,issuelinks,fixVersions,duedate,"
-    "created,updated,resolution"
+    "created,updated,resolution,attachment"
 )
+
+
+def _attachments(values: object) -> list[dict]:
+    """
+    Вложения задачи: имя и размер, без содержимого.
+
+    Содержимое не читается — это картинки, выгрузки и документы Word. Но
+    знать, что они есть, роли обязаны: 27 сентября 2026 разбор записал
+    «вложения не просматривались» у задачи, про вложения которой не знал ничего,
+    и вопрос о них уехал автору, хотя на него отвечал сам тикет.
+    """
+    found = []
+    for item in values or []:
+        if isinstance(item, dict) and item.get("filename"):
+            size = item.get("size")
+            found.append(
+                {"name": str(item["filename"]), "size": size if isinstance(size, int) else None}
+            )
+    return found
 
 
 def fetch_issue(key: str, settings: Settings | None = None) -> dict:
@@ -421,6 +450,7 @@ def fetch_issue(key: str, settings: Settings | None = None) -> dict:
             if isinstance(item, dict)
         ],
         "links": links,
+        "attachments": _attachments(fields.get("attachment")),
         "due": str(fields.get("duedate") or ""),
         "updated": str(fields.get("updated") or ""),
         "comments": comments(key, s),
@@ -522,7 +552,40 @@ def find_link(blocker: str, blocked: str, settings: Settings | None = None) -> b
     return False
 
 
-def search(query: str, settings: Settings | None = None) -> list[dict]:
+#: Ключ проекта Jira: заглавная латиница, цифры и подчёркивание.
+PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,29}")
+
+#: Больше проектов в одном поиске — это уже не сужение, а перечисление трекера.
+MAX_PROJECTS = 10
+
+
+def project_keys(value: str | list[str] | tuple[str, ...]) -> list[str]:
+    """
+    Ключи проектов из строки через запятую или списка.
+
+    Неверный ключ — отказ, а не пропуск: молча выброшенный проект расширил бы
+    поиск до всего трекера, и роль приняла бы чужие задачи за найденные там,
+    где просила.
+    """
+    items = value.split(",") if isinstance(value, str) else list(value or ())
+    keys = list(dict.fromkeys(str(item).strip().upper() for item in items if str(item).strip()))
+    wrong = [key for key in keys if not PROJECT_KEY.fullmatch(key)]
+    if wrong:
+        raise JiraError(
+            "не похоже на ключ проекта Jira: " + ", ".join(wrong) + " (пример: ORB)"
+        )
+    if len(keys) > MAX_PROJECTS:
+        raise JiraError(f"проектов в одном поиске больше {MAX_PROJECTS}")
+    return keys
+
+
+def search(
+    query: str,
+    settings: Settings | None = None,
+    *,
+    broad: bool = False,
+    projects: str | list[str] | tuple[str, ...] = (),
+) -> list[dict]:
     """
     Поиск задач по тексту.
 
@@ -531,12 +594,21 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
     безобиден, а выгрузить одним `created >= -100d` всё, до чего дотягивается
     токен, — уже нет. Поиск по тексту закрывает задачу агента целиком и не
     отдаёт наружу того, чего не просили.
+
+    broad — искать ещё и по основам слов (`text_search.condition`), projects —
+    только в этих проектах. Оба нужны роли поиска: без проекта запрос «смена
+    пароля» 27 сентября 2026 вернул задачи десятка чужих команд, а нужная
+    лежала в соседнем проекте той же системы.
     """
     s = settings or load_settings()
     text = (query or "").strip()
     if not text:
         return []
-    jql = f'text ~ "{_escape(text)}" ORDER BY updated DESC'
+    keys = project_keys(projects)
+    clause = text_search.condition(text, _escape) if broad else f'text ~ "{_escape(text)}"'
+    if keys:
+        clause = "project in (" + ", ".join(f'"{key}"' for key in keys) + f") AND {clause}"
+    jql = f"{clause} ORDER BY updated DESC"
     data = call(
         "GET",
         f"{s.api_path}{s.search_path}",
@@ -606,6 +678,15 @@ def format_issue(issue: dict) -> str:
         lines += [
             f"- {item['relation']} {item['key']}: {item['summary']}" for item in issue["links"]
         ]
+
+    if issue.get("attachments"):
+        lines.append("\nВложения (содержимое не читается — только имена):")
+        lines += [
+            f"- {item['name']}" + (f" ({item['size']} байт)" if item.get("size") else "")
+            for item in issue["attachments"]
+        ]
+    elif "attachments" in issue:
+        lines.append("\nВложений нет.")
 
     if issue.get("comments"):
         lines.append("\nКомментарии (от старых к новым):")

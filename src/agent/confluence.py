@@ -48,7 +48,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 
 from agent import config as cfg
-from agent import credentials, outgoing, request_pacing
+from agent import credentials, outgoing, request_pacing, text_search
 
 REQUIRED_VARS = cfg.CONFLUENCE_REQUIRED_VARS
 
@@ -540,24 +540,66 @@ def _space_key(s: Settings) -> str:
     return _SPACE_KEYS[cache]
 
 
-def search(query: str, settings: Settings | None = None) -> list[dict]:
+def search_spaces(s: Settings) -> list[str] | None:
+    """
+    Пространства поиска: публикации и добавленные администратором.
+
+    None — везде, куда пускает токен (`CONFLUENCE_SEARCH_SPACES=*`). Пустой
+    список — пространство не задано вовсе, и тогда поиск тоже идёт везде: так
+    было и до настройки. Пространство публикации стоит первым: по нему
+    называется область поиска в ответе инструмента.
+    """
+    extra = cfg.confluence_search_spaces()
+    if "*" in extra:
+        return None
+    return list(dict.fromkeys(key for key in (_space_key(s), *extra) if key))
+
+
+def scope_label(settings: Settings | None = None) -> str:
+    """
+    Где идёт поиск — словами, для ответа инструмента.
+
+    Модель, не знающая области поиска, пишет «в wiki это не описано» там, где
+    не нашлось в одном пространстве: так было 27 сентября 2026. Область стоит
+    в каждом ответе поиска, чтобы вывод называл её сам.
+    """
+    spaces = search_spaces(settings or load_settings())
+    if not spaces:
+        return "все доступные пространства"
+    return ("пространство " if len(spaces) == 1 else "пространства ") + ", ".join(spaces)
+
+
+def search(query: str, settings: Settings | None = None, *, broad: bool = False) -> list[dict]:
     """
     Страницы пространства по тексту запроса.
 
     CQL собирается здесь, а не приходит от модели: свободный CQL — чужой язык
     запросов под нашим токеном, и `space = OTHER` в нём выносит поиск за
     пределы пространства, которое разрешил оператор. Ограничение по
-    пространству публикации ставится тут, и снять его изнутри запроса нельзя.
+    пространству публикации ставится тут, и снять его изнутри запроса нельзя;
+    расширить — только настройкой `CONFLUENCE_SEARCH_SPACES`.
+
+    broad — искать ещё и по основам слов (`text_search.condition`). Нужно
+    роли поиска: она пишет запрос словами из задачи, в тех формах, в каких
+    они стоят в тексте, а страница называет то же самое в другом падеже.
     """
     s = settings or load_settings()
     text = (query or "").strip()
     if not text:
         return []
 
-    parts = ['type = "page"', f'text ~ "{_cql_escape(text)}"']
-    space_key = _space_key(s)
-    if space_key:
-        parts.insert(1, f'space = "{_cql_escape(space_key)}"')
+    clause = (
+        text_search.condition(text, _cql_escape) if broad else f'text ~ "{_cql_escape(text)}"'
+    )
+    parts = ['type = "page"', clause]
+    spaces = search_spaces(s)
+    if spaces:
+        parts.insert(
+            1,
+            f'space = "{_cql_escape(spaces[0])}"'
+            if len(spaces) == 1
+            else "space in (" + ", ".join(f'"{_cql_escape(key)}"' for key in spaces) + ")",
+        )
     data = _call(
         "GET",
         s.search_path,

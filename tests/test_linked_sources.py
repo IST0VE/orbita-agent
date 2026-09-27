@@ -75,7 +75,7 @@ def test_analysis_can_search_then_read_confluence_before_writing(monkeypatch):
     monkeypatch.setattr(confluence, "missing_vars", lambda: [])
     searched = []
     read = []
-    monkeypatch.setattr(confluence, "search", lambda query: searched.append(query) or [
+    monkeypatch.setattr(confluence, "search", lambda query, **kwargs: searched.append(query) or [
         {"id": "12345", "title": "Payments", "url": "https://wiki.example.com/pages/12345", "excerpt": "Payments"}
     ])
     monkeypatch.setattr(confluence, "fetch_page", lambda key: read.append(key) or {

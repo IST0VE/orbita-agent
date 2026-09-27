@@ -267,3 +267,50 @@ def test_round_trip_keeps_the_content():
 
     assert "Заголовок" in back
     assert "Абзац про экспорт." in back
+
+
+# --------------------------------------------------------------------------
+# Поиск роли конвейера подготовки: формы слов и область поиска
+# --------------------------------------------------------------------------
+@responses.activate
+def test_the_search_role_looks_for_word_forms_too():
+    """
+    «паролю» не находит страницу про «пароль», если индекс не русский:
+    27 сентября 2026 пять запросов из тринадцати вернулись пустыми.
+    """
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("требования к паролю", V1, broad=True)
+
+    assert responses.calls[0].request.params["cql"] == (
+        'type = "page" AND space = "SUP" AND '
+        '(text ~ "требования к паролю" OR (text ~ "требован*" AND text ~ "парол*"))'
+    )
+
+
+@responses.activate
+def test_the_administrator_can_widen_the_search(monkeypatch):
+    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "GSLB, DOCS")
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("вебхук", V1)
+
+    assert responses.calls[0].request.params["cql"] == (
+        'type = "page" AND space in ("SUP", "GSLB", "DOCS") AND text ~ "вебхук"'
+    )
+    assert confluence.scope_label(V1) == "пространства SUP, GSLB, DOCS"
+
+
+@responses.activate
+def test_a_star_searches_every_space(monkeypatch):
+    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "*")
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("вебхук", V1)
+
+    assert responses.calls[0].request.params["cql"] == 'type = "page" AND text ~ "вебхук"'
+    assert confluence.scope_label(V1) == "все доступные пространства"
+
+
+def test_the_scope_is_named_for_the_publication_space():
+    assert confluence.scope_label(V1) == "пространство SUP"

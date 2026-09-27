@@ -53,6 +53,8 @@ _PREFIXES = (
     "OIDC_",
     "SETTINGS_",
     "METRICS_",
+    "PREP_",
+    "TOOL_",
 )
 _NAMES = (
     "DEEPSEEK_API_KEY",

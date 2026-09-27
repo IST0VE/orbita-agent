@@ -19,9 +19,10 @@ from __future__ import annotations
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
-from agent import confluence, prep_graph, prep_prompts, prep_roles, tools
+from agent import confluence, inputs, nodes, prep_graph, prep_prompts, prep_roles, tools
 from agent import graph as common_graph
 from agent import jira as jira_api
 
@@ -166,7 +167,20 @@ def test_reading_happens_before_planning():
 def test_the_plan_sees_everything_that_was_read():
     plan = prep_roles.BY_KEY["plan"]
 
-    assert plan.needs == ("intake", "gaps", "research")
+    assert plan.needs == (
+        *prep_roles.READ_BY_CODE, "intake", "gaps", "research", prep_roles.SOURCES,
+    )
+
+
+def test_every_role_sees_what_the_code_read():
+    """
+    27 сентября 2026 стенограмму, выбранную оператором, прочитала одна роль
+    поиска, а тикет, кроме разбора, не видел никто. Разбор объявил главной
+    находкой расхождение, которое стенограмма объясняла, а следующие роли
+    повторили её, не имея чем проверить.
+    """
+    for role in prep_roles.ROLES:
+        assert set(prep_roles.READ_BY_CODE) <= set(role.needs), role.key
 
 
 def test_later_stages_receive_the_original_outputs():
@@ -221,8 +235,8 @@ def test_only_the_search_role_may_ask():
 
 
 def test_the_intake_role_reads_the_prefetched_ticket():
-    """`needs` разбора — не документ этапа, а задача, которую положила нода."""
-    assert prep_roles.FIRST.needs == (prep_roles.TICKET,)
+    """`needs` разбора — не документы этапов, а то, что положила нода чтения."""
+    assert prep_roles.FIRST.needs == prep_roles.READ_BY_CODE
     assert not prep_roles.FIRST.reads_files
 
 
@@ -640,10 +654,14 @@ def test_the_run_of_27_september_would_not_go_blind(configured, monkeypatch: pyt
         assert any("выгрузка отчётов в CSV" in str(m.content) for m in seen), (
             "роль поиска потеряла список запросов"
         )
-    assert str(research[-1][-1].content).startswith("Страница 2"), (
+    answers = [m for m in research[-1] if m.type == "tool"]
+    assert str(answers[-1].content).startswith("Страница 2"), (
         "роль поиска не увидела страницу, которую только что попросила"
     )
-    assert list(state["artifacts"]) == [prep_roles.TICKET, *prep_roles.KEYS]
+    assert list(state["artifacts"]) == [
+        prep_roles.TICKET, prep_roles.LINKED, prep_roles.PAGES, prep_roles.FILES,
+        "intake", "gaps", "research", prep_roles.SOURCES, "plan", "draft",
+    ]
 
 
 def test_the_search_queries_reach_the_research_role(configured):
@@ -657,3 +675,463 @@ def test_the_search_queries_reach_the_research_role(configured):
 
     assert any(prep_roles.BY_KEY["gaps"].title in str(text) for text in turn)
     assert any(prep_roles.BY_KEY["intake"].title in str(text) for text in turn)
+
+
+# --------------------------------------------------------------------------
+# Что код читает до ролей: связанные задачи и материалы оператора
+#
+# 27 сентября 2026 стенограмму встречи, выбранную оператором, прочитала только
+# роль поиска, и только своим ходом из восьми. Разбор её не видел и объявил
+# главной находкой расхождение заголовка с описанием, которое стенограмма
+# объясняла. Связанную задачу, где было сказано, где живёт аутентификация,
+# тоже читала одна роль поиска.
+# --------------------------------------------------------------------------
+TRANSCRIPT = (
+    "10:02 Анна: сейчас есть действие смена пароля, пароль генерируется сам.\n"
+    "10:03 Борис: генерация сломана, длина ноль."
+)
+
+
+@pytest.fixture
+def transcript():
+    """Папка задачи со стенограммой и соседним файлом, которого оператор не выбирал."""
+    folder = inputs.ensure_root() / "prep-task"
+    folder.mkdir(parents=True)
+    (folder / "стенограмма.txt").write_text(TRANSCRIPT, encoding="utf-8")
+    (folder / "старое.md").write_text("содержимое невыбранного файла", encoding="utf-8")
+    return "prep-task"
+
+
+def picked(task: str, *names: str) -> dict:
+    return {"configurable": {"thread_id": "prep-1", "input_dir": task, "input_file": list(names)}}
+
+
+def test_the_operator_files_are_read_by_code(configured, transcript):
+    update = prep_graph.ticket_node(ticket_state(), picked(transcript, "стенограмма.txt"))
+
+    block = update["artifacts"][prep_roles.FILES]
+    assert "длина ноль" in block
+    assert update["ticket"]["files"] == ["стенограмма.txt"]
+    # Невыбранный файл назван, но не прочитан: выбирать за оператора нечем.
+    assert "старое.md" in block
+    assert "содержимое невыбранного файла" not in block
+
+
+def test_nothing_is_read_for_an_operator_who_picked_nothing(configured, transcript):
+    update = prep_graph.ticket_node(ticket_state(), picked(transcript))
+
+    block = update["artifacts"][prep_roles.FILES]
+    assert "длина ноль" not in block
+    assert "стенограмма.txt" in block
+    assert update["ticket"]["files"] == []
+
+
+def test_a_file_named_in_the_request_counts_as_picked(configured, transcript):
+    update = prep_graph.ticket_node(
+        ticket_state(LINK + ", стенограмма в файле стенограмма.txt"), picked(transcript)
+    )
+
+    assert "длина ноль" in update["artifacts"][prep_roles.FILES]
+
+
+def test_every_role_gets_the_operator_files(configured, transcript):
+    """Стенограмма доходит до каждой роли, включая роль поиска с её инструментами."""
+    model = Recording(messages=iter(ANSWERS))
+    app = prep_graph.build_graph(llm=model).compile()
+    app.invoke({"messages": [HumanMessage(LINK)]}, config=picked(transcript, "стенограмма.txt"))
+
+    assert len(model.calls) == len(ANSWERS)
+    for seen in model.calls:
+        assert "длина ноль" in str(seen[1].content)
+
+
+def test_files_picked_anew_in_the_thread_are_read_again(configured, transcript):
+    known = {"key": "ORB-123", "files": []}
+    update = prep_graph.ticket_node(
+        ticket_state(ticket=known), picked(transcript, "стенограмма.txt")
+    )
+
+    assert "длина ноль" in update["artifacts"][prep_roles.FILES]
+    assert update["ticket"] == {**known, "files": ["стенограмма.txt"]}
+
+
+@pytest.mark.parametrize("move_to_another_folder", [False, True])
+def test_new_contents_of_a_same_named_file_reach_every_role(
+    configured, transcript, move_to_another_folder,
+):
+    model = Recording(messages=iter([answer(role) for role in prep_roles.ROLES] * 2))
+    app = prep_graph.build_graph(llm=model).compile(checkpointer=InMemorySaver())
+    app.invoke({"messages": [HumanMessage(LINK)]}, config=picked(transcript, "стенограмма.txt"))
+
+    folder = inputs.ensure_root() / ("new-folder" if move_to_another_folder else transcript)
+    folder.mkdir(exist_ok=True)
+    (folder / "стенограмма.txt").write_text("Новые требования: длина пароля 24.", encoding="utf-8")
+    state = app.invoke(
+        {"messages": [HumanMessage("Обнови документы по новым материалам.")]},
+        config=picked(folder.name, "стенограмма.txt"),
+    )
+
+    assert "длина пароля 24" in state["artifacts"][prep_roles.FILES]
+    for seen in model.calls[-len(prep_roles.ROLES):]:
+        assert "длина пароля 24" in str(seen[1].content)
+        assert "длина ноль" not in str(seen[1].content)
+
+
+def fetch_from(*issues: dict):
+    by_key = {item["key"]: item for item in issues}
+
+    def fetch(key, *args, **kwargs):
+        if key not in by_key:
+            raise jira_api.JiraError("объект не найден (HTTP 404)")
+        return by_key[key]
+
+    return fetch
+
+
+LINKED_ISSUE = dict(
+    ISSUE,
+    key="ORB-7",
+    url="https://jira.example.com/browse/ORB-7",
+    summary="Модуль входа",
+    description="Аутентификация сейчас внутри модуля healthcheck.",
+    comments=[],
+)
+
+
+def test_linked_issues_are_read_by_code(configured, monkeypatch):
+    main = dict(
+        ISSUE,
+        parent="ORB-1",
+        links=[{"relation": "blocks", "key": "ORB-7", "summary": "Модуль входа"}],
+    )
+    parent = dict(ISSUE, key="ORB-1", url="https://jira.example.com/browse/ORB-1", summary="Эпик")
+    monkeypatch.setattr(jira_api, "fetch_issue", fetch_from(main, parent, LINKED_ISSUE))
+
+    update = prep_graph.ticket_node(ticket_state(), {})
+
+    block = update["artifacts"][prep_roles.LINKED]
+    assert "внутри модуля healthcheck" in block
+    assert "Связь: ORB-123 blocks ORB-7." in block
+    assert [item["key"] for item in update["ticket"]["linked"]] == ["ORB-1", "ORB-7"]
+    # Текст связанных задач — в артефакте для ролей, а не в сводке состояния.
+    assert all("text" not in item for item in update["ticket"]["linked"])
+    assert "Связанные задачи прочитаны: ORB-1, ORB-7" in update["messages"][0].content
+
+
+def test_linked_issues_stop_at_the_ceiling(configured, monkeypatch):
+    monkeypatch.setenv("PREP_LINKED_ISSUES", "1")
+    main = dict(
+        ISSUE,
+        links=[
+            {"relation": "blocks", "key": "ORB-7", "summary": "Модуль входа"},
+            {"relation": "relates to", "key": "ORB-8", "summary": "Соседняя"},
+        ],
+    )
+    monkeypatch.setattr(jira_api, "fetch_issue", fetch_from(main, LINKED_ISSUE))
+
+    update = prep_graph.ticket_node(ticket_state(), {})
+
+    assert [bool(item.get("skipped")) for item in update["ticket"]["linked"]] == [False, True]
+    assert "ORB-8 (relates to)" in update["artifacts"][prep_roles.LINKED]
+    assert "PREP_LINKED_ISSUES" in update["artifacts"][prep_roles.LINKED]
+
+
+def test_an_unreadable_linked_issue_is_named_not_hidden(configured, monkeypatch):
+    main = dict(ISSUE, links=[{"relation": "blocks", "key": "ORB-9", "summary": "Нет доступа"}])
+    monkeypatch.setattr(jira_api, "fetch_issue", fetch_from(main))
+
+    update = prep_graph.ticket_node(ticket_state(), {})
+
+    assert "Не прочитана: объект не найден" in update["artifacts"][prep_roles.LINKED]
+    assert "Не открылись: ORB-9" in update["messages"][0].content
+
+
+# --------------------------------------------------------------------------
+# Роль поиска: вход через бриф, счёт ходов, реестр источников
+# --------------------------------------------------------------------------
+def research_calls(model: Recording) -> list:
+    return [
+        seen for seen in model.calls
+        if prep_prompts.ROLE_PROMPTS["research"] in str(seen[0].content)
+    ]
+
+
+def test_the_search_role_is_briefed_and_told_its_turns(configured):
+    model = Recording(messages=iter(ANSWERS))
+    prep_graph.build_graph(llm=model).compile().invoke(
+        {"messages": [HumanMessage(LINK)]},
+        config={"configurable": {"thread_id": "prep-1", "input_dir": ""}},
+    )
+
+    first, second = research_calls(model)
+    assert "# Задача из Jira" in str(first[1].content)
+    assert "Разделитель — точка с запятой." in str(first[1].content)
+    assert prep_roles.BY_KEY["gaps"].title in str(first[1].content)
+    assert "Ходов с инструментами осталось: 12 из 12" in str(first[-1].content)
+    # Второй вызов — тот же бриф и собственная переписка роли, без документов этапов.
+    assert [m.type for m in second[1:4]] == ["human", "ai", "tool"]
+    assert second[1].content == first[1].content
+    assert "осталось: 11 из 12" in str(second[-1].content)
+
+
+def test_the_last_turn_is_named_as_last():
+    assert "последний ход" in nodes.turns_left(1, 12)
+
+
+def test_the_ledger_counts_what_was_read(configured, monkeypatch):
+    monkeypatch.setattr(
+        confluence,
+        "fetch_page",
+        lambda page_id, *a, **k: {
+            "id": page_id,
+            "title": "Отчёты личного кабинета",
+            "url": "https://wiki.example.com/x/12345",
+            "text": "выгрузка сейчас только в XLSX",
+            "truncated": False,
+        },
+    )
+    state = run(
+        ANSWERS[0],
+        ANSWERS[1],
+        asks("confluence_search", "call-1", query="экспорт отчётов"),
+        asks("confluence_page", "call-2", page_id="12345"),
+        *ANSWERS[3:],
+    )
+
+    ledger = state["artifacts"][prep_roles.SOURCES]
+    assert "### Прочитано: 2" in ledger
+    assert "[JIRA ORB-123]" in ledger
+    assert "[WIKI 12345]" in ledger
+    assert "### Найдено, но не открыто: 0" in ledger
+    assert "| Confluence | экспорт отчётов | пространство SUP | 1 |" in ledger
+
+
+def test_the_plan_and_the_draft_get_the_ledger():
+    for key in ("plan", "draft"):
+        text = prep_roles.brief(prep_roles.BY_KEY[key], "ЗАПРОС", {prep_roles.SOURCES: "РЕЕСТР"})
+        assert "# Реестр источников прогона\n\nРЕЕСТР" in text
+
+
+def test_a_missing_ledger_is_said_aloud():
+    text = prep_roles.brief(prep_roles.BY_KEY["plan"], "ЗАПРОС", {})
+    assert "Реестр не собран" in text
+
+
+# --------------------------------------------------------------------------
+# Страница: итог развёрнут, рабочие этапы свёрнуты
+# --------------------------------------------------------------------------
+def test_the_page_folds_the_working_stages(configured):
+    state = run(*ANSWERS)
+    document = common_graph.stage_pages(state, {}, pipeline=prep_roles.PIPELINE)[0]["document"]
+
+    for key in ("intake", "gaps", "research"):
+        role = prep_roles.BY_KEY[key]
+        assert f'<ac:parameter ac:name="title">{role.number}. {role.title}</ac:parameter>' in document
+    for key in ("plan", "draft"):
+        role = prep_roles.BY_KEY[key]
+        assert f"<h2>{role.number}. {role.title}</h2>" in document
+    assert '<ac:parameter ac:name="title">Источники прогона</ac:parameter>' in document
+    assert "Задача Jira: ORB-123 «Экспорт отчётов в CSV»" in document
+    # Порядок чтения: итог, план, потом рабочие этапы и реестр.
+    order = [
+        document.index("05. Первичная документация"),
+        document.index("04. План работ"),
+        document.index("01. Разбор задачи"),
+        document.index("Источники прогона"),
+    ]
+    assert order == sorted(order)
+    # И там, где документ собирает сам граф: узлы публикации аннотированы общим
+    # `State`, и без расширенной входной схемы сводки задачи они не видели.
+    assert "Задача Jira: ORB-123 «Экспорт отчётов в CSV»" in state["document"]
+    assert "[JIRA ORB-123]" in state["artifacts"][prep_roles.SOURCES]
+
+
+# --------------------------------------------------------------------------
+# Форма документа
+# --------------------------------------------------------------------------
+def test_foreign_script_is_rewritten_in_place(configured):
+    draft = AIMessage(
+        content="# Первичная документация\n\nСделать服务端-часть.\n\nОстальное без изменений.",
+        response_metadata=usage_meta(),
+    )
+    repair = AIMessage(content='["Сделать серверную часть."]', response_metadata=usage_meta())
+
+    state = run(*ANSWERS[:-1], draft, repair)
+
+    text = state["artifacts"]["draft"]
+    assert "Сделать серверную часть." in text
+    assert "服务端" not in text
+    assert "Остальное без изменений." in text
+    # Починка — отдельный платный вызов, и он учтён.
+    assert state["usage"]["calls"] == len(ANSWERS) + 1
+
+
+def test_a_row_longer_than_its_header_widens_the_table(configured):
+    gaps = AIMessage(
+        content="# Что нужно выяснить\n\n| № | Чего не знаем |\n| --- | --- |\n| П1 | формат | [TBD] |",
+        response_metadata=usage_meta(),
+    )
+
+    state = run(ANSWERS[0], gaps, *ANSWERS[2:])
+
+    assert "| № | Чего не знаем |  |" in state["artifacts"]["gaps"]
+    assert "| П1 | формат | [TBD] |" in state["artifacts"]["gaps"]
+
+
+def test_the_prompts_carry_the_rules_the_27_september_run_broke():
+    common = prep_prompts.COMMON
+    assert "Прежде чем назвать расхождение" in common
+    assert "Цитата о системе X — факт только о X" in common
+    assert "ошибки распознавания" in common
+    assert "Искать в wiki и читать найденное — работа этапа 03" in common
+    assert "Тег источника ставь только к тому, что в источнике написано" in common
+    assert "одно–три слова" in prep_prompts.ROLE_PROMPTS["gaps"]
+    assert "Ходы — потолок, а не норма" in prep_prompts.ROLE_PROMPTS["research"]
+    assert "поэтому придумали" in prep_prompts.ROLE_PROMPTS["intake"]
+    assert "дочитать" in prep_prompts.ROLE_PROMPTS["plan"]
+    assert "Перед выдачей сверь документ сам с собой" in prep_prompts.ROLE_PROMPTS["draft"]
+
+
+def test_the_tools_leave_a_trace_for_the_ledger(configured):
+    """След — для реестра источников: модель его не видит, код по нему считает."""
+    message = tools.confluence_search.invoke(
+        {"type": "tool_call", "name": "confluence_search", "args": {"query": "экспорт"}, "id": "t1"}
+    )
+
+    assert message.artifact["found"][0]["id"] == "12345"
+    assert message.content.startswith("Область поиска: пространство SUP.")
+
+
+def test_a_wrong_project_is_a_readable_answer(configured):
+    message = tools.jira_search.invoke(
+        {"type": "tool_call", "name": "jira_search",
+         "args": {"query": "пароль", "project": "не проект"}, "id": "t2"}
+    )
+
+    assert "поиск в Jira не выполнен" in message.content
+    assert message.artifact["error"]
+
+
+# --------------------------------------------------------------------------
+# Страницы Confluence по ссылкам из запроса и задачи
+# --------------------------------------------------------------------------
+WIKI = "https://wiki.example.com/pages/viewpage.action?pageId="
+
+
+def wiki_pages(read: list):
+    def fetch(page_id, *args, **kwargs):
+        read.append(page_id)
+        return {
+            "id": page_id,
+            "title": f"Страница {page_id}",
+            "url": f"https://wiki.example.com/x/{page_id}",
+            "text": f"Текст {page_id}",
+            "truncated": False,
+        }
+
+    return fetch
+
+
+def test_pages_linked_from_the_request_and_the_ticket_are_read_by_code(configured, monkeypatch):
+    main = dict(ISSUE, description=f"Спецификация: {WIKI}55555")
+    monkeypatch.setattr(jira_api, "fetch_issue", fetch_from(main))
+    read: list = []
+    monkeypatch.setattr(confluence, "fetch_page", wiki_pages(read))
+
+    update = prep_graph.ticket_node(ticket_state(f"{LINK} и {WIKI}44444"), {})
+
+    assert read == ["44444", "55555"]
+    block = update["artifacts"][prep_roles.PAGES]
+    assert "## [WIKI 44444] Страница 44444" in block
+    assert "Текст 55555" in block
+    assert [item["id"] for item in update["ticket"]["pages"]] == ["44444", "55555"]
+    assert all("text" not in item for item in update["ticket"]["pages"])
+    assert "Страницы Confluence по ссылкам прочитаны: 44444, 55555" in update["messages"][0].content
+
+
+def test_a_page_on_another_wiki_is_not_read(configured, monkeypatch):
+    """Страница 44444 есть в любой вики: по чужой ссылке прочиталась бы своя, другая."""
+    monkeypatch.setattr(confluence, "fetch_page", lambda *a, **k: pytest.fail("чужая вики"))
+
+    update = prep_graph.ticket_node(
+        ticket_state(f"{LINK} https://other.example.org/pages/viewpage.action?pageId=44444"), {}
+    )
+
+    assert update["ticket"]["pages"] == []
+
+
+def test_linked_pages_stop_at_the_ceiling(configured, monkeypatch):
+    monkeypatch.setenv("PREP_LINKED_PAGES", "1")
+    read: list = []
+    monkeypatch.setattr(confluence, "fetch_page", wiki_pages(read))
+
+    update = prep_graph.ticket_node(ticket_state(f"{LINK} {WIKI}44444 {WIKI}55555"), {})
+
+    assert read == ["44444"]
+    assert "PREP_LINKED_PAGES: 55555" in update["artifacts"][prep_roles.PAGES]
+
+
+def test_pages_read_by_code_are_in_the_ledger(configured, monkeypatch):
+    monkeypatch.setattr(confluence, "fetch_page", wiki_pages([]))
+
+    state = run(*ANSWERS, question=f"{QUESTION} См. {WIKI}44444")
+
+    ledger = state["artifacts"][prep_roles.SOURCES]
+    assert "[WIKI 44444]" in ledger
+    assert "страница по ссылке из запроса или задачи, прочитана кодом" in ledger
+
+
+def test_sources_survive_followups_without_recounting_searches(configured, monkeypatch):
+    monkeypatch.setattr(confluence, "fetch_page", wiki_pages([]))
+    first = [
+        ANSWERS[0], ANSWERS[1],
+        asks("confluence_search", "search-1", query="экспорт"),
+        asks("confluence_page", "page-1", page_id="12345"),
+        *ANSWERS[3:],
+    ]
+    second = [answer(role) for role in prep_roles.ROLES]
+    third = [
+        ANSWERS[0], ANSWERS[1], asks("confluence_page", "page-2", page_id="44444"),
+        *ANSWERS[3:],
+    ]
+    model = Recording(messages=iter([*first, *second, *third]))
+    app = prep_graph.build_graph(llm=model).compile(checkpointer=InMemorySaver())
+    config = picked("")
+    initial = app.invoke({"messages": [HumanMessage(LINK)]}, config=config)
+    revised = app.invoke({"messages": [HumanMessage("Сократи формулировки.")]}, config=config)
+
+    assert revised["artifacts"][prep_roles.SOURCES] == initial["artifacts"][prep_roles.SOURCES]
+    assert "[WIKI 12345]" in revised["artifacts"][prep_roles.SOURCES]
+    assert "### Запросы: 1" in revised["artifacts"][prep_roles.SOURCES]
+    for seen in model.calls[-2:]:  # план и документация получают прежние источники
+        assert "[WIKI 12345]" in str(seen[1].content)
+
+    expanded = app.invoke({"messages": [HumanMessage("Дочитай ещё страницу.")]}, config=config)
+    sources = expanded["artifacts"][prep_roles.SOURCES]
+    assert "[WIKI 12345]" in sources and "[WIKI 44444]" in sources
+    assert "### Прочитано: 3" in sources
+    assert "### Запросы: 1" in sources
+
+
+def test_pages_linked_by_adf_labels_in_description_and_comments_are_read(configured, monkeypatch):
+    def linked_text(page_id):
+        return jira_api.field_text({
+            "type": "doc", "content": [{"type": "paragraph", "content": [{
+                "type": "text", "text": "Спецификация",
+                "marks": [{"type": "link", "attrs": {"href": WIKI + page_id}}],
+            }]}],
+        })
+
+    main = dict(
+        ISSUE, description=linked_text("44444"),
+        comments=[{"author": "Автор", "created": "2026-09-27", "text": linked_text("55555")}],
+    )
+    monkeypatch.setattr(jira_api, "fetch_issue", fetch_from(main))
+    read = []
+    monkeypatch.setattr(confluence, "fetch_page", wiki_pages(read))
+
+    update = prep_graph.ticket_node(ticket_state(), {})
+
+    assert read == ["44444", "55555"]
+    assert "Текст 44444" in update["artifacts"][prep_roles.PAGES]
+    assert "Текст 55555" in update["artifacts"][prep_roles.PAGES]

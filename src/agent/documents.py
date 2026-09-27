@@ -299,11 +299,34 @@ def render_pipeline_body(
     в окне подтверждения и в состоянии треда для интерфейса. Склейка готовых
     страниц там не годится — задача повторилась бы пять раз, и человек,
     которому это показывают перед публикацией, читал бы одно и то же.
+
+    Что ещё на странице, решает конвейер: строка о прочитанном под задачей
+    (`Pipeline.subject`), какие документы идут первыми (`Pipeline.lead`),
+    свёрнутые рабочие этапы (`Pipeline.collapsed`) и свёрнутые приложения,
+    которые пишет код (`Pipeline.appendix`).
     """
     renderer = renderer or render.STORAGE
+    artifacts = state.get("artifacts") or {}
     parts = [renderer.heading("Задача"), _markup(task_of(state), renderer)]
-    for role in pipeline.done(state.get("artifacts")):
-        parts += _stage_section(role, state, renderer)
+    subject = pipeline.subject(state) if pipeline.subject else ""
+    if subject:
+        parts.append(_markup(subject, renderer))
+    done = pipeline.done(artifacts)
+    first = [role for key in pipeline.lead for role in done if role.key == key]
+    for role in first + [role for role in done if role not in first]:
+        if role.key in pipeline.collapsed:
+            # Рабочий этап: заголовок виден всегда, документ — по клику.
+            parts.append(
+                renderer.collapsed(
+                    f"{role.number}. {role.title}", _markup(artifacts[role.key], renderer)
+                )
+            )
+        else:
+            parts += _stage_section(role, state, renderer)
+    for key, title in pipeline.appendix:
+        text = (artifacts.get(key) or "").strip()
+        if text:
+            parts.append(renderer.collapsed(title, _markup(text, renderer)))
     return renderer.join(parts)
 
 

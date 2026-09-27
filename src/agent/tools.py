@@ -74,18 +74,20 @@ def list_task_files(config: RunnableConfig) -> str:
     return "\n".join(lines)
 
 
-@tool
-def read_task_file(name: str, config: RunnableConfig) -> str:
+@tool(response_format="content_and_artifact")
+def read_task_file(name: str, config: RunnableConfig) -> tuple[str, dict]:
     """Прочитать текстовый файл, приложенный к текущей задаче, по его имени."""
+    # След для реестра прочитанного (`ledger.py`): модель его не видит.
+    trace = {"kind": "read", "system": "file", "name": name}
     task = str(options(config).get("input_dir") or "")
     if not task:
-        return "к задаче не приложено файлов: папка не выбрана"
+        return "к задаче не приложено файлов: папка не выбрана", {**trace, "error": "нет папки"}
     try:
-        return inputs.read(task, name)
+        return inputs.read(task, name), trace
     except inputs.InputError as exc:
-        return f"файл не прочитан: {exc}"
+        return f"файл не прочитан: {exc}", {**trace, "error": str(exc)}
     except OSError as exc:
-        return _unavailable(f"файл {name!r}", exc)
+        return _unavailable(f"файл {name!r}", exc), {**trace, "error": str(exc)}
 
 
 # --------------------------------------------------------------------------
@@ -107,54 +109,116 @@ def _not_configured(system: str, absent: list[str]) -> str:
     )
 
 
-@tool
-def jira_issue(key: str) -> str:
+# Ответ инструмента — это текст для модели и след для кода. Текст модель
+# пересказывает, и пересказ теряет идентификаторы и путает счёт: 27 сентября
+# 2026 документ называл «12 непрочитанных страниц» при списке из шестнадцати.
+# След (`ToolMessage.artifact`) модель не видит, а код собирает из него реестр
+# прочитанного и найденного (`ledger.py`) — с точными ссылками и числами.
+_EMPTY_HINT = (
+    "Попробуй 1–2 слова или точное имя из материалов: утилиты, файла, модуля, "
+    "таблицы. Формы слов подбираются автоматически."
+)
+
+
+@tool(response_format="content_and_artifact")
+def jira_issue(key: str) -> tuple[str, dict]:
     """Прочитать задачу Jira по её ключу (например ORB-123): описание, поля, связи, комментарии."""
+    trace = {"kind": "read", "system": "jira", "key": str(key or "").strip().upper()}
     absent = jira_api.missing_vars()
     if absent:
-        return _not_configured("Jira", absent)
+        return _not_configured("Jira", absent), {**trace, "error": "не настроена"}
     try:
-        return jira_api.format_issue(jira_api.fetch_issue(key))
+        issue = jira_api.fetch_issue(key)
     except jira_api.JiraError as exc:
-        return f"задача {key!r} не прочитана: {exc}"
+        return f"задача {key!r} не прочитана: {exc}", {**trace, "error": str(exc)}
+    return jira_api.format_issue(issue), {
+        **trace,
+        "key": str(issue.get("key") or trace["key"]),
+        "summary": issue.get("summary") or "",
+        "url": issue.get("url") or "",
+    }
 
 
-@tool
-def jira_search(query: str) -> str:
-    """Найти задачи Jira по тексту запроса: ключ, тип, статус и заголовок каждой."""
+@tool(response_format="content_and_artifact")
+def jira_search(query: str, project: str = "") -> tuple[str, dict]:
+    """
+    Найти задачи Jira по 1–3 словам запроса: ключ, тип, статус и заголовок каждой.
+
+    project — ключ проекта или несколько через запятую (например «ORB, PAY»):
+    искать только в них, а не во всём трекере. Содержание задачи — через jira_issue.
+    """
+    trace = {"kind": "search", "system": "jira", "query": query, "scope": "все проекты"}
     absent = jira_api.missing_vars()
     if absent:
-        return _not_configured("Jira", absent)
+        return _not_configured("Jira", absent), {**trace, "error": "не настроена"}
     try:
-        found = jira_api.search(query)
+        keys = jira_api.project_keys(project)
+        scope = ", ".join(keys) or "все проекты"
+        found = jira_api.search(query, broad=True, projects=keys)
     except jira_api.JiraError as exc:
-        return f"поиск в Jira не выполнен: {exc}"
-    return jira_api.format_results(found) or f"по запросу {query!r} задач не найдено"
+        return f"поиск в Jira не выполнен: {exc}", {**trace, "error": str(exc)}
+    trace = {
+        **trace,
+        "scope": scope,
+        "found": [{"key": item.get("key", ""), "summary": item.get("summary", ""),
+                   "url": item.get("url", "")} for item in found],
+    }
+    if not found:
+        return f"По запросу {query!r} (проекты: {scope}) задач не найдено. {_EMPTY_HINT}", trace
+    return f"Проекты поиска: {scope}.\n" + jira_api.format_results(found), trace
 
 
-@tool
-def confluence_search(query: str) -> str:
-    """Найти страницы Confluence по тексту запроса: идентификатор, заголовок и ссылку."""
+@tool(response_format="content_and_artifact")
+def confluence_search(query: str) -> tuple[str, dict]:
+    """
+    Найти страницы Confluence по 1–3 словам: имя системы, утилиты, файла, термин из задачи.
+
+    Возвращает идентификатор, заголовок, ссылку и фрагмент совпадения каждой
+    страницы. Текст страницы — через confluence_page.
+    """
+    trace = {"kind": "search", "system": "confluence", "query": query, "scope": ""}
     absent = confluence.missing_vars()
     if absent:
-        return _not_configured("Confluence", absent)
+        return _not_configured("Confluence", absent), {**trace, "error": "не настроена"}
     try:
-        found = confluence.search(query)
+        found = confluence.search(query, broad=True)
     except confluence.ConfluenceError as exc:
-        return f"поиск в Confluence не выполнен: {exc}"
-    return confluence.format_results(found) or f"по запросу {query!r} страниц не найдено"
+        return f"поиск в Confluence не выполнен: {exc}", {**trace, "error": str(exc)}
+    try:
+        scope = confluence.scope_label()
+    except confluence.ConfluenceError:
+        scope = ""  # поиск прошёл, а подпись области — не повод его потерять
+    trace = {
+        **trace,
+        "scope": scope,
+        "found": [{"id": str(item.get("id", "")), "title": item.get("title", ""),
+                   "url": item.get("url", "")} for item in found],
+    }
+    where = f" ({scope})" if scope else ""
+    if not found:
+        return f"По запросу {query!r}{where} страниц не найдено. {_EMPTY_HINT}", trace
+    head = f"Область поиска: {scope}.\n" if scope else ""
+    return head + confluence.format_results(found), trace
 
 
-@tool
-def confluence_page(page_id: str) -> str:
+@tool(response_format="content_and_artifact")
+def confluence_page(page_id: str) -> tuple[str, dict]:
     """Прочитать страницу Confluence по её числовому идентификатору из результатов поиска."""
+    trace = {"kind": "read", "system": "confluence", "id": str(page_id or "").strip()}
     absent = confluence.missing_vars()
     if absent:
-        return _not_configured("Confluence", absent)
+        return _not_configured("Confluence", absent), {**trace, "error": "не настроена"}
     try:
-        return confluence.format_page(confluence.fetch_page(page_id))
+        page = confluence.fetch_page(page_id)
     except confluence.ConfluenceError as exc:
-        return f"страница {page_id!r} не прочитана: {exc}"
+        return f"страница {page_id!r} не прочитана: {exc}", {**trace, "error": str(exc)}
+    return confluence.format_page(page), {
+        **trace,
+        "id": str(page.get("id") or trace["id"]),
+        "title": page.get("title") or "",
+        "url": page.get("url") or "",
+        "truncated": bool(page.get("truncated")),
+    }
 
 
 # --------------------------------------------------------------------------

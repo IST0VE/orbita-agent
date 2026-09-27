@@ -148,6 +148,20 @@ def test_mentions_survive_the_conversion():
     assert "@Мария И." in jira.field_text(document)
 
 
+@pytest.mark.parametrize("label", ["Спецификация", "https://wiki.example.com/pages/12345"])
+def test_adf_links_keep_the_address_once(label):
+    url = "https://wiki.example.com/pages/12345"
+    document = adf(label)
+    document["content"][0]["content"][0]["marks"] = [
+        {"type": "strong"}, {"type": "link", "attrs": {"href": url}},
+    ]
+
+    text = jira.field_text(document)
+
+    assert label in text
+    assert text.count(url) == 1
+
+
 def test_data_center_returns_a_plain_string():
     assert jira.field_text("  Обычная строка из v2  ") == "Обычная строка из v2"
 
@@ -438,3 +452,58 @@ def test_missing_variables_are_listed_by_name(monkeypatch: pytest.MonkeyPatch):
 
     assert jira.missing_vars() == ["JIRA_TOKEN"]
     assert not jira.is_configured()
+
+
+# --------------------------------------------------------------------------
+# Поиск роли конвейера подготовки: проекты и формы слов
+# --------------------------------------------------------------------------
+@responses.activate
+def test_the_search_role_can_keep_to_its_projects():
+    """
+    Без проекта запрос «смена пароля» 27 сентября 2026 вернул задачи десятка
+    чужих команд, а нужная лежала в соседнем проекте той же системы.
+    """
+    responses.add(responses.GET, f"{BASE}{API}/search/jql", json={"issues": []}, status=200)
+
+    jira.search("смена пароля", CLOUD, broad=True, projects="orb, pay")
+
+    assert responses.calls[0].request.params["jql"] == (
+        'project in ("ORB", "PAY") AND '
+        '(text ~ "смена пароля" OR (text ~ "смен*" AND text ~ "парол*")) ORDER BY updated DESC'
+    )
+
+
+def test_a_wrong_project_key_is_refused_before_the_request():
+    """Ни одного зарегистрированного ответа: запрос в сеть уронил бы тест."""
+    with pytest.raises(jira.JiraError, match="ключ проекта"):
+        jira.search("пароль", CLOUD, projects='ORB") OR project = "SECRET')
+
+
+@responses.activate
+def test_attachments_are_named_but_not_read():
+    """
+    Содержимое вложений не читается, но знать о них роли обязаны: иначе разбор
+    пишет «вложения не просматривались» и спрашивает о них автора задачи.
+    """
+    register_issue(
+        issue_payload(
+            attachment=[
+                {"filename": "макет вкладки.png", "size": 20480},
+                {"filename": "требования.docx"},
+            ]
+        )
+    )
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "attachment" in responses.calls[0].request.params["fields"]
+    assert "- макет вкладки.png (20480 байт)" in text
+    assert "- требования.docx" in text
+    assert "содержимое не читается" in text
+
+
+@responses.activate
+def test_no_attachments_is_said_aloud():
+    register_issue(issue_payload())
+
+    assert "Вложений нет." in jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))

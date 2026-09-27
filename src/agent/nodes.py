@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -37,6 +38,7 @@ from agent import (
     providers,
     roles,
     sources,
+    tidy,
     tool_compat,
 )
 from agent.cost import charge, cost_summary, extract_usage
@@ -51,6 +53,8 @@ from agent.routes import budget_gate
 from agent.runtime import options
 from agent.state import State, _merge_spend, _merge_usage
 from agent.tools import FILE_TOOLS as TOOLS
+
+logger = logging.getLogger(__name__)
 
 # Провайдер, модель, ключ (LLM_API_KEY), адрес API (LLM_API_BASE — прокси,
 # self-hosted шлюз, совместимый эндпоинт), temperature, число ретраев, лимит
@@ -188,6 +192,43 @@ NO_TOOLS_NOW = (
     "Инструменты на этом этапе недоступны: вызов не будет выполнен. Напиши документ "
     "этапа по материалам выше; чего в них не хватает — отметь открытым вопросом."
 )
+
+
+def turns_left(left: int, limit: int) -> str:
+    """
+    Остаток потолка ходов в инструменты — словами для самой роли.
+
+    О потолке роль узнавала, только упёршись в него. 27 сентября 2026 роль
+    поиска конвейера подготовки потратила ходы на страницы, которые не закрыли
+    ни одного пробела, и не успела открыть самую подходящую из найденных задач.
+    """
+    if left <= 1:
+        return (
+            "Это последний ход с инструментами: после него они отключатся, и документ "
+            "пишется по прочитанному. Потрать его на самое важное из найденного."
+        )
+    return (
+        f"Ходов с инструментами осталось: {left} из {limit}. В одном ходе можно сделать "
+        "несколько вызовов сразу; открывай сначала самое близкое к задаче."
+    )
+
+
+def repair_lines(lines: list[str], llm: Any, config: RunnableConfig) -> tuple[list[str] | None, dict]:
+    """
+    Строки документа, переписанные без чужого алфавита, и расход на это.
+
+    Починка косметическая, поэтому её сбой не роняет этап: остаётся исходный
+    документ, а оборванный ответ всё равно учитывается — он оплачен.
+    """
+    messages = tidy.repair_request(lines)
+    try:
+        answer = llm_retry.invoke(llm if llm is not None else model_for(config, ()), messages)
+    except llm_retry.ResponseTruncated as error:
+        return None, extract_usage(error.response) if error.response is not None else {}
+    except Exception as error:  # noqa: BLE001 — сеть, шлюз, квота: документ важнее починки
+        logger.warning("Строки с чужим алфавитом не переписаны: %s", type(error).__name__)
+        return None, {}
+    return tidy.parse_repair(text_of(answer), len(lines)), extract_usage(answer)
 
 
 def without_tool_calls(message: Any) -> Any:
@@ -400,6 +441,9 @@ def make_role_node(
             ((state.get("artifacts") or {}).get(role.key) or "").strip() if revisions else ""
         )
 
+        # Собственная переписка роли с инструментами на этом ходе. Нужна дважды:
+        # как история роли с брифом и как материал реестра прочитанного.
+        own: list = []
         if role.reads_files:
             # Роль с инструментами ведёт переписку: её вопрос к файлам и ответы
             # файлов обязаны остаться в истории, иначе следующий заход в ноду
@@ -408,18 +452,28 @@ def make_role_node(
             # бы платить за них на каждом вызове.
             turns = split_turns(state.get("messages") or [])
             turn = turns[-1] if turns else []
-            history = trim_history(turn, keep=role_input(turn))
-            # Ход, начатый указанием к уже выпущенным документам, начинается
-            # не задачей: первым сообщением в нём стоит «поправь раздел …».
-            # Задача треда встаёт перед ним, иначе роль видела бы правку без
-            # предмета правки.
-            task = task_of(state)
-            opening = next(
-                (operator_question(text_of(m)) for m in turn if getattr(m, "type", "") == "human"),
-                "",
-            )
-            if revisions and task and opening and opening != task:
-                history = [HumanMessage(content=f"# Задача треда\n\n{task}"), *history]
+            own = turn[role_input(turn):]
+            if role.briefed:
+                # Вход — бриф, как у ролей без инструментов, а за ним только её
+                # собственные вызовы и ответы. Бриф на всех вызовах роли один и
+                # тот же, поэтому префикс переписки от вызова к вызову растёт,
+                # но не меняется, и кеш его засчитывает.
+                brief = pipeline.brief(role, task_of(state), state.get("artifacts"))
+                history = trim_history([HumanMessage(content=brief), *own], keep=1)
+            else:
+                history = trim_history(turn, keep=role_input(turn))
+                # Ход, начатый указанием к уже выпущенным документам, начинается
+                # не задачей: первым сообщением в нём стоит «поправь раздел …».
+                # Задача треда встаёт перед ним, иначе роль видела бы правку без
+                # предмета правки.
+                task = task_of(state)
+                opening = next(
+                    (operator_question(text_of(m)) for m in turn
+                     if getattr(m, "type", "") == "human"),
+                    "",
+                )
+                if revisions and task and opening and opening != task:
+                    history = [HumanMessage(content=f"# Задача треда\n\n{task}"), *history]
             if not asking:
                 # Предупреждение уезжает в КОНЕЦ переписки, а не в префикс:
                 # префикс обязан остаться побайтово тем же, иначе последний
@@ -441,6 +495,11 @@ def make_role_node(
             for block in (revision_block(previous), pause.notes_block(notes)):
                 if block:
                     history = [*history, HumanMessage(content=block.strip())]
+            if asking and role.briefed and limit > 0:
+                # Остаток потолка — последней репликой и только в этом запросе:
+                # в состояние она не пишется, и следующий вызов видит прежний
+                # префикс плюс новые ответы инструментов.
+                history = [*history, HumanMessage(content=turns_left(limit - used, limit))]
         else:
             # Остальным сообщение собирается заново из задачи и документов
             # предыдущих этапов. Переписка аналитика с файлами им не нужна:
@@ -557,6 +616,36 @@ def make_role_node(
         announced = not asking and announces_tools(response)
         if not asking:
             response = without_tool_calls(response)
+
+        # Документ этапа — это финальный текст роли. Пока она зовёт инструменты,
+        # документа ещё нет: она не ответила, а спросила. Анонс рядом со снятым
+        # вызовом — тоже не ответ.
+        text = text_of(response)
+        document = bool(text) and not announced and not getattr(response, "tool_calls", None)
+        if document and pipeline.tidy:
+            # Форма документа: таблицы выравнивает код, строки на чужом
+            # алфавите — отдельный короткий запрос (`tidy.py`). Он платный,
+            # поэтому за воротами бюджета и с тем же учётом расхода, что у
+            # переспроса выше.
+            clean = tidy.fix_tags(tidy.normalize_tables(text))
+            broken = tidy.foreign_lines(clean)
+            now = {
+                **state,
+                "usage": _merge_usage(state.get("usage"), turn),
+                "spend": _merge_spend(state.get("spend"), money),
+            }
+            if broken and budget_gate(now) != "over_budget":
+                lines = clean.split("\n")
+                fixed, extra = repair_lines([lines[i] for i in broken], llm, config)
+                if extra:
+                    turn = _merge_usage(turn, extra)
+                    money = _merge_spend(money, charge(extra, state=now))
+                if fixed:
+                    clean = tidy.apply_repair(clean, broken, fixed)
+            if clean != text:
+                response = response.model_copy(update={"content": clean})
+                text = clean
+
         update = {
             # Приписка с паузы уезжает в состояние тем же обновлением, что и
             # ответ роли: до него она жила только в локальной переменной, и
@@ -571,14 +660,15 @@ def make_role_node(
             "stage": role.key,
         }
 
-        # Документ этапа — это финальный текст роли. Пока она зовёт инструменты,
-        # документа ещё нет: она не ответила, а спросила. Анонс рядом со снятым
-        # вызовом — тоже не ответ.
-        text = text_of(response)
         if getattr(response, "tool_calls", None):
             update["tool_turns"] = used + 1
-        elif text and not announced:
+        elif document:
             update["artifacts"] = {role.key: text}
+            if role.reads_files and pipeline.ledger:
+                # Реестр прочитанного — рядом с документом и тем же обновлением:
+                # следующая роль получает оба, а собрать его позже было бы не
+                # из чего — переписка следующего хода уже другая.
+                update["artifacts"].update(pipeline.ledger(state, own))
         return update
 
     return role_node
@@ -815,9 +905,11 @@ __all__ = [
     "publish_node",
     "publish_plan",
     "remember_node",
+    "repair_lines",
     "role_input",
     "text_of",
     "trim_history",
     "truncation_charge",
+    "turns_left",
     "without_tool_calls",
 ]

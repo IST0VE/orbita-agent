@@ -51,18 +51,23 @@ Jira он замечает отдельно: с ключом из чужого �
 Что делает каждая нода:
 
   ticket     читает задачу в Jira по ссылке или ключу из запроса, а без них —
-             поиском по тексту. Без модели и без денег: адрес разбирается
-             кодом. Повторный ход треда в трекер не ходит — задача у треда одна
-             и уже прочитана;
+             поиском по тексту; её связанные задачи (PREP_LINKED_ISSUES),
+             страницы Confluence по ссылкам из запроса и задач
+             (PREP_LINKED_PAGES) и файлы, выбранные оператором. Без модели и
+             без денег: адрес
+             разбирается кодом. Повторный ход треда в трекер не ходит — задача
+             у треда одна и уже прочитана. Прочитанное получает каждая роль;
   intake     разбор прочитанного: что записано, что следует, чего не хватает.
              Инструментов у него нет — читать уже нечего;
   gaps       превращает разбор в список пробелов и в запросы, по которым их
              искать. Стоит между чтением задачи и поиском намеренно: слитые в
              одну роль, они выродились бы в поиск по заголовку тикета;
-  research   отрабатывает эти запросы по Confluence, читает найденные страницы
+  research   отрабатывает эти запросы по Confluence и Jira, читает найденное
              и отделяет закрытые пробелы от оставшихся открытыми. Единственная
              роль с инструментами: что искать и сколько на это уйдёт запросов,
-             заранее не знает никто, и вот здесь модель решает по-настоящему;
+             заранее не знает никто, и вот здесь модель решает по-настоящему.
+             Выпустив документ, оставляет реестр источников, собранный кодом
+             по следам инструментов (`ledger.py`);
   plan       план работ и черновик Jira-задач с критериями приёмки;
   draft      первичная документация: решение в первом приближении;
   gate_*     ворота перед этапом: бюджет и, если включено
@@ -72,8 +77,10 @@ Jira он замечает отдельно: с ключом из чужого �
   approve    необязательная остановка перед публикацией;
   publish    ОДНА страница со всеми пятью этапами разделами уезжает в цель
              из `publishers.py`. Остальные конвейеры публикуются постранично,
-             этот — нет: его пять документов читают подряд, как один разговор
-             от тикета до черновика документации (`Pipeline.one_page`).
+             этот — нет: его пять документов — один разговор от тикета до
+             черновика документации (`Pipeline.one_page`). Первой на ней идёт
+             первичная документация, за ней план; рабочие этапы и реестр
+             источников — ниже, свёрнутыми.
 
 Проверка входа тут строже, чем у остальных: Jira — обязательное условие, а не
 украшение. Без неё пять ролей честно отработают по одной строке оператора и
@@ -86,13 +93,16 @@ Jira он замечает отдельно: с ключом из чужого �
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
-from agent import credentials, inputs, jira, metrics, prep_roles, sources
+from agent import config as cfg
+from agent import confluence, credentials, inputs, jira, metrics, prep_roles, sources
 from agent import graph as common_graph
 
 
@@ -187,15 +197,131 @@ def _fetch(question: str) -> dict:
     return {"key": found[0]["key"], "chosen": "search", "matched": found[0]["summary"]}
 
 
+def _materials(question: str, config: RunnableConfig) -> dict:
+    """
+    Файлы, которые оператор дал к задаче: выбранные в интерфейсе или названные
+    в запросе. Возвращает имена прочитанных и готовый блок для ролей.
+
+    Файлы читает код, а не роль поиска, по тому же доводу, что и тикет: какие
+    это файлы, оператор уже сказал, и модели здесь выбирать нечего. Выбирать
+    ЗА оператора код тоже не должен: невыбранные файлы только перечисляются.
+    """
+    task = sources.task_dir(config)
+    names = inputs.readable_files(task) if task else []
+    wanted = sources.picked_files(config)
+    if not wanted:
+        lowered = question.lower()
+        wanted = [name for name in names if name.lower() in lowered]
+    found = sources.from_files(question, task, wanted) if task and wanted else None
+    read = list((found or {}).get("names") or [])
+    others = [name for name in names if name not in read]
+    return {"names": read, "block": prep_roles.files_block(found, others)}
+
+
+def _linked(issue: dict) -> list[dict]:
+    """
+    Связанные задачи — прочитанные кодом, с потолком PREP_LINKED_ISSUES.
+
+    Порядок — от ближайшего: родитель, связи, подзадачи. Задачи сверх потолка
+    остаются в списке с пометкой: их назовёт блок, а открыть их сможет роль
+    поиска, если понадобятся.
+    """
+    limit = cfg.prep_linked_issues()
+    if limit <= 0:
+        return []
+    wanted = [(issue.get("parent") or "", "родитель")]
+    wanted += [(link["key"], link["relation"]) for link in issue.get("links") or []]
+    wanted += [(item["key"], "подзадача") for item in issue.get("subtasks") or []]
+
+    seen = {issue["key"]}
+    linked: list[dict] = []
+    for key, relation in wanted:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if sum(not item.get("skipped") for item in linked) >= limit:
+            linked.append({"key": key, "relation": relation, "skipped": True})
+            continue
+        try:
+            other = jira.fetch_issue(key)
+        except jira.JiraError as exc:
+            linked.append({"key": key, "relation": relation, "error": str(exc)})
+            continue
+        linked.append(
+            {
+                "key": other["key"],
+                "relation": relation,
+                "summary": other["summary"],
+                "url": other["url"],
+                "text": jira.format_issue(other),
+            }
+        )
+    return linked
+
+
+_URL = re.compile(r"https?://[^\s<>\"'`)\]]+")
+
+
+def _pages(texts: list[str]) -> list[dict]:
+    """
+    Страницы Confluence по ссылкам из этих текстов — с потолком PREP_LINKED_PAGES.
+
+    Ссылка на чужой хост не читается: идентификатор 12345 есть в любой вики, и
+    по ссылке на чужую конвейер прочитал бы из своей совсем другую страницу.
+    """
+    limit = cfg.prep_linked_pages()
+    if limit <= 0 or confluence.missing_vars():
+        return []
+    ours = urlsplit(cfg.confluence_base_url()).hostname
+    wanted: list[str] = []
+    for text in texts:
+        for url in _URL.findall(text or ""):
+            if urlsplit(url).hostname == ours:
+                wanted += [page for page in confluence.find_page_ids(url) if page not in wanted]
+
+    pages: list[dict] = []
+    for page_id in wanted:
+        if sum(not item.get("skipped") for item in pages) >= limit:
+            pages.append({"id": page_id, "skipped": True})
+            continue
+        try:
+            page = confluence.fetch_page(page_id)
+        except confluence.ConfluenceError as exc:
+            pages.append({"id": page_id, "error": str(exc)})
+            continue
+        pages.append(
+            {
+                "id": str(page.get("id") or page_id),
+                "title": page.get("title") or "",
+                "url": page.get("url") or "",
+                "truncated": bool(page.get("truncated")),
+                "text": confluence.format_page(page),
+            }
+        )
+    return pages
+
+
+def _texts(issue: dict) -> list[str]:
+    """Где в задаче бывают ссылки: описание и комментарии."""
+    comments = [item.get("text") or "" for item in issue.get("comments") or []]
+    return [issue.get("description") or "", *comments]
+
+
+def _summary(items: list[dict]) -> list[dict]:
+    """Сводка прочитанного без текста: для страницы и реестра, не для модели."""
+    return [{key: value for key, value in item.items() if key != "text"} for item in items]
+
+
 def ticket_node(state: State, config: RunnableConfig) -> dict:
     """
-    Прочитать задачу и положить её текст в `artifacts` — без вызова модели.
+    Прочитать задачу, её связанные задачи и материалы оператора — без вызова модели.
 
     Повторный ход треда в трекер не ходит: задача у треда одна, она уже
     прочитана, и переспрашивать её на каждое «перепиши план» значит платить
     задержкой за данные, которые не менялись. Кеш тут ровно такой — ключ и
     текст в состоянии треда; за свежестью тикета следит оператор, начиная
-    новый тред.
+    новый тред. Локальные файлы читаются заново на каждом ходе: содержимое
+    и папка могут измениться при прежнем имени файла.
 
     Отказ не останавливает конвейер: с непрочитанной задачей остаётся запрос
     оператора и приложенные файлы, а разбор обязан начать с того, что задача
@@ -203,55 +329,94 @@ def ticket_node(state: State, config: RunnableConfig) -> dict:
     """
     question = sources.question_of(state)
     known = state.get("ticket") or {}
+    materials = _materials(question, config)
+    files = {prep_roles.FILES: materials["block"]}
     if known.get("key") and known["key"] in (jira.find_keys(question) or [known["key"]]):
-        return {}
+        previous = (state.get("artifacts") or {}).get(prep_roles.FILES) or ""
+        if materials["names"] == (known.get("files") or []) and materials["block"] == previous:
+            return {}
+        return {"ticket": {**known, "files": materials["names"]}, "artifacts": files}
 
     picked = _fetch(question)
+    if picked.get("error") is None:
+        try:
+            issue = jira.fetch_issue(picked["key"])
+        except jira.JiraError as exc:
+            picked = {**picked, "error": str(exc), "reason": f"{picked['key']} не прочитана: {exc}"}
     if picked.get("error"):
+        # Без задачи остаются запрос оператора, его файлы и страницы по ссылкам
+        # из запроса: разбор начнёт с того, что задача не прочитана.
+        pages = _pages([question])
+        reason = picked.pop("reason", picked["error"])
         return {
-            "ticket": picked,
-            "artifacts": {prep_roles.TICKET: f"Задача не прочитана: {picked['error']}."},
-            "messages": [AIMessage(content=f"Задача не прочитана: {picked['error']}.")],
-            "stage": "ticket",
-        }
-
-    try:
-        issue = jira.fetch_issue(picked["key"])
-    except jira.JiraError as exc:
-        reason = f"{picked['key']} не прочитана: {exc}"
-        return {
-            "ticket": {**picked, "error": str(exc)},
-            "artifacts": {prep_roles.TICKET: f"Задача не прочитана: {reason}."},
+            "ticket": {**picked, "files": materials["names"], "pages": _summary(pages)},
+            "artifacts": {
+                prep_roles.TICKET: f"Задача не прочитана: {reason}.",
+                prep_roles.PAGES: prep_roles.pages_block(pages),
+                **files,
+            },
             "messages": [AIMessage(content=f"Задача не прочитана: {reason}.")],
             "stage": "ticket",
         }
 
+    linked = _linked(issue)
+    pages = _pages([question, *_texts(issue), *(item.get("text") or "" for item in linked)])
     return {
         "ticket": {
             "key": issue["key"],
             "url": issue["url"],
             "summary": issue["summary"],
             "chosen": picked["chosen"],
+            # Сводка без текста: по ней страница называет прочитанное, а реестр
+            # источников считает его (`prep_roles.subject`, `prep_roles.ledger`).
+            "linked": _summary(linked),
+            "pages": _summary(pages),
+            "files": materials["names"],
         },
-        "artifacts": {prep_roles.TICKET: prep_roles.ticket_block(issue, picked, question)},
-        "messages": [AIMessage(content=_note(issue, picked))],
+        "artifacts": {
+            prep_roles.TICKET: prep_roles.ticket_block(issue, picked, question),
+            prep_roles.LINKED: prep_roles.linked_block(issue["key"], linked),
+            prep_roles.PAGES: prep_roles.pages_block(pages),
+            **files,
+        },
+        "messages": [
+            AIMessage(content=_note(issue, picked, linked, materials["names"], pages))
+        ],
         "stage": "ticket",
     }
 
 
-def _note(issue: dict, picked: dict) -> str:
+def _note(
+    issue: dict,
+    picked: dict,
+    linked: list[dict] = (),
+    files: list[str] = (),
+    pages: list[dict] = (),
+) -> str:
     """Что прочитано — оператору в тред. Ход по графу должен быть виден."""
     how = (
         "ключ назван в запросе"
         if picked["chosen"] == "key"
         else f"ключ не назван, выбрана поиском по совпадению «{picked.get('matched', '')}»"
     )
-    return (
+    note = (
         f"Прочитана задача {issue['key']} «{issue['summary']}» "
         f"({issue.get('type') or 'без типа'}, {issue.get('status') or 'без статуса'}), "
         f"комментариев {len(issue.get('comments') or [])} — {how}. "
         f"{issue['url']}"
     )
+    read = [item["key"] for item in linked if not item.get("error") and not item.get("skipped")]
+    if read:
+        note += " Связанные задачи прочитаны: " + ", ".join(read) + "."
+    failed = [item["key"] for item in linked if item.get("error")]
+    if failed:
+        note += " Не открылись: " + ", ".join(failed) + "."
+    read = [item["id"] for item in pages if not item.get("error") and not item.get("skipped")]
+    if read:
+        note += " Страницы Confluence по ссылкам прочитаны: " + ", ".join(read) + "."
+    if files:
+        note += " Материалы оператора: " + ", ".join(files) + "."
+    return note
 
 
 def build_graph(llm: Any = None) -> StateGraph:
