@@ -45,6 +45,8 @@ def asks_for_tool(call_id="call-1", text=""):
     # `text` — то, что роль успела написать рядом с вопросом к инструменту.
     # На последнем ходе вызов снимается, и написанное становится документом
     # этапа: именно так конвейер выпускает бумаги по неполному материалу.
+    # Документом, а не анонсом, оно считается по заголовку (`DOCUMENT`,
+    # `nodes.announces_tools`); короткая строка без заголовка — это переспрос.
     return AIMessage(
         content=text,
         tool_calls=[{"name": "read_task_file", "args": {"name": "встреча.md"}, "id": call_id}],
@@ -56,6 +58,9 @@ def asks_for_tool(call_id="call-1", text=""):
             }
         },
     )
+
+
+DOCUMENT = "# Документ этапа\n\nНаписан по тому, что успели прочитать."
 
 
 @pytest.fixture(autouse=True)
@@ -211,7 +216,7 @@ def test_tool_loop_ends_on_its_own_without_any_budget(monkeypatch: pytest.Monkey
     monkeypatch.setenv("TOOL_TURNS_PER_RUN", "3")
     # Поддельная модель про отвязку схем не знает и просит инструмент всегда:
     # проверяется ограничитель, а не сговорчивость модели.
-    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(40)])
+    app = thread(*[asks_for_tool(f"call-{n}", DOCUMENT) for n in range(40)])
 
     result = app.invoke({"messages": [HumanMessage("вопрос")]}, config=CONFIG)
 
@@ -231,7 +236,7 @@ def test_the_tool_ceiling_is_per_run_not_per_thread(monkeypatch: pytest.MonkeyPa
     """
     monkeypatch.delenv("BUDGET_USD_PER_THREAD", raising=False)
     monkeypatch.setenv("TOOL_TURNS_PER_RUN", "2")
-    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(80)])
+    app = thread(*[asks_for_tool(f"call-{n}", DOCUMENT) for n in range(80)])
 
     first = app.invoke({"messages": [HumanMessage("первая задача")]}, config=CONFIG)
     assert first["tool_turns"] == 2

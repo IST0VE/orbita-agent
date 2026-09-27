@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -94,7 +95,7 @@ def model_for(config: RunnableConfig | None = None, tools: list | None = None) -
     return bound
 
 
-def trim_history(messages: list) -> list:
+def trim_history(messages: list, *, keep: int = 1) -> list:
     """
     Подрезать историю до LLM_MAX_HISTORY_TOKENS. 0 — не трогать (по умолчанию).
 
@@ -107,6 +108,12 @@ def trim_history(messages: list) -> list:
     и под лимит не попадает — он и должен оставаться нетронутым, иначе
     сломается ровно тот кеш, ради которого всё затевалось. `start_on="human"`
     не даёт срезать историю посреди пары «вызов инструмента — ответ».
+
+    keep — сколько сообщений в начале истории составляют вход роли: задачу и
+    документы предыдущих этапов (`role_input`). Они не режутся, как и последний
+    вызов инструмента с его ответами. Если только они и не влезают в лимит,
+    лимит превышается: вызов без задачи или без ответа, ради которого модель
+    позвали, оплачивается как обычный и ничего не даёт.
     """
     limit = cfg.max_history_tokens()
     if not limit:
@@ -127,16 +134,53 @@ def trim_history(messages: list) -> list:
     # только ходы модели и ответы инструментов. Пустая история здесь — это вызов
     # модели без задачи и без прочитанного: она отвечает наугад, а платит за это
     # оператор. Поэтому задача остаётся, а режется середина переписки.
-    head, rest = messages[:1], messages[1:]
-    return head + trim_messages(
-        rest,
-        max_tokens=max(limit - count_tokens_approximately(head), 0),
-        token_counter=count_tokens_approximately,
-        strategy="last",
-        start_on=("human", "ai"),
-        include_system=False,
-        allow_partial=False,
+    head, rest = messages[:keep], messages[keep:]
+    # Последний вызов и всё, что после него, тоже остаётся целиком. Окно,
+    # отсчитанное от конца, выбрасывало его, как только ответ инструмента
+    # оказывался больше остатка лимита: 27 сентября 2026 роль поиска конвейера
+    # подготовки читала страницу Confluence, не видела её на следующем вызове,
+    # читала снова и на последнем ходе написала, что ни одного обращения
+    # к инструментам не было — видела она только запрос оператора.
+    last = next(
+        (i for i in range(len(rest) - 1, -1, -1) if getattr(rest[i], "tool_calls", None)),
+        len(rest),
     )
+    middle, latest = rest[:last], rest[last:]
+    room = limit - count_tokens_approximately(head + latest)
+    if room <= 0:
+        return head + latest
+    return (
+        head
+        + trim_messages(
+            middle,
+            max_tokens=room,
+            token_counter=count_tokens_approximately,
+            strategy="last",
+            start_on=("human", "ai"),
+            include_system=False,
+            allow_partial=False,
+        )
+        + latest
+    )
+
+
+def role_input(turn: list) -> int:
+    """
+    Сколько сообщений хода — вход роли с инструментами, всё до её переписки.
+
+    Её собственные ходы — хвост из вызовов и ответов инструментов. Всё, что
+    перед ним, она получила готовым: запрос оператора, прочитанную кодом
+    задачу, документы предыдущих этапов. У роли поиска в конвейере подготовки
+    это разбор и список запросов к Confluence, то есть сама её работа, и
+    отрезать их под лимит истории значило оставить её без задания.
+    """
+    start = len(turn)
+    while start > 1 and (
+        getattr(turn[start - 1], "type", "") == "tool"
+        or getattr(turn[start - 1], "tool_calls", None)
+    ):
+        start -= 1
+    return max(start, 1)
 
 
 # Переспрос роли, ответившей одним вызовом инструмента (см. `make_role_node`).
@@ -166,6 +210,40 @@ def without_tool_calls(message: Any) -> Any:
     return message.model_copy(
         update={"tool_calls": [], "invalid_tool_calls": [], "additional_kwargs": extra}
     )
+
+
+# Заголовок Markdown в обеих формах: `# Раздел` и строка, подчёркнутая `===`
+# или `---`.
+_HEADING = re.compile(r"^ {0,3}#{1,6}\s|^ {0,3}\S.*\n {0,3}(?:=+|-+)[ \t]*$", re.MULTILINE)
+
+# Длиннее этого анонсы не бывают: это одна-три фразы о том, куда модель сейчас
+# пойдёт. Документ этапа без единого заголовка — нумерованные разделы по списку
+# из промпта, JSON — выходит длиннее.
+ANNOUNCEMENT_MAX_CHARS = 500
+
+
+def announces_tools(message: Any) -> bool:
+    """
+    Ответ с вызовом инструмента, в котором нет документа: пусто или анонс.
+
+    Анонс — это «I'll start by checking the attached files…»: модель пишет, что
+    сейчас пойдёт за данными, и зовёт инструмент. Для роли без права спрашивать
+    вызов снимается, и раньше анонс становился документом этапа. 27 сентября
+    2026 так вышел разбор задачи в конвейере подготовки — одна строка по-английски
+    вместо разбора прочитанного тикета, — и следующие четыре роли написали, что
+    содержание задачи не получено.
+
+    Документ со случайным вызовом рядом анонсом не считается: написанное
+    остаётся документом этапа, как и раньше. Узнаётся он по заголовку или по
+    длине, а не только по `#`: промпты требуют разделы, но не их разметку, и
+    раздел «1. Цель системы» — ровно то, что стоит в списке «Что ты должен
+    выпустить». Документ с такими разделами, принятый за анонс, стоил бы
+    лишнего переспроса, а при втором таком ответе пропадал бы совсем.
+    """
+    if not getattr(message, "tool_calls", None):
+        return False
+    text = text_of(message).strip()
+    return len(text) < ANNOUNCEMENT_MAX_CHARS and not _HEADING.search(text)
 
 
 def revision_block(previous: str) -> str:
@@ -330,7 +408,7 @@ def make_role_node(
             # бы платить за них на каждом вызове.
             turns = split_turns(state.get("messages") or [])
             turn = turns[-1] if turns else []
-            history = trim_history(turn)
+            history = trim_history(turn, keep=role_input(turn))
             # Ход, начатый указанием к уже выпущенным документам, начинается
             # не задачей: первым сообщением в нём стоит «поправь раздел …».
             # Задача треда встаёт перед ним, иначе роль видела бы правку без
@@ -446,25 +524,37 @@ def make_role_node(
         # вызовом без текста, оно не останавливает, а её документ — первый,
         # и на нём стоят остальные.
         #
+        # Пустоту оставляет и анонс — «сейчас посмотрю файлы» рядом с вызовом
+        # (`announces_tools`). Снятый вызов превращал его в документ этапа, и
+        # это хуже пустоты: следующая роль принимала строку за разбор. Поэтому
+        # анонс переспрашивается так же, а если и переспрос ответил анонсом,
+        # документом он не становится — этап остаётся невыполненным и
+        # называется таким в итоге прогона.
+        #
         # Переспрос — такой же платный вызов, и ворота бюджета перед ним те же,
         # что перед узлом: первый ответ мог исчерпать лимит. Смотрят они на
         # состояние, в которое первый вызов уже вписан. По нему же начисляется
         # второй: для старого checkpoint'а без денег `charge` переносит оценку
         # истории в первое начисление, и по исходному состоянию перенёс бы её
         # второй раз.
-        silent = getattr(response, "tool_calls", None) and not text_of(response).strip()
         charged = {
             **state,
             "usage": _merge_usage(state.get("usage"), turn),
             "spend": _merge_spend(state.get("spend"), money),
         }
-        if tools and not asking and silent and budget_gate(charged) != "over_budget":
+        if (
+            tools
+            and not asking
+            and announces_tools(response)
+            and budget_gate(charged) != "over_budget"
+        ):
             response = ask(
                 [*messages, HumanMessage(content=NO_TOOLS_NOW)], charged, turn, money
             )
             again = extract_usage(response)
             turn = _merge_usage(turn, again)
             money = _merge_spend(money, charge(again, state=charged))
+        announced = not asking and announces_tools(response)
         if not asking:
             response = without_tool_calls(response)
         update = {
@@ -482,11 +572,12 @@ def make_role_node(
         }
 
         # Документ этапа — это финальный текст роли. Пока она зовёт инструменты,
-        # документа ещё нет: она не ответила, а спросила.
+        # документа ещё нет: она не ответила, а спросила. Анонс рядом со снятым
+        # вызовом — тоже не ответ.
         text = text_of(response)
         if getattr(response, "tool_calls", None):
             update["tool_turns"] = used + 1
-        elif text:
+        elif text and not announced:
             update["artifacts"] = {role.key: text}
         return update
 
@@ -708,6 +799,7 @@ from agent.publish_nodes import (  # noqa: E402
 )
 
 __all__ = [
+    "announces_tools",
     "approval_of",
     "approve_node",
     "charged_stop",
@@ -723,6 +815,7 @@ __all__ = [
     "publish_node",
     "publish_plan",
     "remember_node",
+    "role_input",
     "text_of",
     "trim_history",
     "truncation_charge",

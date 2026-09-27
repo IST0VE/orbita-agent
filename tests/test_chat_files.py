@@ -96,6 +96,78 @@ def test_binary_content_and_oversized_files_are_refused(monkeypatch):
         chat_files.save(THREAD, "empty.md", b"  \n")
 
 
+TRANSCRIPT = (
+    '<!DOCTYPE html>\n<html><head><meta charset="UTF-8"><title>Стенограмма</title></head>\n'
+    '<body><pre style="font-size: 14px"><b style="color: #999">00:05</b>\n<b>Спикер 1:</b>\n'
+    "- Нужен экспорт в CSV?\n\n"
+    '<b style="color: #999">00:12</b>\n<b>Спикер 2:</b>\n- Да, с разделителем &laquo;;&raquo;.\n'
+    "</pre></body></html>"
+)
+
+
+def test_a_transcript_saved_as_doc_is_stored_as_its_text(chat_root):
+    """
+    Сервисы распознавания речи сохраняют стенограмму в `.doc`, а внутри HTML.
+    Хранится текст: разметка съедала до 42 % потолка чтения, а роли нужны сами
+    время, говорящий и реплика — каждое своей строкой, как в `<pre>`.
+    """
+    saved = chat_files.save(THREAD, "speech_to_text (9).doc", TRANSCRIPT.encode())
+
+    assert saved["name"] == "speech_to_text (9).doc.txt"
+    text = inputs.read(chat_files.task(THREAD), saved["name"])
+    assert "<" not in text and "Стенограмма" not in text
+    assert (
+        "00:05\nСпикер 1:\n- Нужен экспорт в CSV?\n\n00:12\nСпикер 2:\n- Да, с разделителем «;»."
+        in text
+    )
+    assert ".doc" in chat_files.listing(THREAD)["limits"]["suffixes"]
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        # Голову закрывает `<body>`.
+        '<html><head><meta charset="UTF-8"><title>Стенограмма</title>\n'
+        "<body><p>Нужен экспорт в CSV.</p></body></html>",
+        # Ни `</head>`, ни `<body>`: голову закрывает первый тег не из неё.
+        "<html><head><title>Стенограмма</title><p>Нужен экспорт в CSV.</p></html>",
+    ],
+    ids=["body-closes-head", "no-body-at-all"],
+)
+def test_a_document_without_the_closing_head_tag_keeps_its_text(chat_root, html):
+    """
+    `</head>` в HTML необязателен. Без него разбор так и считал, что читает
+    голову, и документ с текстом отклонялся: «в документе нет текста».
+    """
+    saved = chat_files.save(THREAD, "встреча.doc", html.encode())
+
+    text = inputs.read(chat_files.task(THREAD), saved["name"])
+    assert "Нужен экспорт в CSV." in text
+    assert "Стенограмма" not in text
+
+
+def test_a_windows_1251_transcript_is_converted_too(chat_root):
+    saved = chat_files.save(THREAD, "встреча.doc", TRANSCRIPT.encode("cp1251"))
+
+    assert "Нужен экспорт" in (chat_root / THREAD / saved["name"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("data", "said"),
+    [
+        (bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 64, "Word 97–2003"),
+        (b"PK\x03\x04" + b"\x00" * 64, r"\.docx"),
+        (b"{\\rtf1\\ansi Hello}", "RTF"),
+    ],
+)
+def test_a_real_word_document_is_refused_with_what_to_do(data, said):
+    """«Такие файлы не читаются» про разрешённое расширение ничего не объясняет."""
+    with pytest.raises(chat_files.ChatFileError, match=said) as refused:
+        chat_files.save(THREAD, "протокол.doc", data)
+
+    assert ".txt" in str(refused.value)
+
+
 def test_a_chat_holds_a_bounded_number_of_files(monkeypatch):
     monkeypatch.setattr(chat_files, "MAX_FILES", 2)
     chat_files.save(THREAD, "a.md", b"a")

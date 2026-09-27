@@ -9,12 +9,15 @@
  *
  * Файлы чата показывает правая колонка: они относятся к открытому чату, а не
  * к списку.
+ *
+ * Своих кнопок «Скрыть» и «Новый чат» у колонки нет: обе стоят в строке
+ * контекста, и копии здесь только дублировали их.
  */
 
 import { useEffect, useMemo, useState, type PointerEvent } from "react";
 
 import type { Chat } from "../api";
-import { MessageSquare, MessageSquarePlus, PanelLeftClose, Search, Trash2 } from "../ui/icons";
+import { MessageSquare, Search, Trash2 } from "../ui/icons";
 import { StatusDot } from "../ui";
 
 /** С какого числа чатов нужен поиск: короткий список читается глазами. */
@@ -48,13 +51,11 @@ export function ChatSidebar({
   scenario,
   locked,
   onOpen,
-  onNew,
   onDelete,
   onRetry,
   startResize,
   resetWidth,
   drawer,
-  onClose,
 }: {
   chats: Chat[];
   loading: boolean;
@@ -64,13 +65,11 @@ export function ChatSidebar({
   /** Идёт прогон: переключать чат под ним нельзя. */
   locked: boolean;
   onOpen: (threadId: string) => void;
-  onNew: () => void;
   onDelete: (threadId: string) => Promise<void>;
   onRetry: () => void;
   startResize: (event: PointerEvent<HTMLDivElement>) => void;
   resetWidth: () => void;
   drawer: boolean;
-  onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
   /** Чат, у которого уже нажали корзину: второе нажатие удаляет. */
@@ -110,14 +109,6 @@ export function ChatSidebar({
     <aside className="sidebar chat-sidebar" aria-label="Чаты">
       <div className="sidebar-head">
         <span className="sidebar-title">Чаты</span>
-        <button
-          className="btn-ghost btn-icon btn-sm"
-          aria-label="Скрыть левую колонку"
-          title="Скрыть левую колонку"
-          onClick={onClose}
-        >
-          <PanelLeftClose size={16} aria-hidden="true" />
-        </button>
       </div>
 
       {drawer ? null : (
@@ -133,11 +124,6 @@ export function ChatSidebar({
       )}
 
       <div className="sidebar-scroll chat-sidebar-scroll">
-        <button className="btn-primary chat-new" disabled={locked} onClick={onNew}>
-          <MessageSquarePlus size={16} aria-hidden="true" />
-          Новый чат
-        </button>
-
         {chats.length >= FILTER_FROM ? (
           <label className="canvas-search">
             <Search size={15} aria-hidden="true" />

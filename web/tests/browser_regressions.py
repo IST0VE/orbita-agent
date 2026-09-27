@@ -679,7 +679,7 @@ def regressions(call, js, until, click, shell):
     # Файл брошен в черновик, и пока сервер заводит под него чат, оператор
     # уходит в другой. Поздний ответ не должен переключать его обратно.
     CREATE_DELAY = 1.5
-    js("document.querySelector('.chat-new').click()")
+    js("document.querySelector('.new-chat').click()")
     until("!!document.querySelector('.chat-item.active.draft')")
     js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
         const data=new DataTransfer();
@@ -706,7 +706,7 @@ def regressions(call, js, until, click, shell):
     # Только сохранённые чаты: у черновика тот же класс, но не кнопка.
     titles = "[...document.querySelectorAll('button.chat-item-open .chat-item-title')].map(t=>t.textContent)"
     created = smoke.REQUESTS.count("/threads")
-    js("document.querySelector('.chat-new').click()")
+    js("document.querySelector('.new-chat').click()")
     until("!!document.querySelector('.chat-item.active.draft')")
     js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
         const data=new DataTransfer();
@@ -732,6 +732,58 @@ def regressions(call, js, until, click, shell):
     assert "agent" not in SEARCHES[switched:], SEARCHES[switched:]
     CREATE_DELAY = 0.0
 
+    # Сохранённые размеры — пожелание, а не приказ. Две колонки по 640,
+    # растянутые при ширине 1920, после уменьшения окна до 1440 оставляли
+    # схеме 112 пикселей. Поле задачи, растянутое вверх, после открытия
+    # консоли сжимало схему до 2 пикселей и уводило кнопку отправки за край,
+    # и перезагрузка возвращала то же самое: предел считался только ручкой.
+    def viewport(width, height):
+        call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
+        )
+
+    viewport(1920, 900)
+    js(
+        "localStorage.setItem('orbita.leftWidth','640');"
+        "localStorage.setItem('orbita.rightWidth','640');"
+        "localStorage.setItem('orbita.composer.height','700')"
+    )
+    call("Page.reload")
+    until("!!document.querySelector('.task-composer textarea')", seconds=30)
+    if not js("!!document.querySelector('.inspector')"):
+        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+    until("!!document.querySelector('.inspector')")
+    viewport(1440, 900)
+    until("document.querySelector('.app-main').getBoundingClientRect().width >= 379")
+    if not js("!!document.querySelector('.console')"):
+        js("document.querySelector('.console-toggle').click()")
+    until("!!document.querySelector('.console')")
+    fits = (
+        "document.querySelector('.workspace').getBoundingClientRect().height >= 219"
+        " && document.querySelector('.composer-submit').getBoundingClientRect().bottom"
+        " <= document.querySelector('.app-body').getBoundingClientRect().bottom"
+    )
+    until(fits)
+    # Выбранная высота не забыта: консоль закрыли — поле снова выше.
+    squeezed = js("document.querySelector('.task-composer textarea').getBoundingClientRect().height")
+    js("document.querySelector('.console-toggle').click()")
+    until(
+        "document.querySelector('.task-composer textarea').getBoundingClientRect().height"
+        f" > {squeezed}"
+    )
+    js("document.querySelector('.console-toggle').click()")
+    call("Page.reload")
+    until("!!document.querySelector('.task-composer textarea')", seconds=30)
+    if not js("!!document.querySelector('.console')"):
+        js("document.querySelector('.console-toggle').click()")
+    until(fits)
+    js(
+        "['orbita.leftWidth','orbita.rightWidth','orbita.composer.height']"
+        ".forEach((key) => localStorage.removeItem(key))"
+    )
+    viewport(1366, 768)
+
     (smoke.ARTIFACTS / "regressions.png").write_bytes(
         base64.b64decode(call("Page.captureScreenshot")["data"])
     )
@@ -754,6 +806,7 @@ def regressions(call, js, until, click, shell):
         "active chat click keeps its files",
         "late chat creation does not switch the chat",
         "late chat creation keeps the other scenario's chat list",
+        "saved column and task field sizes yield to a smaller window",
     ]
 
 

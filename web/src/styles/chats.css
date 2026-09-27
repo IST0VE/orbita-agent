@@ -13,11 +13,6 @@
   gap: var(--space-4);
 }
 
-.chat-new {
-  justify-content: center;
-  width: 100%;
-}
-
 .chat-list {
   display: flex;
   flex-direction: column;

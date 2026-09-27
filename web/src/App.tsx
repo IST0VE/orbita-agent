@@ -143,7 +143,9 @@ export function App() {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   /** Открытый документ занимает главную область вместо схемы. */
   const [openDoc, setOpenDoc] = useState<OpenDocument | null>(null);
-  const { width: leftWidth, startResize, reset: resetLeftWidth } = useColumnWidth();
+  const left = useColumnWidth("left");
+  const right = useColumnWidth("right");
+  const resetLayout = useCallback(() => { left.reset(); right.reset(); }, [left.reset, right.reset]);
   const columns = useColumns();
   const { openInspector, closeSidebar, closeInspector } = columns;
   const graph = useGraphView();
@@ -993,7 +995,8 @@ export function App() {
       inspectorOpen={columns.inspector}
       narrow={columns.narrow}
       animated={animated}
-      leftWidth={leftWidth}
+      leftWidth={left.width}
+      rightWidth={right.width}
       onDismissDrawer={() => { closeSidebar(); closeInspector(); }}
       header={
         <GlobalHeader
@@ -1068,13 +1071,11 @@ export function App() {
           scenario={label.label}
           locked={locked}
           onOpen={openThread}
-          onNew={newThread}
           onDelete={removeChat}
           onRetry={() => void refreshChats()}
-          startResize={startResize}
-          resetWidth={resetLeftWidth}
+          startResize={left.startResize}
+          resetWidth={left.reset}
           drawer={columns.narrow}
-          onClose={closeSidebar}
         />
       }
       main={
@@ -1137,7 +1138,9 @@ export function App() {
           onClearNode={() => setSelectedNode(null)}
           scenarioTitle={label.label}
           threadId={threadId}
-          onClose={closeInspector}
+          startResize={right.startResize}
+          resetWidth={right.reset}
+          drawer={columns.narrow}
         />
       }
       console={
@@ -1164,7 +1167,7 @@ export function App() {
         online={online}
         animated={animated}
         onToggleAnimation={toggleAnimation}
-        onResetLayout={resetLeftWidth}
+        onResetLayout={resetLayout}
         admin={me?.admin ?? false}
         service={me?.service ?? false}
       />

@@ -14,6 +14,8 @@ Data Center — строкой, и роль обязана получить те
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import responses
 
@@ -228,6 +230,65 @@ def test_comments_are_ordered_as_a_conversation():
     issue = jira.fetch_issue("ORB-123", CLOUD)
 
     assert [item["text"] for item in issue["comments"]] == ["первый", "второй"]
+
+
+@responses.activate
+def test_an_issue_without_comments_says_so():
+    """
+    Пропущенный раздел модель читает как «не загрузили». 27 сентября 2026
+    конвейер подготовки искал «непрочитанные комментарии» у задачи, где их
+    не было, и потратил на это ход роли поиска. Пустота называется словами.
+    """
+    register_issue(issue_payload())
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "Комментарии: нет" in text
+
+
+@responses.activate
+def test_a_comment_with_only_a_screenshot_is_not_called_absent():
+    """
+    У скриншота в ADF текста нет. Комментарий с одной картинкой отбрасывался
+    как пустой, и модель читала «у задачи ни одного комментария», хотя API его
+    вернул. Нет комментариев и нет текста в комментарии — разные факты.
+    """
+    screenshot = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "mediaSingle",
+                "content": [{"type": "media", "attrs": {"id": "a1", "type": "file"}}],
+            }
+        ],
+    }
+    register_issue(
+        issue_payload(),
+        comments=[
+            {
+                "author": {"displayName": "Мария И."},
+                "created": "2026-09-20T10:00:00.000+0300",
+                "body": screenshot,
+            }
+        ],
+    )
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "Комментарии: нет" not in text
+    assert "- 2026-09-20 Мария И.: (текста нет — вложение или изображение" in text
+
+
+@responses.activate
+def test_comments_that_were_not_requested_are_not_called_absent():
+    """При JIRA_COMMENTS_LIMIT=0 пустой список ничего не говорит о самой задаче."""
+    register_issue(issue_payload())
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", replace(CLOUD, comments_limit=0)))
+
+    assert "не запрашивались" in text
+    assert "Комментарии: нет" not in text
 
 
 @responses.activate

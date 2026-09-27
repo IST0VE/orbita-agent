@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import Field
 
 from agent import confluence, prep_graph, prep_prompts, prep_roles, tools
 from agent import graph as common_graph
@@ -562,6 +563,87 @@ def test_the_ticket_is_not_published_as_a_stage(configured):
     assert [role.key for role in prep_roles.PIPELINE.done(state["artifacts"])] == list(
         prep_roles.KEYS
     )
+
+
+class Recording(GenericFakeChatModel):
+    """Подделка, которая помнит, с чем её звали: что видела роль, проверяется по ней."""
+
+    calls: list = Field(default_factory=list)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+def test_the_run_of_27_september_would_not_go_blind(configured, monkeypatch: pytest.MonkeyPatch):
+    """
+    Прогон 27 сентября 2026 целиком. Разбор ответил анонсом «I'll start by
+    checking…» с вызовом инструмента — и эта строка стала документом этапа.
+    Поиск читал страницы Confluence по полторы тысячи токенов при
+    LLM_MAX_HISTORY_TOKENS=3000: обрезка выбрасывала сначала список запросов,
+    потом прочитанное, и на последнем ходе роль видела один запрос оператора.
+    Итог — пять документов о том, что задача не прочитана, при прочитанной
+    задаче и восьми успешных обращениях к инструментам.
+    """
+    monkeypatch.setenv("LLM_MAX_HISTORY_TOKENS", "3000")
+    # Вторая страница больше всего лимита: её ответ не влез бы ни в какое окно.
+    monkeypatch.setattr(
+        confluence,
+        "fetch_page",
+        lambda page_id, *a, **k: {
+            "title": f"Страница {page_id}",
+            "url": f"https://wiki.example.com/x/{page_id}",
+            "text": "абзац " * (1200 if page_id == "1" else 2600),
+            "truncated": False,
+        },
+    )
+    announcement = AIMessage(
+        content=(
+            "I'll start by checking the attached files and looking for existing "
+            "documentation and the linked task."
+        ),
+        tool_calls=[{"name": "jira_issue", "args": {"key": "ORB-123"}, "id": "call-0"}],
+        response_metadata=usage_meta(),
+    )
+    gaps = AIMessage(
+        content="# Что нужно выяснить\n\nЗапрос: выгрузка отчётов в CSV. " + "пробел " * 800,
+        response_metadata=usage_meta(),
+    )
+    model = Recording(
+        messages=iter(
+            [
+                announcement,
+                answer(prep_roles.BY_KEY["intake"]),
+                gaps,
+                asks("confluence_page", "call-1", page_id="1"),
+                asks("confluence_page", "call-2", page_id="2"),
+                answer(prep_roles.BY_KEY["research"]),
+                answer(prep_roles.BY_KEY["plan"]),
+                answer(prep_roles.BY_KEY["draft"]),
+            ]
+        )
+    )
+    app = prep_graph.build_graph(llm=model).compile()
+    state = app.invoke(
+        {"messages": [HumanMessage(LINK)]},
+        config={"configurable": {"thread_id": "prep-1", "input_dir": ""}},
+    )
+
+    assert state["artifacts"]["intake"] == answer(prep_roles.BY_KEY["intake"]).content
+    research = [
+        seen
+        for seen in model.calls
+        if prep_prompts.ROLE_PROMPTS["research"] in str(seen[0].content)
+    ]
+    assert len(research) == 3
+    for seen in research:
+        assert any("выгрузка отчётов в CSV" in str(m.content) for m in seen), (
+            "роль поиска потеряла список запросов"
+        )
+    assert str(research[-1][-1].content).startswith("Страница 2"), (
+        "роль поиска не увидела страницу, которую только что попросила"
+    )
+    assert list(state["artifacts"]) == [prep_roles.TICKET, *prep_roles.KEYS]
 
 
 def test_the_search_queries_reach_the_research_role(configured):

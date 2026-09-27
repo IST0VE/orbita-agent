@@ -22,6 +22,7 @@ export function AppShell({
   narrow,
   animated,
   leftWidth,
+  rightWidth,
   header,
   context,
   alerts,
@@ -40,6 +41,7 @@ export function AppShell({
   narrow: boolean;
   animated: boolean;
   leftWidth: number;
+  rightWidth: number;
   header: ReactNode;
   context?: ReactNode;
   alerts?: ReactNode;
@@ -53,6 +55,11 @@ export function AppShell({
   children?: ReactNode;
 }) {
   const workspace = section === "workspace";
+  // Ноль — ширину не трогали, её решает вёрстка (и медиазапросы в ней).
+  const widths = {
+    ...(leftWidth ? { "--col-left": `${leftWidth}px` } : {}),
+    ...(rightWidth ? { "--col-right": `${rightWidth}px` } : {}),
+  } as React.CSSProperties;
   return (
     <div
       className="app"
@@ -61,7 +68,7 @@ export function AppShell({
       data-inspector={inspectorOpen ? "open" : "closed"}
       data-narrow={narrow ? "true" : "false"}
       data-animated={animated ? "true" : "false"}
-      style={leftWidth ? ({ "--col-left": `${leftWidth}px` } as React.CSSProperties) : undefined}
+      style={widths}
     >
       {header}
       {workspace ? context : null}

@@ -18,15 +18,20 @@ LangGraph (`auth.py`). Отдельных прав на файлы нет и н�
 UTF-8: файл из Блокнота или выгрузка CSV в cp1251 перекодируется при загрузке,
 а не превращается при чтении в «кракозябры», за которые модель возьмёт деньги.
 Бинарник с текстовым расширением отбивается по нулевым байтам.
+
+Особый случай — `.doc`, который документ Word только по имени (`WORD_SUFFIX`).
+Он хранится текстом, а настоящий Word отбивается с объяснением, что делать.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import time
 import unicodedata
+from html.parser import HTMLParser
 from pathlib import Path
 
 from agent import config as cfg
@@ -37,7 +42,20 @@ MAX_FILES = 100
 #: Длина имени файла без расширения.
 MAX_NAME = 120
 #: Что можно загрузить: то, что роль умеет прочитать, и схемы.
-SUFFIXES = frozenset(inputs.TEXT_SUFFIXES | {".drawio"})
+#: Документ Word по имени, но не по содержимому. Сервисы распознавания речи
+#: сохраняют стенограмму в `.doc`, а внутри — обычный HTML: 27 сентября 2026
+#: все одиннадцать стенограмм встреч пользователя оказались HTML5 в UTF-8,
+#: `<pre>` с репликами и `<b>` вокруг времени и имени говорящего. Такой файл
+#: принимается и хранится текстом, под именем `<имя>.doc.txt`: разметка
+#: занимала до 42 % символов, и под потолком AGENT_INPUT_MAX_CHARS модель
+#: дочитала бы стенограмму на треть меньше. Роли и папки задач `.doc` по-прежнему
+#: не читают — только загрузка знает, как его превратить в текст.
+WORD_SUFFIX = ".doc"
+SUFFIXES = frozenset(inputs.TEXT_SUFFIXES | {".drawio", WORD_SUFFIX})
+# Сигнатуры того, что под именем `.doc` текстом не является.
+_OLE2 = bytes.fromhex("D0CF11E0A1B11AE1")
+_ZIP = b"PK\x03\x04"
+_HTML = re.compile(r"<!doctype\s+html|<html[\s>]|<body[\s>]", re.IGNORECASE)
 #: Откуда копируется файл в чат.
 SOURCES = ("examples", "published")
 # Символы, которых не бывает в имени файла ни на одной из систем сервера.
@@ -130,7 +148,10 @@ def save(thread_id: str, name: str, data: bytes) -> dict:
         raise ChatFileError(f"{target_name}: файл больше {limit} байт (CHAT_FILE_MAX_BYTES)")
     if not data.strip():
         raise ChatFileError(f"{target_name}: файл пустой")
-    body = _as_text(target_name, data)
+    if target_name.lower().endswith(WORD_SUFFIX):
+        target_name, body = _from_word(target_name, data)
+    else:
+        body = _as_text(target_name, data)
 
     base = folder(thread_id)
     target = base / target_name
@@ -146,6 +167,109 @@ def save(thread_id: str, name: str, data: bytes) -> dict:
         {"name": target_name, "size": len(body)},
     )
     return {**described, "replaced": replaced}
+
+
+def _from_word(name: str, data: bytes) -> tuple[str, bytes]:
+    """
+    `.doc` как текст: имя, под которым он ляжет в чат, и содержимое — или отказ.
+
+    Отказ называет, что это на самом деле и что с ним сделать: «такие файлы не
+    читаются» про файл с разрешённым расширением ничего человеку не объясняет.
+    """
+    head = data.lstrip(b"\xef\xbb\xbf \t\r\n")[:8]
+    save_as = "Сохраните его как .txt или .html и загрузите заново"
+    if data.startswith(_OLE2):
+        raise ChatFileError(
+            f"{name}: это двоичный документ Word 97–2003, такие не читаются. "
+            "Откройте его в Word и сохраните как «Обычный текст» (.txt) или "
+            "«Веб-страница» (.html), затем загрузите заново"
+        )
+    if data.startswith(_ZIP):
+        raise ChatFileError(f"{name}: это документ .docx под именем .doc, такие не читаются. {save_as}")
+    if head.startswith(b"{\\rtf"):
+        raise ChatFileError(f"{name}: это RTF под именем .doc, такие не читаются. {save_as}")
+    text = _as_text(name, data).decode("utf-8")
+    if _HTML.search(text[:4096]):
+        text = _html_text(text)
+    if not text.strip():
+        raise ChatFileError(f"{name}: в документе нет текста")
+    return name + ".txt", text.encode("utf-8")
+
+
+class _HtmlText(HTMLParser):
+    """
+    Видимый текст HTML с переводами строк там, где их рисует браузер.
+
+    `</head>` в HTML можно не писать: голову закрывает `<body>` или первый же
+    тег, которому в ней не место. Поэтому голова — отдельный флаг, а не счётчик
+    в `skip`: без закрывающего тега счётчик так и оставался открытым, и весь
+    текст документа пропадал вместе с ней — файл отклонялся как пустой.
+    """
+
+    _SKIP = frozenset({"noscript", "script", "style", "template", "title"})
+    # Что может стоять в `<head>`. Любой другой тег её закрывает.
+    _HEAD = frozenset({"base", "link", "meta", "noscript", "script", "style", "template", "title"})
+    _BLOCK = frozenset({
+        "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
+        "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header",
+        "hr", "li", "main", "nav", "ol", "p", "section", "table", "tr", "ul",
+    })
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skip = 0
+        self.pre = 0
+        self.head = False
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag == "head":
+            self.head = True
+        elif tag not in self._HEAD:
+            self.head = False
+        if tag in self._SKIP:
+            self.skip += 1
+        elif tag == "pre":
+            self.pre += 1
+            self.parts.append("\n")
+        elif tag in {"td", "th"}:
+            self.parts.append("\t")
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:
+        # `<br/>` — один перевод строки. Разбор по умолчанию звал бы и открытие,
+        # и закрытие тега, и строка разрывалась бы абзацем.
+        if tag in {"br", "hr"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "head":
+            self.head = False
+        elif tag in self._SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag == "pre":
+            self.pre = max(0, self.pre - 1)
+            self.parts.append("\n")
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self.skip or self.head and not data.strip():
+            return
+        # Текст прямо в голове закрывает её, как тег не из головы.
+        self.head = False
+        # Внутри `<pre>` переводы строк — это и есть разметка стенограммы:
+        # время, говорящий, реплика. Вне его пробелы схлопываются, как в браузере.
+        self.parts.append(data if self.pre else re.sub(r"\s+", " ", data))
+
+
+def _html_text(html: str) -> str:
+    parser = _HtmlText()
+    parser.feed(html)
+    parser.close()
+    lines = [line.strip() for line in "".join(parser.parts).splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
 
 
 def _write_atomic(path: Path, body: bytes) -> None:

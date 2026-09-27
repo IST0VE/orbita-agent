@@ -72,6 +72,7 @@ for surface in MANIFEST["surfaces"]:
             "document",
             "jira_project",
             "issues",
+            "publication-links",
             "artifacts",
             "published",
         ]

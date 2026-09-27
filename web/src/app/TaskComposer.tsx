@@ -9,14 +9,57 @@
  * прогона уехала в консоль выполнения, которая открывается сама, когда
  * появляется, что показывать. Скрепка загружает файлы в открытый чат — те же,
  * что видны справа во вкладке «Чат».
+ *
+ * Высоту поля тянут за верхнюю кромку, как у консоли: уголок поля, которым
+ * это делалось раньше, мелкий, и тянуть его надо вниз — прочь от схемы, хотя
+ * поле растёт вверх. Выбранная высота переживает перезагрузку, двойной щелчок
+ * по кромке возвращает две строки.
+ *
+ * Выбранная высота — пожелание, а не приказ: место под поле меняется и без
+ * ручки — открылась консоль, уменьшилось окно. Показывается она не выше того,
+ * что оставляет схеме её минимум, и пересчитывается при каждом таком
+ * изменении. Иначе схема сжималась в полоску, а кнопка отправки уезжала за
+ * край экрана, и перезагрузка возвращала ту же высоту.
  */
 
-import { Fragment, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 
 import { surfaceItems } from "../engine/surfaces/SurfaceRenderer";
 import type { ChatFilesContext, SafeWidgetContext, UiManifest, WidgetAction } from "../engine/manifest/types";
 import type { RuntimeSnapshot } from "../engine/runtime/types";
 import { Paperclip, Upload } from "../ui/icons";
+
+const HEIGHT_KEY = "orbita.composer.height";
+/** Две строки текста: ниже поле перестаёт быть полем. */
+const MIN_HEIGHT = 52;
+/** Столько схеме оставляют всегда — тот же минимум, что у `.app-body`. */
+const SCHEMA_MIN = 220;
+
+/**
+ * Самое высокое поле, при котором схеме над ним остаётся её минимум.
+ *
+ * Считается от рабочей области целиком, а не от схемы: поле, которое уже
+ * выше допустимого, сжало схему, и по ней предел вышел бы ещё меньше.
+ */
+function roomFor(composer: HTMLElement): number {
+  const main = composer.parentElement;
+  const textarea = composer.querySelector("textarea");
+  if (!main || !textarea) return Infinity;
+  const gap = parseFloat(getComputedStyle(main).rowGap) || 0;
+  // Всё в композере, кроме самого поля: строка файлов, кнопки, ошибка.
+  const chrome = composer.getBoundingClientRect().height - textarea.getBoundingClientRect().height;
+  return Math.floor(main.clientHeight - gap - chrome - SCHEMA_MIN);
+}
 
 /**
  * Что уедет в прогон вместе с вопросом.
@@ -73,6 +116,55 @@ export function TaskComposer({
   const picker = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [height, setHeight] = useState(() => Number(localStorage.getItem(HEIGHT_KEY)) || 0);
+  const [box, setBox] = useState<HTMLElement | null>(null);
+  const [room, setRoom] = useState(Infinity);
+
+  useEffect(() => {
+    if (height) localStorage.setItem(HEIGHT_KEY, String(height));
+  }, [height]);
+
+  // Рабочая область меняется с окном и консолью, композер — со строкой
+  // ошибки. Пересчёт от собственной высоты поля не зацикливается: предел от
+  // неё не зависит, и повторное значение React не рисует.
+  useLayoutEffect(() => {
+    const main = box?.parentElement;
+    if (!box || !main) return;
+    const measure = () => setRoom(roomFor(box));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(main);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [box]);
+
+  const shown = height ? Math.max(MIN_HEIGHT, Math.min(height, room)) : 0;
+
+  const startResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const composer = event.currentTarget.parentElement;
+    const textarea = composer?.querySelector("textarea");
+    if (!composer || !textarea) return;
+    const start = textarea.getBoundingClientRect().height;
+    const origin = event.clientY;
+    // Поле растёт за счёт схемы над ним; уже минимума её не сжимаем.
+    const limit = Math.max(MIN_HEIGHT, roomFor(composer));
+    const move = (moving: globalThis.PointerEvent) => {
+      setHeight(Math.round(Math.min(limit, Math.max(MIN_HEIGHT, start + origin - moving.clientY))));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }, []);
+
+  const resetHeight = useCallback(() => {
+    setHeight(0);
+    localStorage.removeItem(HEIGHT_KEY);
+  }, []);
+
   const field = surfaceItems({ surface: "main", manifest, runtime, context, inputs, onInput, onAction })
     .find((item) => item.widget === "chat-input");
   if (!field) return null;
@@ -92,7 +184,22 @@ export function TaskComposer({
   };
 
   return (
-    <section className="task-composer" aria-label="Задача для ORBITA">
+    <section
+      ref={setBox}
+      className="task-composer"
+      aria-label="Задача для ORBITA"
+      data-sized={shown ? "true" : undefined}
+      style={shown ? ({ "--composer-height": `${shown}px` } as CSSProperties) : undefined}
+    >
+      <div
+        className="composer-resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Высота поля задачи"
+        title="Потяните, чтобы изменить высоту. Двойной щелчок — сбросить."
+        onPointerDown={startResize}
+        onDoubleClick={resetHeight}
+      />
       <div className="composer-context-row">
         {takesFiles && chat ? (
           <button

@@ -302,6 +302,86 @@ def test_asking_again_happens_once(monkeypatch: pytest.MonkeyPatch):
     assert f"Не выполнены этапы: {api}" in result["summary"]["problems"]
 
 
+ANNOUNCES = AIMessage(
+    content=(
+        "I'll start by checking the attached files and looking for existing "
+        "documentation and the linked task."
+    ),
+    tool_calls=[{"name": "list_task_files", "args": {}, "id": "call-4"}],
+    response_metadata=usage_meta(hit=1600, miss=64, output=30),
+)
+
+
+def test_an_announcement_next_to_a_tool_call_is_asked_again(monkeypatch: pytest.MonkeyPatch):
+    """
+    «Сейчас посмотрю файлы» рядом с вызовом — обещание, а не документ. Снятый
+    вызов превращал его в документ этапа: 27 сентября 2026 разбор задачи вышел
+    одной строкой по-английски, и следующие роли решили, что тикет не прочитан.
+    Такой ответ переспрашивается, как и немой.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], ANNOUNCES, *PIPELINE[1:])
+
+    assert result["artifacts"]["api"] == PIPELINE[1].content
+    assert result["usage"]["calls"] == len(roles.ROLES) + 1
+
+
+def test_an_announcement_is_not_a_document_even_after_asking_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Второй анонс подряд — этап без документа, и итог прогона это называет."""
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], ANNOUNCES, ANNOUNCES, *PIPELINE[2:])
+
+    assert "api" not in result["artifacts"]
+    api = roles.PIPELINE.by_key("api").title
+    assert f"Не выполнены этапы: {api}" in result["summary"]["problems"]
+
+
+def documented(content: str) -> AIMessage:
+    """Документ этапа без `#` и случайный вызов рядом."""
+    return AIMessage(
+        content=content,
+        tool_calls=[{"name": "list_task_files", "args": {}, "id": "call-5"}],
+        response_metadata=usage_meta(hit=1600, miss=64, output=400),
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        # Разделы нумерованным списком — так, как их перечисляет промпт.
+        "\n\n".join(
+            f"{number}. {title}\n\nПо материалам встречи раздел заполнен: "
+            "эндпоинты, статусы и коды ошибок описаны с примерами."
+            for number, title in enumerate(
+                ("Ресурсы", "Эндпоинты", "Статусы", "Ошибки", "Идемпотентность"), start=1
+            )
+        ),
+        # Заголовок, подчёркнутый `===`: короткий, но документ.
+        "Контракт REST\n=============\n\nGET /exports/{id} — статус выгрузки.",
+    ],
+    ids=["numbered-sections", "setext-heading"],
+)
+def test_a_document_without_hash_headings_is_not_an_announcement(
+    monkeypatch: pytest.MonkeyPatch, document: str
+):
+    """
+    Промпты требуют разделы, но не `#`: «1. Цель системы» стоит в самом
+    списке «Что ты должен выпустить». Такой документ рядом со случайным
+    вызовом стоил лишнего платного переспроса, а при втором таком ответе
+    не сохранялся вовсе.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], documented(document), *PIPELINE[2:])
+
+    assert result["artifacts"]["api"] == document
+    assert result["usage"]["calls"] == len(roles.ROLES)
+
+
 def test_analyst_out_of_tool_turns_is_asked_again(monkeypatch: pytest.MonkeyPatch):
     """
     На исчерпанном потолке у аналитика права спрашивать тоже нет, и немой

@@ -226,6 +226,24 @@ def base_manifest(pipeline: Pipeline) -> dict:
                 "empty": "show",
             },
             {
+                # Ссылки на то, что прогон опубликовал: страницы и черновики
+                # Confluence этого чата. Тот же виджет стоит и справа, но там
+                # он во вкладке «Прогон», которая есть только у живого
+                # прогона: открытый заново чат показывает на её месте справку
+                # о сценарии, и ссылку на созданный черновик приходилось искать
+                # в Confluence руками. «Опубликованные документы» ниже её не
+                # заменяют — это архив файловой цели пользователя, а не
+                # публикация этого чата. Стоит над документами этапов: ссылка —
+                # то, ради чего открывают результаты после публикации.
+                "id": "publication-links",
+                "path": "publication",
+                "title": "Публикация",
+                "widget": "publication",
+                "surface": "left",
+                "order": 25,
+                "empty": "hide",
+            },
+            {
                 "id": "artifacts",
                 "path": "artifacts",
                 "title": "Документы этапов",
@@ -347,7 +365,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
             {
                 "id": "left",
                 "order": 10,
-                "widgets": ["task", "document", "artifacts", "published"],
+                "widgets": ["task", "document", "publication-links", "artifacts", "published"],
             },
             {"id": "main", "order": 20, "widgets": ["messages"]},
             {"id": "right", "order": 30, "widgets": ["notes", "summary", "cost", "publication"]},

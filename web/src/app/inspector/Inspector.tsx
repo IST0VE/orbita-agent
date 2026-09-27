@@ -10,15 +10,17 @@
  * выбора: узел — карточка узла, прогон — его показатели, ничего — короткая
  * справка о сценарии. Выбор узла сам переключает на эту вкладку: подробности
  * приходят к тому, кто их запросил.
+ *
+ * Своей кнопки скрытия у колонки нет: колонки прячут переключатели в строке
+ * контекста, и вторая такая же кнопка в шапке колонки только дублировала их.
  */
 
-import type { ReactNode } from "react";
+import type { PointerEvent, ReactNode } from "react";
 
 import type { GraphTopology } from "../../lib/graph";
 import { surfaceItems } from "../../engine/surfaces/SurfaceRenderer";
 import type { SafeWidgetContext, UiManifest, WidgetAction } from "../../engine/manifest/types";
 import type { RuntimeSnapshot } from "../../engine/runtime/types";
-import { PanelRightClose } from "../../ui/icons";
 import { isInspectorWidget } from "../result";
 import { NodeInspector } from "./NodeInspector";
 import { RunInspector } from "./RunInspector";
@@ -42,7 +44,9 @@ export function Inspector({
   onClearNode,
   scenarioTitle,
   threadId,
-  onClose,
+  startResize,
+  resetWidth,
+  drawer,
 }: {
   tab: RightTab;
   onTab: (tab: RightTab) => void;
@@ -61,7 +65,10 @@ export function Inspector({
   onClearNode: () => void;
   scenarioTitle: string;
   threadId: string | null;
-  onClose: () => void;
+  startResize: (event: PointerEvent<HTMLDivElement>) => void;
+  resetWidth: () => void;
+  /** Колонка выдвинута поверх рабочей области: ширину задаёт вёрстка. */
+  drawer: boolean;
 }) {
   const node = selectedNode && topology?.nodes.some((item) => item.id === selectedNode)
     ? selectedNode
@@ -108,15 +115,19 @@ export function Inspector({
             К прогону
           </button>
         ) : null}
-        <button
-          className="btn-ghost btn-icon btn-sm inspector-close"
-          aria-label="Скрыть правую колонку"
-          title="Скрыть правую колонку"
-          onClick={onClose}
-        >
-          <PanelRightClose size={16} aria-hidden="true" />
-        </button>
       </div>
+
+      {drawer ? null : (
+        <div
+          className="col-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Ширина правой колонки"
+          title="Потяните, чтобы изменить ширину. Двойной щелчок — сбросить."
+          onPointerDown={startResize}
+          onDoubleClick={resetWidth}
+        />
+      )}
 
       {details ? (
         <div className="inspector-scroll">

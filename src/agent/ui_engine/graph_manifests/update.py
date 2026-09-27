@@ -79,6 +79,7 @@ for surface in MANIFEST["surfaces"]:
             "task",
             "base_document",
             "document",
+            "publication-links",
             "artifacts",
             "published",
         ]

@@ -424,6 +424,10 @@ def fetch_issue(key: str, settings: Settings | None = None) -> dict:
         "due": str(fields.get("duedate") or ""),
         "updated": str(fields.get("updated") or ""),
         "comments": comments(key, s),
+        # Пустой список значит «комментариев нет», только если их спрашивали.
+        # При JIRA_COMMENTS_LIMIT=0 он пуст всегда, и `format_issue` обязан
+        # сказать «не запрашивались», а не «нет».
+        "comments_read": s.comments_limit > 0,
     }
 
 
@@ -454,8 +458,11 @@ def comments(key: str, settings: Settings | None = None) -> list[dict]:
         if isinstance(item, dict)
     ]
     # `-created` отдаёт новые первыми, а читать удобнее в порядке разговора.
+    # Комментарий без извлечённого текста остаётся: у скриншота в ADF текста
+    # нет, но комментарий есть, и «у задачи ни одного комментария» было бы
+    # неправдой (см. `format_issue`).
     found.reverse()
-    return [item for item in found if item["text"]]
+    return found
 
 
 def _escape(value: str) -> str:
@@ -558,7 +565,17 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
 # Формат для модели
 # --------------------------------------------------------------------------
 def format_issue(issue: dict) -> str:
-    """Задача плоским текстом: подписанные поля, пустые опущены."""
+    """
+    Задача плоским текстом: подписанные поля, пустые опущены.
+
+    Кроме описания и комментариев: их отсутствие — само по себе находка, а
+    пропущенный раздел модель читает как «не загрузили», а не как «пусто».
+    27 сентября 2026 конвейер подготовки прошёл по этой развилке целиком:
+    разбор записал, что комментарии «не приведены», следующий этап сделал из
+    этого пробел, роль поиска потратила ход на повторное чтение тикета, а план
+    и документация вынесли «комментарии не прочитаны» в открытые вопросы — у
+    задачи, в которой их просто не было.
+    """
     lines = [f"{issue['key']}: {issue['summary']}", f"Ссылка: {issue['url']}"]
 
     fields = (
@@ -593,8 +610,14 @@ def format_issue(issue: dict) -> str:
     if issue.get("comments"):
         lines.append("\nКомментарии (от старых к новым):")
         lines += [
-            f"- {item['created']} {item['author']}: {item['text']}" for item in issue["comments"]
+            f"- {item['created']} {item['author']}: "
+            + (item["text"] or "(текста нет — вложение или изображение, их содержимое не читается)")
+            for item in issue["comments"]
         ]
+    elif issue.get("comments_read", True):
+        lines.append("\nКомментарии: нет — у задачи ни одного комментария.")
+    else:
+        lines.append("\nКомментарии: не запрашивались (JIRA_COMMENTS_LIMIT=0).")
 
     return "\n".join(lines)
 

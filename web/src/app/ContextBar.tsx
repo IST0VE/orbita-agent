@@ -146,7 +146,7 @@ export function ContextBar({
         ) : null}
 
         <button
-          className="btn-ghost btn-sm"
+          className="btn-ghost btn-sm new-chat"
           disabled={newThreadDisabled}
           title="Начать новый чат: прежний останется в списке слева вместе с файлами"
           onClick={onNewThread}

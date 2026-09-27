@@ -533,9 +533,19 @@
 /* Три колонки                                                            */
 /* --------------------------------------------------------------------- */
 .app-body {
+  /*
+   * Ширина колонки — пожелание: ручка сохраняет её для того окна, в котором
+   * тянули. В окне уже этого первыми ужимаются колонки, а не схема: ей
+   * остаётся не меньше 380 пикселей (MAIN_MIN в useColumnWidth), колонкам —
+   * не меньше минимумов той же ручки. Без этого две колонки по 640, растянутые
+   * при ширине 1920, после уменьшения окна до 1440 оставляли схеме 112.
+   */
+  --track-left: minmax(180px, var(--col-left));
+  --track-main: minmax(380px, 1fr);
+  --track-right: minmax(240px, var(--col-right));
   position: relative;
   display: grid;
-  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
+  grid-template-columns: var(--track-left) var(--track-main) var(--track-right);
   gap: var(--space-4);
   flex: 1 1 0;
   /* Схеме гарантирован рост: ниже этого она перестаёт быть схемой. */
@@ -548,11 +558,11 @@
 }
 
 .app[data-sidebar="closed"] .app-body {
-  grid-template-columns: minmax(0, 1fr) var(--col-right);
+  grid-template-columns: var(--track-main) var(--track-right);
 }
 
 .app[data-inspector="closed"] .app-body {
-  grid-template-columns: var(--col-left) minmax(0, 1fr);
+  grid-template-columns: var(--track-left) var(--track-main);
 }
 
 .app[data-sidebar="closed"][data-inspector="closed"] .app-body {
@@ -650,14 +660,23 @@
   background: var(--border-strong);
 }
 
+/* У правой колонки ручка на левой кромке — в зазоре между ней и схемой. */
+.inspector > .col-resizer {
+  right: auto;
+  left: calc(var(--space-4) / -2 - 3px);
+}
+
 /* --------------------------------------------------------------------- */
 /* Правая колонка                                                         */
 /* --------------------------------------------------------------------- */
 .inspector {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  /* Не hidden: ручка ширины стоит в зазоре, за кромкой колонки. Прокрутку
+     держат вложенные области, как в левой колонке. */
+  overflow: visible;
 }
 
 .inspector-head {
@@ -824,12 +843,48 @@
 /* Композер задачи                                                         */
 /* --------------------------------------------------------------------- */
 .task-composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: none;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+}
+
+/* Ручка высоты: в зазоре между схемой и композером, как у колонок. */
+.composer-resizer {
+  position: absolute;
+  top: calc(var(--space-3) / -2 - 4px);
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: var(--z-sticky);
+}
+
+.composer-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 3px var(--space-8);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background var(--transition-base);
+}
+
+.composer-resizer:hover::after {
+  background: var(--border-strong);
+}
+
+/* Высоту задаёт ручка сверху; уголок поля ей бы только мешал. */
+.task-composer .engine-chat-input textarea {
+  resize: none;
+}
+
+.task-composer[data-sized] .engine-chat-input textarea {
+  height: var(--composer-height);
+  max-height: none;
 }
 
 .composer-context {

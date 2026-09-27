@@ -54,6 +54,29 @@ def test_all_builtin_graphs_have_valid_versioned_manifests():
         assert isinstance(item.value["interrupts"], list)
 
 
+def test_every_graph_shows_its_publication_links_in_the_chat_results():
+    """
+    Ссылка на опубликованное — в результатах чата, а не только во вкладке
+    «Прогон». Та есть лишь у живого прогона: открытый заново чат показывает на
+    её месте справку о сценарии, и 27 сентября 2026 ссылку на созданный
+    черновик Confluence пришлось искать в самом Confluence. Список левой
+    колонки работает как фильтр: привязка, не названная в нём, не рисуется.
+    """
+    for graph_id in registry.graph_ids():
+        manifest = registry.resolve(graph_id).value
+        links = next(item for item in manifest["state"] if item["id"] == "publication-links")
+        left = next(item for item in manifest["surfaces"] if item["id"] == "left")
+
+        assert (links["path"], links["widget"], links["surface"]) == (
+            "publication",
+            "publication",
+            "left",
+        ), graph_id
+        assert left["widgets"].index("publication-links") < left["widgets"].index("artifacts"), (
+            graph_id
+        )
+
+
 def test_every_registered_graph_has_a_manifest():
     """
     Граф подключается тремя вещами: модулем, строкой в `langgraph.json` и

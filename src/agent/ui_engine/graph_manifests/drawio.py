@@ -49,4 +49,4 @@ name_documents(
 
 for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":
-        surface["widgets"] = ["task", "diagram", "artifacts", "published"]
+        surface["widgets"] = ["task", "diagram", "publication-links", "artifacts", "published"]
