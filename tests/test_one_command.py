@@ -22,7 +22,7 @@ yaml = pytest.importorskip("yaml")
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-NGINX = (ROOT / "web" / "nginx.conf").read_text(encoding="utf-8")
+NGINX = (ROOT / "web" / "nginx" / "app.conf").read_text(encoding="utf-8")
 VITE = (ROOT / "web" / "vite.config.ts").read_text(encoding="utf-8")
 SERVICES = COMPOSE["services"]
 
@@ -35,7 +35,7 @@ def vite_proxied() -> set[str]:
 
 def nginx_proxied() -> set[str]:
     location = re.search(r"location ~ \^/\(([^)]*)\)", NGINX)
-    assert location, "в nginx.conf не найдено проксирование API"
+    assert location, "в web/nginx/app.conf не найдено проксирование API"
     return set(location.group(1).split("|"))
 
 
@@ -178,7 +178,10 @@ def test_both_launchers_do_the_same_checks(script: str):
                  "ORBITA_WEB_PORT", "ORBITA_GRAFANA_PORT",
                  "nt-runner.example.json", "host.docker.internal",
                  # Пароль базы и ключ личных токенов создаются при первом запуске.
-                 "POSTGRES_PASSWORD", "USER_SECRETS_KEY"):
+                 "POSTGRES_PASSWORD", "USER_SECRETS_KEY",
+                 # Серверный режим: адрес, файл Compose, пароль консоли Keycloak.
+                 "ORBITA_PUBLIC_URL", "docker-compose.yml:docker-compose.server.yml",
+                 "KEYCLOAK_ADMIN_PASSWORD"):
         assert name in text, f"{script} не знает про {name}"
     assert "anthropic" in text
     assert "docker compose up -d --build --wait" in text
