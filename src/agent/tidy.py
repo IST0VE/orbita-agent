@@ -42,7 +42,9 @@ FOREIGN = re.compile(
 # «[ФАЙЛ speech_to_text (9).doc.txt)» — скобка в имени файла сбивает модель, и
 # тег закрывается круглой. Чинится кодом: форма тега известна заранее.
 _TAG_CASE = re.compile(r"\[(файл|wiki|jira)(?=\s)", re.IGNORECASE)
-_TAG_PAREN = re.compile(r"(\[ФАЙЛ [^\[\]\n]*?\.[A-Za-z0-9]{1,6})\)(?!\])")
+_FILE_TAG = re.compile(r"\[ФАЙЛ ")
+_TAG_TAIL = re.compile(r"[^\[\]\n]*")
+_EXT_PAREN = re.compile(r"\.[A-Za-z0-9]{1,6}\)")
 
 
 def _cells(line: str) -> list[str]:
@@ -107,10 +109,56 @@ def normalize_tables(text: str) -> str:
     return "\n".join(out)
 
 
+def _close_file_tags(text: str) -> str:
+    """
+    Незакрытый тег файла, закрытый круглой скобкой, — закрыть квадратной.
+
+    Тег считается незакрытым, если до конца строки или до следующего `[` в
+    нём нет `]`: «[ФАЙЛ протокол (v1.2).md]» закрыт и не трогается. Скобка,
+    которую модель поставила вместо `]`, — первая после расширения файла, на
+    которой скобки в имени сбалансированы: у «[ФАЙЛ запись (ч.1).txt)» это
+    последняя, а не та, что закрывает «(ч.1». Раньше хватало первой
+    попавшейся, и корректные теги с точкой в скобках ломались посередине имени.
+    """
+    out: list[str] = []
+    position = 0
+    for match in _FILE_TAG.finditer(text):
+        if match.start() < position:
+            continue
+        start = match.end()
+        tail = _TAG_TAIL.match(text, start)
+        end = tail.end() if tail else start
+        if end < len(text) and text[end] == "]":
+            continue
+        for ext in _EXT_PAREN.finditer(text, start, end):
+            name = text[start : ext.end() - 1]
+            if name.count("(") == name.count(")"):
+                out.append(text[position : ext.end() - 1] + "]")
+                position = ext.end()
+                break
+    out.append(text[position:])
+    return "".join(out)
+
+
 def fix_tags(text: str) -> str:
     """Теги источников в каноническую форму: `[ФАЙЛ …]`, `[WIKI …]`, `[JIRA …]`."""
     text = _TAG_CASE.sub(lambda match: "[" + match.group(1).upper(), text or "")
-    return _TAG_PAREN.sub(r"\1]", text)
+    return _close_file_tags(text)
+
+
+# Код в строке: `имя`, `путь`, `команда`. Внутри — имя как в источнике, и чужой
+# алфавит там не сбой генерации: подпись элемента схемы бывает латиницей
+# вперемешку с кириллицей, а переписать её «по-русски» значит сломать поиск по
+# имени (`diagram_prompts`: имена — как на схеме, без перевода).
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
+# Цитата в «ёлочках» — слова источника, и язык у неё его: отчёт о китайском
+# пакете цитирует китайский текст, и перевести цитату значит подменить её.
+_QUOTE = re.compile(r"«[^«»\n]*»")
+
+
+def _prose(line: str) -> str:
+    """Строка без кода и цитат: чужой алфавит ищется только в собственном тексте."""
+    return _QUOTE.sub("", _CODE_SPAN.sub("", line))
 
 
 def foreign_lines(text: str) -> list[int]:
@@ -120,7 +168,7 @@ def foreign_lines(text: str) -> list[int]:
     for number, line in enumerate((text or "").split("\n")):
         if _FENCE.match(line):
             fence = not fence
-        elif not fence and FOREIGN.search(line):
+        elif not fence and FOREIGN.search(_prose(line)):
             found.append(number)
     return found
 
@@ -132,7 +180,8 @@ REPAIR_PROMPT = """\
 русским («стенограммеRequirements»). Перепиши каждую строку по-русски: сохрани
 смысл, Markdown-разметку, имена, ссылки и теги источников вроде [JIRA ORB-1]
 или [ВЫВОД]; испорченное замени правильными русскими словами. Остальной текст
-строки не меняй.
+строки не меняй. Текст в обратных кавычках (`nginx-user`) — имя как в источнике,
+текст в «ёлочках» — цитата: их не трогай.
 
 Ответь только JSON-массивом строк: столько же элементов, сколько прислано, и
 в том же порядке. Без пояснений и без обёртки ```.
@@ -168,7 +217,7 @@ def parse_repair(answer: str, expected: int) -> list[str] | None:
         not isinstance(value, list)
         or len(value) != expected
         or not all(isinstance(item, str) for item in value)
-        or any(FOREIGN.search(item) or "\n" in item for item in value)
+        or any(FOREIGN.search(_prose(item)) or "\n" in item for item in value)
     ):
         return None
     return value

@@ -160,8 +160,8 @@ def test_zero_limit_does_not_refuse_linked_sources(monkeypatch: pytest.MonkeyPat
                      "url": "https://wiki.example.com/pages/12345", "truncated": False},
     )
 
-    block = sources.linked_context("смотри https://wiki.example.com/pages/12345")
+    [item] = sources.linked("смотри https://wiki.example.com/pages/12345")
 
-    assert "Текст страницы" in block
-    assert "достигнут лимит контекста" not in block
-    assert "обрезан по лимиту контекста" not in block
+    assert "Текст страницы" in item["text"]
+    assert not item.get("error")
+    assert not item["truncated"]

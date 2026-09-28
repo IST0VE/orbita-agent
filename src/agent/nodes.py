@@ -37,12 +37,13 @@ from agent import (
     pause,
     providers,
     roles,
-    sources,
     tidy,
     tool_compat,
 )
 from agent.cost import charge, cost_summary, extract_usage
 from agent.documents import (
+    CONTEXT_SEPARATOR,
+    has_context,
     operator_question,
     split_turns,
     task_of,
@@ -211,6 +212,38 @@ def turns_left(left: int, limit: int) -> str:
         f"Ходов с инструментами осталось: {left} из {limit}. В одном ходе можно сделать "
         "несколько вызовов сразу; открывай сначала самое близкое к задаче."
     )
+
+
+# Блоки, которые нода контекста дописывает к вопросу оператора. Справку и память
+# роль с брифом берёт из них: сама их не ищет, а в брифе их нет — бриф собирается
+# из задачи и `artifacts`. Список файлов в этот набор не входит намеренно: у
+# конвейера с брифом файлы читает код, и их список уже стоит в брифе.
+_CONTEXT_TITLES = (knowledge.BLOCK_TITLE, f"### {memory.BLOCK_TITLE}", inputs.BLOCK_TITLE)
+_RECALLED = _CONTEXT_TITLES[:2]
+
+
+def recalled_context(turn: list) -> str:
+    """
+    Справка из базы знаний и память из вопроса, открывшего ход, — для роли с брифом.
+
+    Роль с брифом не видит сообщения оператора: её вход собирается заново из
+    задачи и прочитанного кодом. Справку и память нода контекста кладёт только
+    в сообщение, и без этой выборки они не доходили бы ни до одной роли.
+    Порядок и текст блоков — как в сообщении: внутри хода они не меняются, и
+    префикс переписки роли от вызова к вызову остаётся тем же.
+    """
+    opening = next((text_of(m) for m in turn if getattr(m, "type", "") == "human"), "")
+    starts = sorted(
+        (match.start(), title)
+        for title in _CONTEXT_TITLES
+        for match in re.finditer(re.escape(CONTEXT_SEPARATOR + title), opening)
+    )
+    parts = []
+    for index, (start, title) in enumerate(starts):
+        end = starts[index + 1][0] if index + 1 < len(starts) else len(opening)
+        if title in _RECALLED:
+            parts.append(opening[start:end])
+    return "".join(parts)
 
 
 def repair_lines(lines: list[str], llm: Any, config: RunnableConfig) -> tuple[list[str] | None, dict]:
@@ -459,7 +492,9 @@ def make_role_node(
                 # тот же, поэтому префикс переписки от вызова к вызову растёт,
                 # но не меняется, и кеш его засчитывает.
                 brief = pipeline.brief(role, task_of(state), state.get("artifacts"))
-                history = trim_history([HumanMessage(content=brief), *own], keep=1)
+                history = trim_history(
+                    [HumanMessage(content=brief + recalled_context(turn)), *own], keep=1
+                )
             else:
                 history = trim_history(turn, keep=role_input(turn))
                 # Ход, начатый указанием к уже выпущенным документам, начинается
@@ -489,17 +524,19 @@ def make_role_node(
                         )
                     ),
                 ]
+            if asking and role.briefed and limit > 0:
+                # Остаток потолка — репликой после переписки и только в этом
+                # запросе: в состояние она не пишется, и следующий вызов видит
+                # прежний префикс плюс новые ответы инструментов.
+                history = [*history, HumanMessage(content=turns_left(limit - used, limit))]
             # Прошлая версия документа и указания оператора — отдельными ходами
             # человека в конце переписки. Дописывать их внутрь уже собранного
             # хода нельзя: это разорвало бы пару «вызов инструмента — ответ».
+            # Указание оператора — последнее слово запроса: остаток ходов стоит
+            # перед ним, а не после.
             for block in (revision_block(previous), pause.notes_block(notes)):
                 if block:
                     history = [*history, HumanMessage(content=block.strip())]
-            if asking and role.briefed and limit > 0:
-                # Остаток потолка — последней репликой и только в этом запросе:
-                # в состояние она не пишется, и следующий вызов видит прежний
-                # префикс плюс новые ответы инструментов.
-                history = [*history, HumanMessage(content=turns_left(limit - used, limit))]
         else:
             # Остальным сообщение собирается заново из задачи и документов
             # предыдущих этапов. Переписка аналитика с файлами им не нужна:
@@ -622,13 +659,14 @@ def make_role_node(
         # вызовом — тоже не ответ.
         text = text_of(response)
         document = bool(text) and not announced and not getattr(response, "tool_calls", None)
-        if document and pipeline.tidy:
+        if document and pipeline.tidy and role.markdown:
             # Форма документа: таблицы выравнивает код, строки на чужом
-            # алфавите — отдельный короткий запрос (`tidy.py`). Он платный,
-            # поэтому за воротами бюджета и с тем же учётом расхода, что у
-            # переспроса выше.
+            # алфавите — отдельный короткий запрос (`tidy.py`), и только у
+            # конвейера, который пишет по-русски (`Pipeline.russian`). Запрос
+            # платный, поэтому за воротами бюджета и с тем же учётом расхода,
+            # что у переспроса выше.
             clean = tidy.fix_tags(tidy.normalize_tables(text))
-            broken = tidy.foreign_lines(clean)
+            broken = tidy.foreign_lines(clean) if pipeline.russian else []
             now = {
                 **state,
                 "usage": _merge_usage(state.get("usage"), turn),
@@ -679,7 +717,6 @@ def context_node(
     state: State,
     config: RunnableConfig,
     *,
-    external_sources: bool = False,
     revisions: bool = False,
 ) -> dict:
     """
@@ -718,6 +755,12 @@ def context_node(
     перезаписывали ими страницы треда. Новая задача — это новый тред: по
     первому сообщению считается и заголовок страниц. Графам НТ флаг не
     передаётся: там следующее сообщение — новый анализ.
+
+    Материалов по ссылкам здесь больше нет. Их читал этот узел, дописывая в
+    сообщение, и видела их одна роль с инструментами — только на первом ходе
+    треда: на следующем в сообщении стояло уже указание оператора. Теперь их
+    читают прелюдии конвейеров (`materials.materials_node`, `prep_graph.ticket_node`)
+    и кладут в `artifacts`, откуда они доходят до каждой роли на каждом ходе.
     """
     # Счётчик обнуляется на любом исходе ноды: не состоявшаяся подстановка —
     # это всё равно начало нового прогона. Отказ по входу прошлого прогона
@@ -730,12 +773,10 @@ def context_node(
         return fresh
 
     question = text_of(last)
-    if (
-        knowledge.BLOCK_TITLE in question
-        or memory.BLOCK_TITLE in question
-        or inputs.BLOCK_TITLE in question
-        or sources.LINKS_TITLE in question
-    ):
+    # Повторный вход узнаётся по блоку после разделителя, а не по словам: запрос
+    # «Файлы задачи лежат в чате» — это вопрос оператора, а не подставленный
+    # список, и справку к нему подставить всё ещё нужно.
+    if has_context(question):
         return fresh  # справка уже подставлена: повторный вход в ноду
 
     task = operator_question(question)
@@ -745,8 +786,6 @@ def context_node(
         update["notes"] = [pause.note("followup", task)]
 
     blocks = []
-    if external_sources:
-        blocks.append(sources.linked_context(task))
     if cfg.knowledge_enabled():
         blocks.append(knowledge.block_for(question))
     if cfg.memory_enabled():

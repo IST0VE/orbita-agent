@@ -21,6 +21,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent import roles
+from agent.materials import materials_node
 from agent.nodes import (
     approve_node,
     charged_stop,
@@ -119,6 +120,16 @@ def build_graph(
     # в графе нет, а функция без объявления — узел без подписи, нарисованный
     # сырым именем. Оба случая доживают до экрана, потому что на экране их
     # никто не ждёт; поэтому здесь исключение, а не тест.
+    #
+    # Прелюдию чтения материалов сборщик подставляет сам: конвейер аналитики
+    # собирается по умолчанию, так его собирают граф `agent`, полтора десятка
+    # тестов и оценки, а проверка совместимости инструментов собирает свою
+    # версию из него через `dataclasses.replace`. Требовать от каждого вызова
+    # передать узел значило бы сломать их все ради значения, которое у этого
+    # этапа одно. Узнаётся этап по объекту, а не по имени: чужая прелюдия с
+    # ключом `materials` получила бы не свою функцию.
+    if prelude is None and pipeline.prelude is roles.MATERIALS:
+        prelude = materials_node
     _require(pipeline, "admission", pipeline.admission, admission is not None)
     _require(pipeline, "prelude", pipeline.prelude is not None, prelude is not None)
     _require(pipeline, "postlude", pipeline.postlude is not None, postlude is not None)
@@ -139,10 +150,7 @@ def build_graph(
     # выполниться никогда, — обещание вызова, которого граф не делает.
     # Конвейеры документов правят выпущенное на следующем ходе треда, а не
     # пишут заново: см. `context_node` и `make_role_node` (revisions).
-    builder.add_node(
-        "context",
-        partial(context_node, external_sources=pipeline.key == "agent", revisions=True),
-    )
+    builder.add_node("context", partial(context_node, revisions=True))
     if pipeline.has_tools:
         builder.add_node("tools", ToolNode(list(pipeline.tools or TOOLS)))
     builder.add_node("over_budget", partial(over_budget_node, pipeline=pipeline))

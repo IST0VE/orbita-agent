@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from agent import confluence, inputs, jira_graph, jira_prompts, jira_roles, jira_writer
+from agent import confluence, inputs, jira_graph, jira_prompts, jira_roles, jira_writer, nodes
 
 # Аналитика приезжает документом, а не просьбой: короткое сообщение этот граф
 # не пускает дальше проверки входа, и тесту прогона нужен настоящий вход.
@@ -795,3 +795,45 @@ def test_a_document_becomes_issues_after_the_operator_names_the_project(
     assert child["parent"] == {"key": "ORB-1"}
     # Ключи видно и в треде: за ними приходят сразу, а не в документ.
     assert "ORB-2" in state["messages"][-1].content
+
+
+# --------------------------------------------------------------------------
+# Форма документов
+# --------------------------------------------------------------------------
+class _Counting:
+    """Подделка модели: один и тот же ответ и счёт вызовов."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        return AIMessage(content=self.content)
+
+
+def test_machine_cards_are_never_rewritten_by_the_alphabet_repair():
+    """
+    Карточки разбирает `jira_plan.py`: строку JSON, переписанную «по-русски»,
+    он не разберёт. Починка алфавита их не трогает — ни запросом, ни текстом.
+    """
+    cards = '{"issues": [{"id": "TASK-1", "summary": "Сделать服务端-часть"}]}'
+    model = _Counting(cards)
+    node = nodes.make_role_node(
+        jira_roles.BY_KEY["issues"], llm=model, pipeline=jira_roles.PIPELINE
+    )
+
+    update = node({"messages": [HumanMessage("разложи")], "artifacts": {}}, {})
+
+    assert model.calls == 1
+    assert update["artifacts"]["issues"] == cards
+
+
+def test_a_prose_stage_gets_its_table_evened_out():
+    ragged = "# Карта\n\n| Сервис | Слой |\n| --- | --- |\n| orders-api | backend | fact |"
+    model = _Counting(ragged)
+    node = nodes.make_role_node(jira_roles.FIRST, llm=model, pipeline=jira_roles.PIPELINE)
+
+    update = node({"messages": [HumanMessage("разложи")], "artifacts": {}}, {})
+
+    assert "| Сервис | Слой |  |" in update["artifacts"]["scope"]

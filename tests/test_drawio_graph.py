@@ -21,7 +21,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent import diagram_roles, drawio_graph, inputs
+from agent import diagram_roles, documents, drawio_graph, inputs, render
 
 QUESTION = "Опиши, что нарисовано на схеме, и собери страницу документации."
 
@@ -328,3 +328,17 @@ def test_a_follow_up_does_not_replace_the_task(folder):
 
     assert second["task"] == QUESTION
     assert [note["text"] for note in second["notes"]] == ["Уточни подписи к связям."]
+
+
+def test_every_stage_page_names_the_diagram_and_its_version(folder):
+    """
+    Страницу открывают по ссылке, а схема меняется: без имени файла и версии не
+    понять, по какой редакции написан документ.
+    """
+    state = run(*[answer(role) for role in diagram_roles.ROLES])
+    pages = documents.stage_pages(state, {}, render.MARKDOWN, "", diagram_roles.PIPELINE)
+
+    version = state["diagram"]["sha256"][:12]
+    assert len(pages) == len(diagram_roles.ROLES)
+    for page in pages:
+        assert f"Схема: `{state['diagram']['name']}`, версия `{version}`" in page["document"]

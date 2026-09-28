@@ -43,10 +43,38 @@ from agent.state import State
 # должно уехать то, что он спросил, а не то, что мы сами дописали.
 CONTEXT_SEPARATOR = "\n\n---\n"
 
+# С чего начинаются блоки, которые нода контекста дописывает после разделителя:
+# справка (`knowledge.BLOCK_TITLE`), память (`memory.BLOCK_TITLE` под `### `),
+# список файлов (`inputs.BLOCK_TITLE`) и материалы по ссылкам из тредов, начатых
+# до прелюдии чтения материалов. Строками, а не импортом: те модули сами
+# зависят от этого через `roles`. Совпадение с их константами держит тест.
+CONTEXT_TITLES = (
+    "Справка из базы знаний",
+    "### Из прошлых обращений",
+    "Файлы задачи",
+    "Источники по ссылкам",
+)
+_CONTEXT_BLOCK = re.compile(
+    re.escape(CONTEXT_SEPARATOR) + "(?:" + "|".join(map(re.escape, CONTEXT_TITLES)) + ")"
+)
+
 
 def operator_question(text: str) -> str:
-    """Вопрос без подставленного контекста."""
-    return text.split(CONTEXT_SEPARATOR, 1)[0].strip()
+    """
+    Вопрос без подставленного контекста.
+
+    Режется только перед блоком, который дописал код. Сам разделитель `---`
+    бывает и в тексте оператора — это обычная Markdown-черта, — и раньше всё
+    после неё пропадало из задачи треда: аналитик получал бриф без второй
+    половины запроса.
+    """
+    match = _CONTEXT_BLOCK.search(text)
+    return (text[: match.start()] if match else text).strip()
+
+
+def has_context(text: str) -> bool:
+    """Дописан ли к вопросу контекст: повторный вход в ноду контекста."""
+    return _CONTEXT_BLOCK.search(text) is not None
 
 
 
@@ -275,15 +303,33 @@ def _stage_section(role: roles.Role, state: State, renderer: render.Renderer) ->
 
 
 def render_stage_body(
-    role: roles.Role, state: State, renderer: render.Renderer | None = None
+    role: roles.Role,
+    state: State,
+    renderer: render.Renderer | None = None,
+    pipeline: Pipeline | None = None,
 ) -> str:
-    """Тело документа этапа: задача и документ роли."""
+    """
+    Тело документа этапа: задача, строка о прочитанном и документ роли.
+
+    Строка о прочитанном (`Pipeline.subject`) стоит на каждой странице: её
+    открывают по ссылке, и вопрос оператора «сделай аналитику по вложению»
+    не говорит, по каким материалам она написана. Приложения, которые пишет
+    код (`Pipeline.appendix`, реестр источников), встают на страницу роли с
+    инструментами: реестр — это след её чтения, и рядом с её документом его
+    сверяют с тем, на что документ ссылается.
+    """
     renderer = renderer or render.STORAGE
-    parts = [
-        renderer.heading("Задача"),
-        _markup(task_of(state), renderer),
-        *_stage_section(role, state, renderer),
-    ]
+    parts = [renderer.heading("Задача"), _markup(task_of(state), renderer)]
+    subject = pipeline.subject(state) if pipeline and pipeline.subject else ""
+    if subject:
+        parts.append(_markup(subject, renderer))
+    parts += _stage_section(role, state, renderer)
+    if pipeline and role.reads_files:
+        artifacts = state.get("artifacts") or {}
+        for key, title in pipeline.appendix:
+            text = (artifacts.get(key) or "").strip()
+            if text:
+                parts.append(renderer.collapsed(title, _markup(text, renderer)))
     return renderer.join(parts)
 
 
@@ -373,7 +419,7 @@ def stage_pages(
 
     pages = []
     for role in pipeline.done(state.get("artifacts")):
-        body = render_stage_body(role, state, renderer)
+        body = render_stage_body(role, state, renderer, pipeline)
         pages.append(
             {
                 "role": role.key,

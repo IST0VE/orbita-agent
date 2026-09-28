@@ -22,7 +22,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from agent import audit_graph, audit_roles, inputs
+from agent import audit_graph, audit_roles, documents, inputs, render
 
 QUESTION = "Сверь пакет документации по выгрузке заказов."
 
@@ -213,3 +213,34 @@ def test_a_pasted_retelling_is_not_a_package(empty_folder):
 
     assert not state.get("usage")
     assert "не с чем" in state["messages"][-1].content
+
+
+# --------------------------------------------------------------------------
+# Страница отчёта
+# --------------------------------------------------------------------------
+def test_the_page_opens_with_the_verdict_and_folds_the_working_stages(folder):
+    """
+    Страницу сверки открывают ради вердикта. Трассировка и расхождения нужны,
+    чтобы его проверить, и лежат под ним свёрнутыми; сверка кодом — приложением.
+    """
+    state = run(*ANSWERS)
+    page = documents.render_pipeline_body(state, render.MARKDOWN, audit_roles.PIPELINE)
+
+    verdict = page.index("Заключение по пакету")
+    assert verdict < page.index("<summary>01. Трассировка</summary>")
+    assert verdict < page.index("<summary>02. Расхождения</summary>")
+    assert f"<summary>{audit_roles.CHECKS_TITLE}</summary>" in page
+    # Под задачей — что именно сверялось: без этого вердикт не проверить.
+    assert "Пакет: архитектура.md, контракт.md, требования.md" in page
+    assert page.index("Пакет:") < verdict
+
+
+def test_a_split_table_row_is_evened_out_before_it_reaches_the_page(folder):
+    """Строка длиннее шапки выпадала из таблицы при конвертации; её добивает код."""
+    ragged = AIMessage(
+        content="# Трассировка\n\n| Требование | Статус |\n| --- | --- |\n| ФТ-1 | покрыто | [ВЫВОД] |",
+        response_metadata=usage_meta(),
+    )
+    state = run(ragged, *ANSWERS[1:])
+
+    assert "| Требование | Статус |  |" in state["artifacts"]["trace"]

@@ -298,7 +298,7 @@ def test_changing_the_documents_voids_the_approval(app, monkeypatch):
     # одобряли не это.
     monkeypatch.setattr(
         "agent.documents.render_stage_body",
-        lambda role, state, renderer=None: "совсем другой документ",
+        lambda role, state, renderer=None, pipeline=None: "совсем другой документ",
     )
 
     result = app.invoke(Command(resume=True), config=CONFIG)

@@ -175,7 +175,12 @@ def _run_case(case: dict, workdir: Path, *, live: bool) -> dict:
         state, failure = {}, f"{type(exc).__name__}: {exc}"
     seconds = round(time.time() - started, 3)
 
-    documents = dict(state.get("artifacts") or {})
+    # Документы ролей, и только они: рядом в `artifacts` код кладёт прочитанные
+    # материалы и реестр источников. Мерить их как документы значило бы
+    # находить факты в самом первоисточнике и считать его строки утверждениями.
+    documents = {
+        key: text for key, text in (state.get("artifacts") or {}).items() if key in pipeline.keys
+    }
     measured = checks.measure(documents, materials=case.get("materials"),
                               versions=case.get("material_versions"),
                               facts=case.get("facts"), contradictions=case.get("contradictions"))

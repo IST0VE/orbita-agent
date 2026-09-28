@@ -431,4 +431,5 @@ PIPELINE = Pipeline(
     subject=subject,
     ledger=ledger,
     tidy=True,
+    russian=True,
 )

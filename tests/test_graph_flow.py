@@ -33,6 +33,11 @@ CONFIG = {"configurable": {"thread_id": "t-1"}}
 TASK = "Спроектировать асинхронную выгрузку данных по материалам встречи."
 
 
+def stages_of(result: dict) -> list[str]:
+    """Документы ролей в порядке появления: код кладёт рядом свои блоки и реестр."""
+    return [key for key in result["artifacts"] if key in roles.KEYS]
+
+
 def usage_meta(hit: int, miss: int, output: int) -> dict:
     return {
         "token_usage": {
@@ -104,7 +109,7 @@ def test_every_role_leaves_its_document(monkeypatch: pytest.MonkeyPatch):
 
     result = run(*PIPELINE)
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert all(text.strip() for text in result["artifacts"].values())
     assert result["stage"] == roles.LAST.key
 
@@ -146,7 +151,7 @@ def test_analyst_reads_a_file_and_the_pipeline_continues(
     assert "выгрузка асинхронная" in answer.content
     # Обращение к инструменту документом не становится: роль не ответила,
     # а спросила.
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 1
 
 
@@ -195,7 +200,7 @@ def test_budget_stops_the_pipeline_and_keeps_what_is_ready(
 
     result = run(*PIPELINE)
 
-    assert list(result["artifacts"]) == [roles.FIRST.key]
+    assert stages_of(result) == [roles.FIRST.key]
     assert result["usage"]["calls"] == 1
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
     assert "Не выполнены этапы" in result["messages"][-1].content
@@ -244,7 +249,7 @@ def test_stray_tool_call_does_not_cost_a_role_its_document(
     result = run(PIPELINE[0], CHATTY, *PIPELINE[2:])
 
     assert result["artifacts"]["api"] == CHATTY.content
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
 
 
 def test_stray_tool_call_does_not_stay_in_the_history(monkeypatch: pytest.MonkeyPatch):
@@ -279,7 +284,7 @@ def test_role_that_only_calls_a_tool_is_asked_again(monkeypatch: pytest.MonkeyPa
 
     result = run(PIPELINE[0], SILENT_CALL, *PIPELINE[1:])
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 1
     # Немой ответ в историю не попал: за ним висел бы вызов без ответа.
     answers = [m for m in result["messages"] if m.type == "ai"]
@@ -405,7 +410,7 @@ def test_analyst_out_of_tool_turns_is_asked_again(monkeypatch: pytest.MonkeyPatc
         config={"configurable": {"thread_id": "t-1", "input_dir": "задача"}},
     )
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 2
 
 

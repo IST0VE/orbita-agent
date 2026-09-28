@@ -121,7 +121,10 @@ def test_pipeline_stops_between_stages_and_spends_nothing_more(
 
     result = app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
 
-    assert result["artifacts"] == {"requirements": "Требования"}
+    # Рядом с требованиями — реестр источников, который пишет код, а не модель.
+    assert {key: result["artifacts"][key] for key in roles.KEYS if key in result["artifacts"]} == {
+        "requirements": "Требования"
+    }
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
     assert result["usage"]["calls"] == 1
 
@@ -224,7 +227,9 @@ def test_tool_loop_ends_on_its_own_without_any_budget(monkeypatch: pytest.Monkey
     # Три хода в инструменты плюс четвёртый, последний, и по одному на
     # остальные четыре роли.
     assert result["usage"]["calls"] == 8
-    assert sorted(result["artifacts"]) == ["api", "architecture", "data", "requirements", "review"]
+    assert sorted(set(result["artifacts"]) & set(roles.KEYS)) == [
+        "api", "architecture", "data", "requirements", "review",
+    ]
 
 
 def test_the_tool_ceiling_is_per_run_not_per_thread(monkeypatch: pytest.MonkeyPatch):

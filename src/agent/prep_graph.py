@@ -94,6 +94,7 @@ Jira он замечает отдельно: с ключом из чужого �
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -197,7 +198,7 @@ def _fetch(question: str) -> dict:
     return {"key": found[0]["key"], "chosen": "search", "matched": found[0]["summary"]}
 
 
-def _materials(question: str, config: RunnableConfig) -> dict:
+def _materials(question: str, config: RunnableConfig, remembered: Sequence[str] = ()) -> dict:
     """
     Файлы, которые оператор дал к задаче: выбранные в интерфейсе или названные
     в запросе. Возвращает имена прочитанных и готовый блок для ролей.
@@ -205,16 +206,11 @@ def _materials(question: str, config: RunnableConfig) -> dict:
     Файлы читает код, а не роль поиска, по тому же доводу, что и тикет: какие
     это файлы, оператор уже сказал, и модели здесь выбирать нечего. Выбирать
     ЗА оператора код тоже не должен: невыбранные файлы только перечисляются.
+    remembered — файлы прошлого хода треда: они остаются материалом задачи,
+    если в новом запросе ничего не выбрано и не названо (`sources.materials`).
     """
-    task = sources.task_dir(config)
-    names = inputs.readable_files(task) if task else []
-    wanted = sources.picked_files(config)
-    if not wanted:
-        lowered = question.lower()
-        wanted = [name for name in names if name.lower() in lowered]
-    found = sources.from_files(question, task, wanted) if task and wanted else None
+    found, others = sources.materials(question, config, remembered)
     read = list((found or {}).get("names") or [])
-    others = [name for name in names if name not in read]
     return {"names": read, "block": prep_roles.files_block(found, others)}
 
 
@@ -329,7 +325,7 @@ def ticket_node(state: State, config: RunnableConfig) -> dict:
     """
     question = sources.question_of(state)
     known = state.get("ticket") or {}
-    materials = _materials(question, config)
+    materials = _materials(question, config, known.get("files") or [])
     files = {prep_roles.FILES: materials["block"]}
     if known.get("key") and known["key"] in (jira.find_keys(question) or [known["key"]]):
         previous = (state.get("artifacts") or {}).get(prep_roles.FILES) or ""

@@ -181,6 +181,8 @@ def package_node(state: State, config: RunnableConfig) -> dict:
         "package": {
             "read": True,
             "kind": picked["kind"],
+            "title": picked.get("title", ""),
+            "url": picked.get("url", ""),
             "names": sorted(documents),
             "requirements": len(report["requirements"]),
             "findings": len(report["findings"]),

@@ -155,6 +155,23 @@ def brief(role: Role, task: str, artifacts: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+def subject(state: dict) -> str:
+    """
+    Какая схема разобрана — строкой под задачей на каждой странице этапа.
+
+    Страницу открывают по ссылке, а версия схемы меняется: без имени файла и
+    хеша не понять, по какой её редакции написан документ.
+    """
+    stats = state.get("diagram") or {}
+    if not stats.get("name"):
+        return ""
+    return (
+        f"Схема: `{stats['name']}`, версия `{str(stats.get('sha256') or '')[:12]}`. "
+        f"Страниц {stats.get('pages', 0)}, элементов {stats.get('nodes', 0)}, "
+        f"связей {stats.get('edges', 0)}, из них полных {stats.get('complete_edges', 0)}."
+    )
+
+
 # Конвейер целиком — то, что получает граф.
 PIPELINE = Pipeline(
     key="drawio",
@@ -177,4 +194,12 @@ PIPELINE = Pipeline(
         title="Чтение схемы",
         summary="Без вызова модели разбирает выбранный файл draw.io.",
     ),
+    subject=subject,
+    # Таблицы компонентов и интеграций — сердце страницы, и строка длиннее
+    # шапки выпадает из таблицы при конвертации в storage. Выравнивает их код;
+    # имена в обратных кавычках — подписи со схемы — починка алфавита не трогает.
+    tidy=True,
+    # Пишет по-русски (`diagram_prompts.COMMON`); подписи со схемы стоят в
+    # обратных кавычках, и их починка алфавита не трогает.
+    russian=True,
 )

@@ -48,6 +48,9 @@ def main() -> None:
             "Read probe.md with read_task_file. Return only the verification code found inside. "
             "Do not guess the code. Do not explain your reasoning."
         ),
+        # The probe checks tool calling on a clean turn: the materials prelude would
+        # read nothing here and put its note in front of the model's first call.
+        prelude=None,
     )
     workspace = Path(__file__).resolve().parents[1]
     with TemporaryDirectory(prefix=".tool-compat-", dir=workspace) as directory:

@@ -24,11 +24,17 @@ SECOND = "Снова обращение по acc-1024. Что у него был
 
 
 class Echo:
-    """Подделка модели: возвращает то, что получила, — видно, что уехало в промпт."""
+    """
+    Подделка модели: возвращает то, что получила, — видно, что уехало в промпт.
+
+    Эхом идёт вход роли — первое сообщение после префикса. У аналитика за ним
+    стоит ещё реплика об остатке ходов в инструменты, и эхо последнего
+    сообщения показывало бы её, а не то, что роль получила.
+    """
 
     def invoke(self, messages: list) -> AIMessage:
         return AIMessage(
-            content=f"Экспорт больше 100000 строк уходит на почту. Вход: {messages[-1].content}",
+            content=f"Экспорт больше 100000 строк уходит на почту. Вход: {messages[1].content}",
             response_metadata={
                 "token_usage": {
                     "prompt_cache_hit_tokens": 100,
@@ -145,11 +151,16 @@ def test_memory_does_not_remember_what_we_appended_ourselves(
     from agent import knowledge
     from agent.graph import CONTEXT_SEPARATOR, operator_question
 
-    assert knowledge.as_block(list(knowledge.builtin_documents()[:1])).startswith(
-        CONTEXT_SEPARATOR
+    reference = knowledge.as_block(list(knowledge.builtin_documents()[:1]))
+    recalled = memory.as_block([("acc-1024", ["факт"])])
+    assert reference.startswith(CONTEXT_SEPARATOR)
+    assert recalled.startswith(CONTEXT_SEPARATOR)
+    assert operator_question(f"Вопрос{reference}") == "Вопрос"
+    assert operator_question(f"Вопрос{recalled}") == "Вопрос"
+    # Черта `---` в тексте самого оператора — часть вопроса, а не наш блок.
+    assert operator_question(f"Вопрос{CONTEXT_SEPARATOR}Уточнение") == (
+        f"Вопрос{CONTEXT_SEPARATOR}Уточнение"
     )
-    assert memory.as_block([("acc-1024", ["факт"])]).startswith(CONTEXT_SEPARATOR)
-    assert operator_question(f"Вопрос{CONTEXT_SEPARATOR}Справка") == "Вопрос"
 
 
 def test_accounts_are_found_once_and_in_order():

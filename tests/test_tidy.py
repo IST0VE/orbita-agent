@@ -93,3 +93,19 @@ def test_source_tags_are_fixed_by_code():
         "см. [ФАЙЛ speech_to_text (9).doc.txt] против [WIKI 123] и [JIRA ORB-1]; "
         "верный [ФАЙЛ speech_to_text (9).doc.txt] не трогается"
     )
+
+
+def test_a_name_in_backticks_is_not_foreign():
+    """
+    В обратных кавычках — имя как в источнике: подпись элемента схемы, путь,
+    команда. Переписать его «по-русски» значит сломать поиск по имени.
+    """
+    text = "Сервис `БДPostgres` пишет в `topic-заказы`.\nСделать服务端-часть"
+
+    assert tidy.foreign_lines(text) == [1]
+
+
+def test_a_repair_may_keep_a_mixed_name_in_backticks():
+    answer = '["Сервис `БДPostgres` пишет в серверную часть"]'
+
+    assert tidy.parse_repair(answer, 1) == ["Сервис `БДPostgres` пишет в серверную часть"]
