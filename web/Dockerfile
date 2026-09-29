@@ -23,6 +23,8 @@ FROM nginxinc/nginx-unprivileged:stable-alpine
 # Тело сервера — отдельным файлом: его же включает nginx/server.conf, который
 # в серверном режиме монтируется вместо default.conf (docker-compose.server.yml).
 COPY nginx/app.conf /etc/nginx/orbita/app.conf
+# Заголовки безопасности страниц: app.conf включает их в каждый свой location.
+COPY nginx/headers.conf /etc/nginx/orbita/headers.conf
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /web/dist /usr/share/nginx/html
 

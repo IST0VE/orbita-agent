@@ -1,8 +1,8 @@
 """Скриншоты портала Orbita для руководств: сценарии аналитики и настройки.
 
 Снимки в `docs/assets/screenshots/` делаются с того же интерфейса, в котором
-работает оператор, и по настоящим прогонам: скрипт выбирает материалы, пишет
-задачу, ждёт этапы и подтверждения. Поэтому кадры соответствуют текущему
+работает оператор, и по настоящим прогонам: скрипт кладёт материалы в чат,
+пишет задачу, ждёт этапы и подтверждения. Поэтому кадры соответствуют текущему
 интерфейсу и коду, а не памяти о них.
 
 Перед запуском нужны три вещи:
@@ -13,15 +13,17 @@
 
 Стендовый backend выбран намеренно: публикация у него идёт в файл, Jira и
 Confluence — моки, так что прогон ради картинки ничего не создаёт в настоящих
-системах. Затем:
+системах. Чтобы в кадры не попали чужие чаты и документы, стенду для съёмки дают
+пустое состояние: `.langgraph_api/` убирают в сторону, а публикации направляют в
+пустую папку — `serve_nt_testbed.py --publish-dir .tmp/shots-published`. Затем:
 
     python scripts/shoot_portal.py                        # все сцены
     python scripts/shoot_portal.py agent drawio           # выбранные
     python scripts/shoot_portal.py --out .tmp/shots --headed
 
 Сцены `agent`, `drawio`, `jira` и `update` — это вызовы модели и записи в
-PUBLISH_DIR; `start`, `scenarios`, `inputs` и `settings` модель не вызывают.
-Настройки лучше снимать с backend на обычном `.env` (`langgraph dev`):
+PUBLISH_DIR; `start`, `scenarios`, `library`, `inputs` и `settings` модель не
+вызывают. Настройки лучше снимать с backend на обычном `.env` (`langgraph dev`):
 стендовый честно предупреждает, что файл разошёлся с работающим процессом, и
 это предупреждение попадёт в кадр.
 
@@ -33,30 +35,35 @@ from pathlib import Path
 
 from portal_shots import (
     ROOT,
-    SCROLL_CONSOLE_TO_END,
     SCROLL_TO_TEXT,
     TESTBED_ENV,
+    add_examples,
     approve_all,
     center_on,
-    console_tab,
-    folder,
     launch,
+    library,
+    open_events,
+    open_example,
     open_portal,
     pick,
     playwright,
+    role,
     run_task,
     shoot,
+    show_chat,
+    upload_files,
     view,
     zoom_out,
 )
 
-# Прогон конвейера по демо-шлюзу модели занимает до получаса: пять ролей по
-# несколько тысяч токенов ответа, а шлюз пускает 30 тысяч за окно около десяти
-# минут, и клиент честно ждёт следующего. Ожидание с запасом дешевле, чем
+# Прогон конвейера по демо-шлюзу модели занимает до часа: пять ролей по
+# несколько тысяч токенов ответа при скорости около 28 токенов в секунду, и
+# клиент честно ждёт следующего окна квоты. Ожидание с запасом дешевле, чем
 # оборванный на середине прогон.
 STEP_MS = 3_600_000
 
-CONSOLE_HEIGHT = 250
+# Высота окна для кадров с длинной карточкой подтверждения.
+TALL = 1500
 
 RUNNING = ".graph-node.node-running"
 PASSED = ".graph-node.node-completed"
@@ -89,6 +96,8 @@ UPDATE_TASK = (
     "Если решения противоречат друг другу или данных недостаточно, "
     "оставь открытый вопрос вместо придуманного контракта."
 )
+UPDATE_BASE = "current-api.md"
+UPDATE_NEW = ("meeting-2026-08-18.md", "mail-finance.md")
 
 
 def open_published(page, needle: str) -> None:
@@ -97,6 +106,7 @@ def open_published(page, needle: str) -> None:
     Список идёт свежими вверх, поэтому первый совпавший — документ этого
     прогона, а не прошлых.
     """
+    show_chat(page)
     outline = page.locator("details.engine-outline").first
     if outline.get_attribute("open") is None:
         outline.locator("summary").first.click()
@@ -115,30 +125,43 @@ def scroll_document(page, *needles: str) -> None:
 
 
 def scene_start(browser, args) -> None:
-    """Первое открытие: ничего не выбрано, прогона не было."""
+    """Первое открытие: чатов нет, файлов нет, прогона не было."""
     context, page = open_portal(browser, args.url, "agent", env_file=args.env,
                                 published_open=False)
+    zoom_out(page, 2)
     shoot(page, args.out, "start.png")
-    context.close()
-
-
-def scene_inputs(browser, args) -> None:
-    """Папка и отдельно отмеченные в ней документы — до запуска."""
-    context, page = open_portal(browser, args.url, "agent", env_file=args.env,
-                                published_open=False)
-    folder(page, "partial-refund")
-    for name in AGENT_PICKED:
-        pick(page, name)
-    shoot(page, args.out, "inputs.png")
     context.close()
 
 
 def scene_scenarios(browser, args) -> None:
     context, page = open_portal(browser, args.url, "agent", env_file=args.env,
                                 published_open=False)
-    page.locator(".app-header button", has_text="Архитектурная аналитика").first.click()
+    page.get_by_role("button", name="Сценарий").first.click()
+    page.locator(".pick-menu").first.wait_for(timeout=15_000)
     page.wait_for_timeout(700)
     shoot(page, args.out, "scenarios.png")
+    context.close()
+
+
+def scene_library(browser, args) -> None:
+    """Окно «Добавить в чат»: примеры администратора, папка раскрыта."""
+    context, page = open_portal(browser, args.url, "agent", env_file=args.env,
+                                published_open=False)
+    dialog = library(page)
+    open_example(dialog, "partial-refund")
+    shoot(page, args.out, "library.png")
+    context.close()
+
+
+def scene_inputs(browser, args) -> None:
+    """Файлы в чате и отмеченные из них два — до запуска."""
+    context, page = open_portal(browser, args.url, "agent", env_file=args.env,
+                                published_open=False)
+    add_examples(page, "partial-refund")
+    for name in AGENT_PICKED:
+        pick(page, name)
+    zoom_out(page, 2)
+    shoot(page, args.out, "inputs.png")
     context.close()
 
 
@@ -146,7 +169,7 @@ def scene_settings(browser, args) -> None:
     context, page = open_portal(browser, args.url, "agent", env_file=args.env,
                                 published_open=False)
     page.locator(".avatar").first.click()
-    page.get_by_text("Настройки приложения").first.click()
+    page.get_by_text("Настройки сервера").first.click()
     page.get_by_text("Состояние подключения").first.wait_for(timeout=30_000)
     page.wait_for_timeout(2500)
     shoot(page, args.out, "settings.png")
@@ -155,49 +178,55 @@ def scene_settings(browser, args) -> None:
 
 def scene_agent(browser, args) -> None:
     context, page = open_portal(browser, args.url, "agent", env_file=args.env,
-                                published_open=False, console_height=CONSOLE_HEIGHT,
-                                thread=args.thread)
+                                published_open=False, thread=args.thread)
     if args.thread:
         # Досъёмка: прогон уже идёт или стоит на подтверждении, кадр хода
         # снят раньше.
         zoom_out(page, 2)
     else:
-        # Аналитика читает папку целиком — так её и советует запускать
+        # Аналитика читает все файлы чата — так её и советует запускать
         # руководство.
-        folder(page, "partial-refund")
+        add_examples(page, "partial-refund")
         run_task(page, AGENT_TASK)
 
         # Кадр прогона — когда первая роль уже выпустила документ, а следующая
-        # работает: видно и ход по графу, и что появилось в результатах.
-        page.locator(".artifact-list details").first.wait_for(timeout=STEP_MS)
+        # работает: видно и ход по графу, и что появилось в результатах. Ждать
+        # надо именно документ аналитика: раньше него в списке появляется
+        # служебное «Материалы оператора» с этапа чтения.
+        page.locator(".artifact-list details", has_text="Системные требования").first.wait_for(
+            timeout=STEP_MS)
         page.wait_for_timeout(3000)
         zoom_out(page, 2)
         if not center_on(page, RUNNING):
             center_on(page, PASSED)
-        console_tab(page, "События")
-        page.evaluate(SCROLL_CONSOLE_TO_END)
         shoot(page, args.out, "run.png")
 
-    approve_all(page, lambda p: shoot(p, args.out, "approval.png"), timeout_ms=STEP_MS,
-                thread=args.thread)
+    approve_all(page, lambda p: shoot(p, args.out, "approval.png", height=TALL),
+                timeout_ms=STEP_MS, thread=args.thread)
 
-    # Итог: граф пройден, в колонках — документы, стоимость и публикация.
+    # Итог: граф пройден, справа — документы, стоимость и публикация.
     view(page, "Схема")
     center_on(page, PASSED)
-    console_tab(page, "События")
-    page.evaluate(SCROLL_CONSOLE_TO_END)
     shoot(page, args.out, "workspace.png")
 
-    open_published(page, "Системные требования")
-    scroll_document(page, "Открытые вопросы", "Противоречия")
+    # Журнал событий: у досъёмки он пуст — интерфейс собирает его из живого
+    # потока, а у чата, открытого заново, потока нет.
+    if not args.thread:
+        open_events(page)
+        shoot(page, args.out, "events.png")
+
+    # Все документы прогона называются по задаче, различает их только номер
+    # этапа; первым в списке стоит последний, «Ревью и финальная версия».
+    open_published(page, "01 Системные требования")
+    scroll_document(page, "Противоречия", "Открытые вопросы")
     shoot(page, args.out, "document.png")
     context.close()
 
 
 def scene_drawio(browser, args) -> None:
     context, page = open_portal(browser, args.url, "drawio", env_file=args.env,
-                                published_open=True, console_height=CONSOLE_HEIGHT)
-    folder(page, "diagram")
+                                published_open=True)
+    add_examples(page, "diagram")
     pick(page, "orders-export.drawio")
     run_task(page, DRAWIO_TASK)
     approve_all(page, timeout_ms=STEP_MS)
@@ -208,8 +237,10 @@ def scene_drawio(browser, args) -> None:
 
 def scene_jira(browser, args) -> None:
     context, page = open_portal(browser, args.url, "jira", env_file=args.env,
-                                published_open=False, console_height=CONSOLE_HEIGHT)
-    folder(page, "partial-refund-package")
+                                published_open=False)
+    # Пакет загружается с диска: к этой сцене «Мои документы» в библиотеке
+    # уже накопились, и окно библиотеки прячет папки примеров под футером.
+    upload_files(page, sorted((ROOT / "input" / "partial-refund-package").glob("*.md")))
     project = page.get_by_label("Проект Jira").first
     project.fill(JIRA_PROJECT)
     run_task(page, JIRA_TASK)
@@ -222,7 +253,7 @@ def scene_jira(browser, args) -> None:
             field = dialog.locator("input[list='approve-projects']").first
             if not field.input_value():
                 field.fill(JIRA_PROJECT)
-            shoot(p, args.out, "jira.png")
+            shoot(p, args.out, "jira.png", height=TALL)
 
     approve_all(page, card, timeout_ms=STEP_MS)
     context.close()
@@ -230,20 +261,22 @@ def scene_jira(browser, args) -> None:
 
 def scene_update(browser, args) -> None:
     context, page = open_portal(browser, args.url, "update", env_file=args.env,
-                                published_open=False, console_height=CONSOLE_HEIGHT)
-    folder(page, "partial-refund", picker=0)
-    pick(page, "current-api.md", picker=0)
-    folder(page, "partial-refund", picker=1)
-    for name in ("meeting-2026-08-18.md", "mail-finance.md"):
-        pick(page, name, picker=1)
+                                published_open=False)
+    # Основной документ и новые материалы лежат в одном чате: роль у каждого
+    # файла своя — «основной» или «материал».
+    add_examples(page, "partial-refund", files=(UPDATE_BASE, *UPDATE_NEW))
+    role(page, UPDATE_BASE, "основной")
+    for name in UPDATE_NEW:
+        role(page, name, "материал")
     run_task(page, UPDATE_TASK)
-    approve_all(page, lambda p: shoot(p, args.out, "update.png"), timeout_ms=STEP_MS)
+    approve_all(page, lambda p: shoot(p, args.out, "update.png", height=TALL), timeout_ms=STEP_MS)
     context.close()
 
 
 SCENES = {
     "start": scene_start,
     "scenarios": scene_scenarios,
+    "library": scene_library,
     "inputs": scene_inputs,
     "settings": scene_settings,
     "agent": scene_agent,
@@ -263,7 +296,7 @@ def main() -> None:
     parser.add_argument("--env", default=str(TESTBED_ENV),
                         help="файл с API_ADMIN_TOKEN того backend, с которым идёт съёмка")
     parser.add_argument("--thread", help="сцена agent: доснять подтверждение и итог по "
-                        "уже запущенному треду, без нового прогона")
+                        "уже запущенному чату, без нового прогона")
     parser.add_argument("--headed", action="store_true", help="показать браузер")
     args = parser.parse_args()
     if unknown := [name for name in args.scenes if name not in SCENES]:

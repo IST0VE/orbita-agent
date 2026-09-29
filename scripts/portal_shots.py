@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TESTBED_ENV = ROOT / ".env.nt-testbed"
 
 # Кадр документации: снимок ужимается по ширине колонки, поэтому окно берётся
-# с запасом по высоте — иначе консоль выполнения съедает полотно графа, — а
-# масштаб двойной, чтобы подписи читались после уменьшения.
+# с запасом по высоте — иначе композер и колонки отнимают у полотна графа
+# слишком много, — а масштаб двойной, чтобы подписи читались после уменьшения.
 VIEWPORT = {"width": 1600, "height": 1000}
 SCALE = 2
 
@@ -70,18 +70,6 @@ SCROLL_DIALOG_TO_TEXT = """(needle) => {
   return true;
 }"""
 
-# Консоль не едет за новыми строками сама: открывается она на первом
-# сообщении, а интересны последние.
-SCROLL_CONSOLE_TO_END = """() => {
-  const body = document.querySelector('.console-body');
-  if (!body) return false;
-  const box = [body, ...body.querySelectorAll('*')]
-    .find((node) => node.scrollHeight > node.clientHeight + 2);
-  if (box) box.scrollTop = box.scrollHeight;
-  return !!box;
-}"""
-
-
 def shown(path: Path) -> str:
     """Путь для вывода: короткий внутри проекта, полный — снаружи."""
     return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
@@ -108,13 +96,12 @@ def launch(driver, *, headed: bool = False):
 
 
 def open_portal(browser, url: str, graph: str, *, env_file: Path = TESTBED_ENV,
-                published_open: bool = True, console_height: int | None = None,
-                thread: str | None = None):
-    """Контекст и страница портала с выбранным графом и новым тредом.
+                published_open: bool = True, thread: str | None = None):
+    """Контекст и страница портала с выбранным графом и новым чатом.
 
-    Контекст свой на каждую сцену: браузер запоминает тред по графу, и без
-    чистого хранилища следующий кадр продолжил бы прошлый прогон. `thread`
-    открывает уже существующий тред — досъёмка без нового прогона.
+    Контекст свой на каждую сцену: браузер запоминает последний открытый чат,
+    и без чистого хранилища следующий кадр продолжил бы прошлый прогон. `thread`
+    открывает уже существующий чат — досъёмка без нового прогона.
     """
     context = browser.new_context(viewport=VIEWPORT, device_scale_factor=SCALE,
                                   color_scheme="light", locale="ru-RU")
@@ -123,18 +110,16 @@ def open_portal(browser, url: str, graph: str, *, env_file: Path = TESTBED_ENV,
     script = (
         f"sessionStorage.setItem('orbita.adminApiToken', {json.dumps(token(env_file))});"
         f"localStorage.setItem('orbita.graph', {json.dumps(graph)});"
-        "Object.keys(localStorage).filter(k => k.startsWith('orbita.thread'))"
+        "Object.keys(localStorage).filter(k => /^orbita[.](chat|thread)/.test(k))"
         ".forEach(k => localStorage.removeItem(k));")
     if thread:
-        script += f"localStorage.setItem('orbita.thread.{graph}', {json.dumps(thread)});"
+        # Последний открытый чат — один на пользователя, вместе со сценарием.
+        chat = json.dumps({"thread": thread, "graph": graph})
+        script += f"localStorage.setItem('orbita.chat', {json.dumps(chat)});"
     if published_open:
         # Список опубликованных документов свёрнут по умолчанию, и кнопки
         # внутри него скрыты: клик по невидимому элементу не проходит.
         script += "localStorage.setItem('orbita.published.open', '1');"
-    if console_height:
-        # Консоль по умолчанию занимает треть окна и оставляет полотну графа
-        # полосу; высота — та же, что оператор задаёт, потянув за кромку.
-        script += f"localStorage.setItem('orbita.console.height', '{console_height}');"
     # Скрипт выполняется при каждой загрузке, а не один раз: перезагрузка
     # страницы посреди сцены не должна терять тред, поэтому чистка — только
     # на первой.
@@ -176,12 +161,15 @@ def run_status(page) -> str:
     return page.locator(RUN_STATUS).first.inner_text()
 
 
-def wait_status(page, *labels: str, timeout_ms: int, refresh_ms: int | None = None) -> str:
+def wait_status(page, *labels: str, timeout_ms: int, refresh_ms: int | None = None,
+                tick=None) -> str:
     """Дождаться одного из статусов прогона в строке контекста.
 
     `refresh_ms` — перечитывать страницу с такой частотой. Нужно треду,
     открытому заново: живой поток продолжения он не получает, и строка
-    статуса без перезагрузки так и осталась бы прежней.
+    статуса без перезагрузки так и осталась бы прежней. `tick(page)` зовётся
+    на каждом проходе ожидания: там снимают то, что видно только пока прогон
+    идёт, например живые метрики нагрузки.
     """
     deadline = time.monotonic() + timeout_ms / 1000
     refreshed = time.monotonic()
@@ -190,6 +178,8 @@ def wait_status(page, *labels: str, timeout_ms: int, refresh_ms: int | None = No
         for label in labels:
             if label in status:
                 return label
+        if tick:
+            tick(page)
         if refresh_ms and (time.monotonic() - refreshed) * 1000 >= refresh_ms:
             reload(page)
             refreshed = time.monotonic()
@@ -217,7 +207,8 @@ def thread_status(page, thread: str) -> str:
     return page.evaluate(THREAD_STATUS, thread)
 
 
-def approve_all(page, on_card=None, *, timeout_ms: int, thread: str | None = None) -> None:
+def approve_all(page, on_card=None, *, timeout_ms: int, thread: str | None = None,
+                tick=None) -> None:
     """Подтверждать остановки, пока прогон не закончится.
 
     `on_card(page)` вызывается на каждой карточке до нажатия: там и снимают.
@@ -240,7 +231,8 @@ def approve_all(page, on_card=None, *, timeout_ms: int, thread: str | None = Non
         if left <= 0:
             raise TimeoutError("прогон не закончился за отведённое время")
         state = wait_status(page, "Ждёт решения", *done, "Ошибка", "Остановлен",
-                            timeout_ms=left, refresh_ms=20_000 if resumed else None)
+                            timeout_ms=left, refresh_ms=20_000 if resumed else None,
+                            tick=tick)
         if state == "Готов к работе":
             server = thread_status(page, thread)
             if server in ("busy", "interrupted"):
@@ -263,44 +255,135 @@ def approve_all(page, on_card=None, *, timeout_ms: int, thread: str | None = Non
         if on_card:
             on_card(page)
         button.click()
-        # Нажатая кнопка гаснет, пока идёт запрос, и остаётся в разметке:
-        # следующий проход не должен принять её за новую остановку.
-        try:
-            page.locator(".approve").first.wait_for(state="detached", timeout=60_000)
-        except Exception:
-            # Карточка треда, открытого заново, после ответа остаётся на экране,
-            # хотя сервер решение принял: поток продолжения интерфейс не
-            # подхватывает. Состояние перечитывается с сервера.
-            reload(page)
+        settle_after_click(page, timeout_ms=left, resumed=resumed)
+
+
+def settle_after_click(page, *, timeout_ms: int, resumed: bool = False) -> None:
+    """Дождаться, пока решение по карточке подтверждения примется.
+
+    Нажатая кнопка гаснет, пока идёт запрос, и остаётся в разметке. Карточка
+    после ответа не обязана исчезать: пока граф работает дальше, она стоит
+    погашенной, а следующая остановка приходит в тот же элемент — это и есть
+    «новая карточка». Поэтому ждём не «карточка ушла», а «карточка ушла или
+    кнопка ожила снова», и делаем это долго: продолжение может идти минуты.
+    Перезагрузка страницы тут вредна — закрытый поток отменяет прогон, и
+    снимать будет нечего.
+    """
+    try:
+        # Сначала дождаться, что нажатие дошло: до перерисовки кнопка ещё
+        # жива, и без этого ожидание ниже вернулось бы сразу.
+        page.wait_for_function(
+            "(selector) => !document.querySelector(selector)",
+            arg=LIVE_APPROVE, timeout=15_000)
+    except Exception:
+        return
+    try:
+        page.wait_for_function(
+            "(selector) => !document.querySelector('.approve')"
+            " || document.querySelector(selector)",
+            arg=LIVE_APPROVE, timeout=timeout_ms)
+    except Exception:
+        if not resumed:
+            raise
+        # Карточка чата, открытого заново, после ответа остаётся на экране,
+        # хотя сервер решение принял: поток продолжения интерфейс не
+        # подхватывает. Состояние перечитывается с сервера.
+        reload(page)
 
 
 def view(page, name: str) -> None:
     """Вид рабочей области: «Схема», «Результат» или «Документ»."""
-    page.locator(".workspace-bar .tab", has_text=name).first.click()
+    page.locator(".workspace-bar .tab", has_text=name).first.click(timeout=10_000)
     page.wait_for_timeout(500)
 
 
-def console_tab(page, name: str) -> None:
-    """Вкладка консоли выполнения: «Поток» или «События»."""
-    page.locator(".console-tabs .tab", has_text=name).first.click()
+def open_events(page) -> None:
+    """Раскрыть журнал событий прогона в правой колонке.
+
+    Отдельной консоли больше нет: события живут во второй вкладке правой
+    колонки — «Сценарий» до прогона и «Прогон» после него, — в свёрнутом
+    блоке, а колокольчик в шапке подводит взгляд к нему.
+    """
+    page.locator(".inspector-tab").nth(1).click()
+    events = page.locator("details.run-events").first
+    events.wait_for(timeout=15_000)
+    if events.get_attribute("open") is None:
+        events.locator("summary").first.click()
+    # Блок стоит внизу вкладки, под расходом и публикацией: без прокрутки на
+    # кадре видна только его шапка.
+    events.evaluate("(node) => node.scrollIntoView({block: 'start'})")
+    page.wait_for_timeout(500)
+
+
+def show_chat(page) -> None:
+    """Вернуть правую колонку на вкладку «Чат»."""
+    page.locator(".inspector-tab", has_text="Чат").first.click()
     page.wait_for_timeout(400)
 
 
-def folder(page, name: str, picker: int = 0) -> None:
-    """Выбрать папку задачи в дереве материалов.
+def library(page):
+    """Открыть окно «Добавить в чат» и вернуть его."""
+    page.get_by_label("Добавить из библиотеки").click()
+    dialog = page.locator(".chat-library").first
+    dialog.wait_for(timeout=15_000)
+    # Список примеров едет отдельным запросом: до него в окне только «Загрузка…».
+    dialog.locator(".chat-library-body").wait_for(timeout=15_000)
+    page.wait_for_timeout(400)
+    return dialog
 
-    Деревьев бывает несколько: у обновления документа своё для основного
-    документа и своё для новых материалов, и различаются они только порядком.
+
+def open_example(dialog, name: str) -> None:
+    """Раскрыть папку примеров в окне библиотеки (имя точное: `partial-refund` не `-package`)."""
+    dialog.locator(f".chat-library-toggle:has(.truncate:text-is('{name}'))").first.click()
+    dialog.page.wait_for_timeout(400)
+
+
+def add_examples(page, name: str, files: tuple[str, ...] | None = None) -> None:
+    """Скопировать в чат примеры из библиотеки: всю папку или выбранные файлы.
+
+    Файлы попадают в чат копией, как и при загрузке с компьютера: первая же
+    копия заводит чат из черновика, поэтому после неё список слева уже с ним.
     """
-    tree = page.locator(".task-picker").nth(picker)
-    tree.locator(f".task-picker-row button:has(.name:text-is('{name}'))").first.click()
+    dialog = library(page)
+    open_example(dialog, name)
+    rows = dialog.locator(".chat-library-folder", has=page.locator(
+        f".chat-library-toggle:has(.truncate:text-is('{name}'))")).locator("li")
+    total = rows.count()
+    for index in range(total):
+        row = rows.nth(index)
+        label = row.locator(".text").first.inner_text()
+        if files is not None and label not in files:
+            continue
+        row.get_by_role("button", name="В чат").click()
+        row.get_by_role("button", name="В чате").wait_for(timeout=30_000)
+    dialog.get_by_role("button", name="Готово").click()
+    dialog.wait_for(state="detached", timeout=15_000)
     page.wait_for_timeout(800)
 
 
-def pick(page, name: str, picker: int = 0) -> None:
-    """Отметить или снять файл в раскрытой папке."""
-    tree = page.locator(".task-picker").nth(picker)
-    tree.locator(f".task-picker-files button:has(.name:text-is('{name}'))").first.click()
+def upload_files(page, paths) -> None:
+    """Загрузить файлы с диска в чат — кнопкой «Загрузить», как оператор.
+
+    Нужна там, где библиотека недоступна: при длинном списке «Моих документов»
+    окно библиотеки сжимает тело, и папки примеров оказываются под футером.
+    """
+    names = [Path(path).name for path in paths]
+    page.locator(".chat-files input[type=file]").first.set_input_files([str(path) for path in paths])
+    for name in names:
+        page.locator(".chat-files-list .chat-file-name", has_text=name).first.wait_for(timeout=30_000)
+    page.wait_for_timeout(800)
+
+
+def pick(page, name: str) -> None:
+    """Отметить файл чата отметкой «в прогон» (у сценариев с одной отметкой)."""
+    page.get_by_role("checkbox", name=f"отметить {name}").first.click()
+    page.wait_for_timeout(400)
+
+
+def role(page, name: str, label: str) -> None:
+    """Отметить файл чата ролью: «основной» или «материал» у обновления документа."""
+    row = page.locator(".chat-files-list li", has=page.locator(f".text:text-is('{name}')")).first
+    row.get_by_role("button", name=label).first.click()
     page.wait_for_timeout(400)
 
 
@@ -348,9 +431,27 @@ def zoom_out(page, steps: int) -> None:
     page.wait_for_timeout(500)
 
 
-def shoot(page, out: Path, name: str) -> Path:
-    """Кадр страницы. Chromium изредка не отдаёт первый."""
+def shoot(page, out: Path, name: str, *, height: int | None = None) -> Path:
+    """Кадр страницы. Chromium изредка не отдаёт первый.
+
+    `height` — временно вытянуть окно: карточка подтверждения с несколькими
+    документами не влезает в обычное, прокручивается внутри, и кнопок решения
+    на кадре не видно. Ширина остаётся прежней, так что кадр ложится в ту же
+    колонку документации.
+    """
     path = out / name
+    if height:
+        page.set_viewport_size({"width": VIEWPORT["width"], "height": height})
+        page.wait_for_timeout(500)
+    try:
+        return _shoot(page, path)
+    finally:
+        if height:
+            page.set_viewport_size(VIEWPORT)
+            page.wait_for_timeout(300)
+
+
+def _shoot(page, path: Path) -> Path:
     rest(page)
     for attempt in range(3):
         try:

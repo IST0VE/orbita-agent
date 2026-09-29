@@ -23,7 +23,7 @@ docker compose --profile monitoring up -d
 | Grafana, доска «Orbita» | http://localhost:3000 | `ORBITA_GRAFANA_PORT` |
 | Prometheus | http://localhost:9090 | `ORBITA_PROMETHEUS_PORT` |
 
-Оба порта открыты только на петлю, как порты агента и интерфейса. Смотреть доску можно без входа. Чтобы что-то менять в Grafana, войдите как `admin` с паролем `GRAFANA_ADMIN_PASSWORD` (по умолчанию `admin`). Пароль задаётся один раз, когда создаётся том `grafana`; потом его меняют уже в самой Grafana.
+Оба порта открыты только на петлю, как порты агента и интерфейса. Смотреть доску можно без входа. Чтобы что-то менять в Grafana, войдите как `admin` с паролем `GRAFANA_ADMIN_PASSWORD` из `.env`: `up.cmd` и `up.sh` записывают туда случайный, а без них остаётся `admin`. Пароль задаётся один раз, когда создаётся том `grafana`; потом его меняют уже в самой Grafana. Том, заведённый до того, как появился случайный пароль, так и живёт с `admin`: смените его в Grafana (профиль admin → Change password) или командой `docker compose exec grafana grafana cli admin reset-admin-password <пароль>`.
 
 ## Доска
 

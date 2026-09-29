@@ -92,8 +92,31 @@ _RESERVED_NAMES = frozenset(
         "NT_RUNNER_TOKEN",
         "POSTGRES_PASSWORD",
         "POSTGRES_URI",
+        # Адрес — это то, куда уходит токен. Jira и Confluence получают личные
+        # токены всех пользователей: сменив адрес из интерфейса, администратор
+        # (или тот, кто увёл его вход) собрал бы их на своём сервере, и повторный
+        # ввод общего токена этого бы не остановил. Открытый HTTP — то же самое,
+        # только токены читает любой в сети. Runner — пара с NT_RUNNER_TOKEN,
+        # который правится только на сервере.
+        "JIRA_BASE_URL",
+        "CONFLUENCE_BASE_URL",
+        "JIRA_ALLOW_INSECURE_HTTP",
+        "CONFLUENCE_ALLOW_INSECURE_HTTP",
+        "NT_RUNNER_URL",
     }
 )
+#: Адрес и секрет, который на него уходит. Сменить адрес из интерфейса можно,
+#: но только вместе с секретом: иначе сохранённый ключ поехал бы на новый адрес,
+#: не показываясь никому, — и страница настроек стала бы способом его увести.
+_SECRET_DESTINATIONS: dict[str, tuple[str, ...]] = {
+    "LLM_API_BASE": ("LLM_API_KEY",),
+    "NT_PROMETHEUS_URL": ("NT_PROMETHEUS_TOKEN",),
+    "NT_INFLUX_URL": ("NT_INFLUX_TOKEN",),
+    "NT_KUBERNETES_URL": ("NT_KUBERNETES_TOKEN",),
+    "NT_LOAD_TESTING_URL": ("NT_LOAD_TESTING_TOKEN",),
+}
+#: Почему поле из `_RESERVED_*` закрыто — строкой для интерфейса.
+RESERVED_REASON = "правится только в .env на сервере"
 _NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _COMMENT_MAX = 2000
 #: Раздел для переменных, которых нет в `.env.example`.
@@ -476,7 +499,8 @@ def describe() -> dict:
             "secret": secret,
             "editable": can_edit(name) and name not in pinned,
             # Почему поле не правится, если причина не «нет в .env.example».
-            **({"locked": "задаёт docker-compose.yml"} if name in pinned else {}),
+            **({"locked": "задаёт docker-compose.yml"} if name in pinned
+               else {"locked": RESERVED_REASON} if is_reserved(name) else {}),
             "comment": written.get(name, ""),
             "filled": bool(value),
             # Секрет наружу не отдаётся никогда: только маска.
@@ -527,6 +551,11 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
 
     path = env_path()
     with _SAVE_LOCK:
+        if orphaned := _orphaned_secrets(updates, _read_env_file()):
+            raise ValueError(
+                "адрес сменён, а секрет, который на него уйдёт, — нет. Введите заново: "
+                + ", ".join(orphaned)
+            )
         raw = path.read_bytes() if path.exists() else b""
         existing = raw.decode("utf-8").splitlines()
         # `.env`, заведённый в Блокноте, — с CRLF. Первое же сохранение из
@@ -586,6 +615,24 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
 
         _write(path, eol.join(out) + eol)
     return {"saved": sorted({*updates, *texts}), "path": path.name, "apply": apply_hint()}
+
+
+def _orphaned_secrets(updates: dict[str, str], current: dict[str, str]) -> list[str]:
+    """
+    Секреты, которые уехали бы на сменённый адрес без повторного ввода.
+
+    Секрет в том же сохранении — новый или стёртый — снимает вопрос: новый
+    вводит тот, кто его знает, стёртый не уйдёт никуда. Пустой секрет в файле
+    уводить нечего.
+    """
+    orphaned = []
+    for url, secrets in _SECRET_DESTINATIONS.items():
+        if url not in updates or updates[url] == current.get(url, ""):
+            continue
+        orphaned.extend(
+            secret for secret in secrets if current.get(secret) and secret not in updates
+        )
+    return orphaned
 
 
 def _write(path: Path, text: str) -> None:

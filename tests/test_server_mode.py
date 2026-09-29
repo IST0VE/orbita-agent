@@ -65,8 +65,12 @@ LOCAL_REALM = json.loads(
 SERVER_REALM = json.loads(
     (ROOT / "config" / "keycloak" / "server" / "orbita-realm.json").read_text(encoding="utf-8")
 )
-#: Чем серверный realm строже локального — и больше ничем.
-SERVER_ONLY = {"bruteForceProtected", "registrationAllowed", "resetPasswordAllowed"}
+#: Чем серверный realm строже локального — и больше ничем: защита от подбора,
+#: закрытая регистрация и журнал входов и действий администратора.
+SERVER_ONLY = {
+    "bruteForceProtected", "failureFactor", "registrationAllowed", "resetPasswordAllowed",
+    "eventsEnabled", "eventsExpiration", "adminEventsEnabled", "adminEventsDetailsEnabled",
+}
 
 
 def public(value: str) -> str:
@@ -89,7 +93,16 @@ def test_the_server_realm_is_the_local_realm_without_test_users():
 
     assert "users" not in SERVER_REALM
     assert server == local
-    assert all(SERVER_REALM[name] in (True, False) for name in SERVER_ONLY)
+    assert all(name in SERVER_REALM for name in SERVER_ONLY)
+
+
+def test_the_server_realm_keeps_a_login_journal():
+    """Кто входил, кто ошибался паролем, что правили в консоли — для разбора инцидента."""
+    assert SERVER_REALM["bruteForceProtected"] is True
+    assert SERVER_REALM["eventsEnabled"] is True
+    assert SERVER_REALM["adminEventsEnabled"] is True
+    # Тело правки в консоли не пишется: в нём бывает пароль привязки LDAP.
+    assert SERVER_REALM["adminEventsDetailsEnabled"] is False
 
 
 def test_the_server_realm_returns_only_to_the_public_address():
@@ -148,6 +161,28 @@ def test_the_server_serves_the_same_application_as_the_local_one():
     # На сервере server.conf встаёт на место default.conf, а не рядом с ним:
     # два сервера на одном порту nginx не поднял бы.
     assert "./web/nginx/server.conf:/etc/nginx/conf.d/default.conf:ro" in SERVER["web"]["volumes"]
+
+
+def test_every_page_nginx_serves_refuses_to_be_framed():
+    """
+    `frame-ancestors` из <meta> браузер не читает, а `add_header` в location
+    отменяет унаследованные: заголовки обязаны стоять в каждом location страниц.
+    """
+    app = (ROOT / "web" / "nginx" / "app.conf").read_text(encoding="utf-8")
+    headers = (ROOT / "web" / "nginx" / "headers.conf").read_text(encoding="utf-8")
+    default = (ROOT / "web" / "nginx" / "default.conf").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "web" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "frame-ancestors 'none'" in headers
+    assert 'X-Frame-Options "DENY"' in headers
+    assert "COPY nginx/headers.conf /etc/nginx/orbita/headers.conf" in dockerfile
+    static = re.findall(r"location\s+(?:=\s*)?(/[^\s{]*)\s*\{([^}]*)\}", app)
+    assert {path for path, _ in static} >= {"/", "/assets/", "/index.html"}
+    for path, body in static:
+        assert "include /etc/nginx/orbita/headers.conf;" in body, path
+    # Переменная HSTS нужна обоим серверам: без неё nginx не запустится.
+    assert 'set $orbita_hsts "";' in default
+    assert 'set $orbita_hsts "max-age=31536000";' in NGINX
 
 
 def test_tls_belongs_to_the_corporate_proxy():

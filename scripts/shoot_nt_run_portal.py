@@ -23,25 +23,27 @@
 """
 
 import argparse
+import time
 from pathlib import Path
 
 from portal_shots import (
     LIVE_APPROVE,
     ROOT,
-    SCROLL_CONSOLE_TO_END,
     SCROLL_DIALOG_TO_TEXT,
     SCROLL_TO_TEXT,
     approve_all,
-    console_tab,
     expand,
     launch,
+    open_events,
     open_portal,
     playwright,
     reload,
     run_task,
+    settle_after_click,
     shoot,
     shoot_box,
     shown,
+    show_chat,
     view,
     zoom_out,
 )
@@ -82,8 +84,7 @@ def main() -> None:
 
     with playwright() as driver:
         browser = launch(driver, headed=args.headed)
-        context, page = open_portal(browser, args.url, "nt_run", console_height=250,
-                                    thread=args.thread)
+        context, page = open_portal(browser, args.url, "nt_run", thread=args.thread)
         if not args.thread:
             # Граф до запуска: видно топологию конвейера и выбранный сценарий.
             zoom_out(page, 2)
@@ -118,34 +119,60 @@ def main() -> None:
             expand(summary)
             page.wait_for_timeout(400)
         approve.click()
-        try:
-            page.locator(".approve").first.wait_for(state="detached", timeout=60_000)
-        except Exception:
-            reload(page)
+        settle_after_click(page, timeout_ms=STEP_MS, resumed=args.thread is not None)
 
-        # Пробный прогон, затем основной. Метрики живут во вкладке «Результат»;
-        # снимок нужен, пока нагрузка идёт. Тред, открытый заново, живой поток
-        # не получает — его состояние перечитывается перезагрузкой.
-        view(page, "Результат")
+        published: list[bool] = []
+        live: list[bool] = []
+
         if args.thread:
+            # Пробный прогон, затем основной. Метрики живут во вкладке
+            # «Результат»; чат, открытый заново, живой поток не получает — его
+            # состояние перечитывается перезагрузкой.
+            view(page, "Результат")
             page.wait_for_timeout(LIVE_SHOT_MS)
             reload(page)
             view(page, "Результат")
-        page.get_by_text(LIVE_WIDGET).first.wait_for(timeout=STEP_MS)
-        if not args.thread:
-            page.wait_for_timeout(LIVE_SHOT_MS)
-        shoot(page, out, "portal-live.png")
+            page.get_by_text(LIVE_WIDGET).first.wait_for(timeout=STEP_MS)
+            shoot(page, out, "portal-live.png")
+            live.append(True)
 
-        # Дальше остановки только на публикации: сначала документ вложенного
-        # анализа, потом отчёт кампании. Снимается первая встреченная.
-        published: list[bool] = []
+        seen: dict[str, float] = {}
+
+        def watch(p) -> None:
+            """Кадр живых метрик: пока нагрузка идёт, окна подтверждения нет.
+
+            Между запуском и публикацией граф ещё останавливается — модель просит
+            запрос к метрикам, планировщик просит повторный прогон, — и такие
+            карточки просто подтверждаются. А метрики видны, лишь пока идёт
+            нагрузка: кадр снимается через `LIVE_SHOT_MS` после их появления.
+            """
+            if live or p.locator(".approve").count():
+                return
+            if "view" not in seen:
+                try:
+                    view(p, "Результат")
+                except Exception:
+                    # Окно подтверждения успело появиться между проверкой и
+                    # щелчком: вкладку переключит следующий проход.
+                    return
+                seen["view"] = time.monotonic()
+            if p.get_by_text(LIVE_WIDGET).count():
+                seen.setdefault("metrics", time.monotonic())
+                if (time.monotonic() - seen["metrics"]) * 1000 >= LIVE_SHOT_MS:
+                    shoot(p, out, "portal-live.png")
+                    live.append(True)
 
         def card(p) -> None:
-            if not published:
+            # Публикация — единственная карточка, которую снимаем здесь под
+            # своим именем; остальные (запрос к метрикам, повторный прогон)
+            # только подтверждаются.
+            if not published and p.locator(".approve").first.get_by_text(
+                    "Подготовлено объектов").count():
                 shoot(p, out, "portal-publish-approval.png")
                 published.append(True)
 
-        approve_all(page, card, timeout_ms=STEP_MS, thread=args.thread)
+        approve_all(page, card, timeout_ms=STEP_MS, thread=args.thread,
+                    tick=None if args.thread else watch)
 
         # Итоги кампании: план, test_id, измерения прогонов, анализ.
         view(page, "Результат")
@@ -153,6 +180,7 @@ def main() -> None:
         shoot(page, out, "portal-state.png")
 
         # Отчёт кампании публикуется последним, а список идёт свежими вверх.
+        show_chat(page)
         document_button = page.locator(
             "details.engine-outline .resource-list button",
             has_text="Проведи нагрузочное тестирование").first
@@ -167,10 +195,8 @@ def main() -> None:
             page.wait_for_timeout(500)
             shoot(page, out, "portal-report-analysis.png")
 
-        console_tab(page, "События")
-        page.evaluate(SCROLL_CONSOLE_TO_END)
-        page.wait_for_timeout(500)
-        shoot_box(page, page.locator(".console").first, out, "portal-log.png", pad=0)
+        open_events(page)
+        shoot_box(page, page.locator(".inspector").first, out, "portal-log.png", pad=0)
 
         report = Path(args.report)
         report.parent.mkdir(parents=True, exist_ok=True)

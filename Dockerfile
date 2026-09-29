@@ -17,10 +17,16 @@ FROM python:3.12-slim
 
 # PYTHONUNBUFFERED — чтобы логи сервера появлялись в `docker compose logs`
 # сразу, а не когда буфер сочтёт нужным.
+#
+# LANGGRAPH_CLI_NO_ANALYTICS — `langgraph dev` при каждом запуске отправляет
+# сведения о машине и флагах запуска на внешний сервис аналитики LangChain.
+# Содержимого тредов там нет, но сервер в закрытом контуре наружу ходить не
+# должен вовсе, и лишнее обращение в журнале прокси — вопрос к ИБ.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LANGGRAPH_CLI_NO_ANALYTICS=1
 
 WORKDIR /app
 

@@ -179,6 +179,8 @@ def test_both_launchers_do_the_same_checks(script: str):
                  "nt-runner.example.json", "host.docker.internal",
                  # Пароль базы и ключ личных токенов создаются при первом запуске.
                  "POSTGRES_PASSWORD", "USER_SECRETS_KEY",
+                 # И пароль Grafana: иначе она заводится с admin / admin.
+                 "GRAFANA_ADMIN_PASSWORD",
                  # Серверный режим: адрес, файл Compose, пароль консоли Keycloak.
                  "ORBITA_PUBLIC_URL", "docker-compose.yml:docker-compose.server.yml",
                  "KEYCLOAK_ADMIN_PASSWORD"):

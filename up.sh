@@ -77,7 +77,9 @@ fi
 # POSTGRES_PASSWORD — пароль базы при создании тома pgdata; USER_SECRETS_KEY —
 # ключ личных токенов. Оба нужны один раз и потом не меняются. METRICS_TOKEN —
 # токен Prometheus из профиля monitoring: без профиля он просто не нужен.
-for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN METRICS_TOKEN POSTGRES_PASSWORD USER_SECRETS_KEY; do
+# GRAFANA_ADMIN_PASSWORD — пароль admin в Grafana того же профиля; без него
+# Grafana заводится с admin / admin.
+for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN METRICS_TOKEN POSTGRES_PASSWORD USER_SECRETS_KEY GRAFANA_ADMIN_PASSWORD; do
   if [ -z "$(env_get "$name")" ]; then
     secret=$(new_secret)
     [ "${#secret}" -ge 32 ] || fail "Не удалось получить случайные байты из /dev/urandom для $name."
