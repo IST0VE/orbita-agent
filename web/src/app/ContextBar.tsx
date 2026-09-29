@@ -6,9 +6,12 @@
  * лежал в шапке, на второй — в левой колонке, а на третий — сразу в трёх
  * местах и разными словами.
  *
- * Здесь же стоят действия самого сценария: начать заново и открыть консоль.
- * Глобальных действий здесь нет — они в шапке; действий над объектами нет —
- * они рядом с объектами.
+ * Здесь же стоят действия самого сценария: остановить, поставить на паузу,
+ * начать новый чат. Глобальных действий здесь нет — они в шапке; действий
+ * над объектами нет — они рядом с объектами.
+ *
+ * Переключателя консоли выполнения больше нет: разговор и ход прогона стоят
+ * в колонке чата, а события движка — во вкладке «Прогон» той же колонки.
  */
 
 import { RUN_LABELS, RUN_TONES } from "../engine/runtime/labels";
@@ -20,7 +23,6 @@ import {
   PanelRight,
   Pause,
   Plus,
-  ScrollText,
   Square,
 } from "../ui/icons";
 import { StatusDot } from "../ui";
@@ -41,9 +43,6 @@ export function ContextBar({
   onCancelPause,
   onNewThread,
   newThreadDisabled,
-  events,
-  consoleOpen,
-  onToggleConsole,
   sidebarOpen,
   onToggleSidebar,
   inspectorOpen,
@@ -71,9 +70,6 @@ export function ContextBar({
   onCancelPause: () => void;
   onNewThread: () => void;
   newThreadDisabled: boolean;
-  events: number;
-  consoleOpen: boolean;
-  onToggleConsole: () => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   inspectorOpen: boolean;
@@ -156,9 +152,9 @@ export function ContextBar({
         </button>
 
         {/*
-          Три переключателя панелей рядом: показать материалы, показать
-          подробности, показать консоль. Это один вид действий — «что ещё
-          видно на экране», — и место у них одно.
+          Переключатели колонок рядом: список чатов и открытый чат с
+          подробностями. Это один вид действий — «что ещё видно на экране», —
+          и место у них одно.
         */}
         <span className="panel-toggles">
           <button
@@ -172,24 +168,13 @@ export function ContextBar({
           </button>
           <button
             className="btn-ghost btn-icon btn-sm"
-            aria-label="Колонка файлов и подробностей"
+            aria-label="Колонка чата и подробностей"
             aria-pressed={inspectorOpen}
-            title={inspectorOpen ? "Скрыть файлы и подробности" : "Показать файлы чата и подробности"}
+            title={inspectorOpen ? "Скрыть чат и подробности" : "Показать чат: файлы, ход прогона и результаты"}
             onClick={onToggleInspector}
           >
             <PanelRight size={15} aria-hidden="true" />
           </button>
-        <button
-          className="btn-ghost btn-sm console-toggle"
-          aria-label="Консоль выполнения"
-          aria-pressed={consoleOpen}
-          title={consoleOpen ? "Скрыть консоль выполнения" : "Показать консоль выполнения"}
-          onClick={onToggleConsole}
-        >
-          <ScrollText size={15} aria-hidden="true" />
-          {events ? <span className="console-toggle-count">{events}</span> : null}
-          {running ? <span className="dot dot-run" aria-hidden="true" /> : null}
-        </button>
         </span>
       </div>
     </div>

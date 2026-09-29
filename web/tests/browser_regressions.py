@@ -159,8 +159,11 @@ ME_RELEASED.set()
 CREATE_DELAY = 0.0
 # Куда уехали загруженные файлы: тред на каждый файл.
 UPLOADS: list[str] = []
-# Чьи списки чатов запрашивал интерфейс: сценарий на каждый запрос.
-SEARCHES: list[str] = []
+# С каким фильтром интерфейс запрашивал список чатов: он общий, фильтра нет.
+SEARCHES: list[object] = []
+# Сценарий чата после PATCH: чат без запросов уходит в новый сценарий.
+CHAT_GRAPHS: dict[str, str] = {}
+PATCHES: list[tuple[str, dict]] = []
 LIMITS = {"max_bytes": 1024, "max_files": 10, "suffixes": [".md"]}
 
 
@@ -173,23 +176,27 @@ class Handler(smoke.Handler):
             self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
             return self.reply({"error": "Fixture run rejected"}, 409)
         if self.path == "/threads/search":
-            # У каждого сценария свой чат: по названию видно, чей список на экране.
+            # Список один на все сценарии: чат agent с разговором, чат demo с
+            # разговором и чат demo, в котором только файлы.
             smoke.REQUESTS.append(self.path)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            graph = body.get("metadata", {}).get("graph_id", "agent")
-            SEARCHES.append(graph)
+            SEARCHES.append(body.get("metadata"))
+            rows = [
+                ("saved-thread", "agent", "Сохранённый чат", True),
+                ("demo-thread", "demo", "Чат demo", True),
+                ("files-thread", CHAT_GRAPHS.get("files-thread", "demo"), "Файлы без запроса", False),
+            ]
             return self.reply(
                 [
                     {
-                        "thread_id": "saved-thread",
+                        "thread_id": thread,
                         "status": "idle",
                         "created_at": "2026-09-26T08:00:00+00:00",
                         "updated_at": "2026-09-26T09:00:00+00:00",
-                        "metadata": {
-                            "graph_id": graph,
-                            "title": "Сохранённый чат" if graph == "agent" else f"Чат {graph}",
-                        },
+                        "metadata": {"graph_id": graph, "title": title},
+                        **({"extracted": {"first": title}} if started else {}),
                     }
+                    for thread, graph, title, started in rows
                 ]
             )
         if self.path == "/threads":
@@ -270,6 +277,13 @@ class Handler(smoke.Handler):
             )
         if self.path == "/info":
             return self.reply({}, {"ok": 200, "unauthorized": 401, "offline": 503}[HEALTH])
+        if self.path.startswith("/threads/files-thread"):
+            # Чат, в который положили файлы, но ни о чём не спросили.
+            smoke.REQUESTS.append(self.path)
+            return smoke.Handler.reply(
+                self,
+                {"values": {}, "next": [], "tasks": [], "checkpoint": {"checkpoint_id": "t"}, "metadata": {}},
+            )
         if self.path.startswith("/api/ui/resources/orbita.publications?"):
             if not PUBLICATIONS_OK:
                 return self.reply({"error": "Publication fixture unavailable"}, 503)
@@ -277,6 +291,17 @@ class Handler(smoke.Handler):
                 {"documents": [{"name": "report.md", "title": "Test report", "size": 42}]}
             )
         return super().do_GET()
+
+    def do_PATCH(self):
+        # Название или сценарий чата: метаданные треда дописываются, а не заменяются.
+        smoke.REQUESTS.append(self.path)
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        thread = self.path.split("/")[2]
+        PATCHES.append((thread, body))
+        graph = body.get("metadata", {}).get("graph_id")
+        if graph:
+            CHAT_GRAPHS[thread] = graph
+        return self.reply({"thread_id": thread, "status": "idle", "metadata": body.get("metadata", {})})
 
     def do_PUT(self):
         if self.path.startswith("/api/chats/") and "/files?" in self.path:
@@ -310,6 +335,24 @@ def regressions(call, js, until, click, shell):
             Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,{json.dumps(value)});
             e.dispatchEvent(new Event('input',{{bubbles:true}}));}})()""")
 
+    def show_chat():
+        # Открытый чат — вкладка «Чат» правой колонки.
+        if not js("!!document.querySelector('.inspector')"):
+            js("document.querySelector('[aria-label=\"Колонка чата и подробностей\"]').click()")
+        until("!!document.querySelector('.inspector-tab')")
+        js("document.querySelector('.inspector-tab').click()")
+        until("!!document.querySelector('.chat-panel')")
+
+    def show_materials():
+        # Файлы и параметры стоят в колонке чата; у чата с разговором они
+        # свёрнуты в строку и раскрываются щелчком.
+        show_chat()
+        toggle = "document.querySelector('.chat-panel-toggle')"
+        until(f"!!{toggle}")
+        if js(f"{toggle}.getAttribute('aria-expanded') === 'false'"):
+            js(f"{toggle}.click()")
+        until(f"{toggle}.getAttribute('aria-expanded') === 'true'")
+
     def key(name, code, shift=False, raw=False, text=None):
         # Две тонкости протокола. `rawKeyDown` нужен клавишам, чья работа —
         # действие самого браузера, а не обработчик страницы: перевод фокуса
@@ -334,7 +377,10 @@ def regressions(call, js, until, click, shell):
         "Emulation.setDeviceMetricsOverride",
         {"width": 1366, "height": 768, "deviceScaleFactor": 1, "mobile": False},
     )
-    js("localStorage.setItem('orbita.graph','agent')")
+    js(
+        "localStorage.setItem('orbita.graph','agent');"
+        "localStorage.setItem('orbita.chat', JSON.stringify({thread:'saved-thread',graph:'agent'}))"
+    )
     call("Page.reload")
     # Итог прогона занимает главную область, а не колонку справа: вкладка
     # «Результат» — то место, где его читают.
@@ -370,9 +416,8 @@ def regressions(call, js, until, click, shell):
 
     # Поле ввода, которому манифест не назначил поверхность, — это параметр
     # прогона, и стоит он среди параметров чата в правой колонке, а не в поле
-    # задачи. На этой ширине правая колонка по умолчанию закрыта.
-    if not js("!!document.querySelector('.inspector')"):
-        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+    # задачи.
+    show_materials()
     until("!!document.querySelector('.inspector [data-widget=form]')")
     array = '[data-widget="form"] textarea'
     fill(array, '["')
@@ -505,9 +550,7 @@ def regressions(call, js, until, click, shell):
     # Результаты чата — во вкладке «Чат» правой колонки: выбор узла выше
     # переключил её на «Подробности». Список монтируется со вкладкой, и
     # первая загрузка должна пройти до того, как фикстура начнёт отказывать.
-    if not js("!!document.querySelector('.inspector')"):
-        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
-    js("document.querySelector('.inspector-tab').click()")
+    show_chat()
     until("!!document.querySelector('.engine-outline')")
     js("document.querySelector('.engine-outline').open=true")
     until("[...document.querySelectorAll('.engine-outline button')].some(b=>b.textContent.includes('Обновить список'))")
@@ -656,18 +699,27 @@ def regressions(call, js, until, click, shell):
     REJECT_RUN = False
     fill(composer, "")
 
-    # Файлы чата. Счётчик в заголовке списка — «…», пока список не приехал.
+    # Файлы чата. У чата с разговором они свёрнуты в строку, и счётчик стоит
+    # в ней — «…», пока список не приехал.
     global CREATE_DELAY
-    if not js("!!document.querySelector('.inspector')"):
-        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
-    until("!!document.querySelector('.inspector-tab')")
-    js("document.querySelector('.inspector-tab').click()")
-    count = "document.querySelector('.chat-files-title .hint')?.textContent"
+    show_chat()
+    count = "document.querySelector('.chat-panel-toggle .hint')?.textContent"
     active = "document.querySelector('.chat-item.active .chat-item-title')?.textContent"
-    saved = (
-        "[...document.querySelectorAll('.chat-item-open')]"
-        ".find(b=>b.textContent.includes('Сохранённый чат'))"
-    )
+    graph = "document.querySelector('.pick-button').dataset.graph"
+
+    def chat(title):
+        return (
+            "[...document.querySelectorAll('.chat-item-open')]"
+            f".find(b=>b.textContent.includes({json.dumps(title)}))"
+        )
+
+    def pick_scenario(graph_id):
+        js("document.querySelector('.pick-button').click()")
+        until(f"!!document.querySelector('.pick-menu [data-graph={graph_id}]')")
+        js(f"document.querySelector('.pick-menu [data-graph={graph_id}]').click()")
+        until(f"{graph} === {json.dumps(graph_id)} && !document.querySelector('.pick-menu')")
+
+    saved = chat("Сохранённый чат")
     until(f"{active} === 'Сохранённый чат' && {count} === '0'")
 
     # Повторный клик по открытому чату очищал его список, а перечитывался
@@ -676,11 +728,51 @@ def regressions(call, js, until, click, shell):
     time.sleep(0.5)
     assert js(count) == "0", f"Файлы открытого чата пропали: {js(count)!r}"
 
+    # Список чатов один на все сценарии: у каждого чата подписан его
+    # сценарий, и фильтра по сценарию в запросе нет.
+    titles = "[...document.querySelectorAll('button.chat-item-open .chat-item-title')].map(t=>t.textContent)"
+    assert {"Сохранённый чат", "Чат demo", "Файлы без запроса"} <= set(js(titles)), js(titles)
+    assert all(item is None for item in SEARCHES), SEARCHES
+    assert js("document.querySelector('.chat-item[data-graph=demo] .chat-item-scenario')?.textContent") == "demo"
+
+    # Чат другого сценария открывается вместе со своим сценарием: у треда
+    # состояние своего графа, и чужая схема прочитала бы его как своё.
+    js(f"{chat('Чат demo')}.click()")
+    until(f"{graph} === 'demo' && {active} === 'Чат demo'")
+    until("document.querySelectorAll('.chat-panel .msg').length > 0")
+    assert "demo-thread" in js("localStorage.getItem('orbita.chat')")
+    js(f"{saved}.click()")
+    until(f"{graph} === 'agent' && {active} === 'Сохранённый чат'")
+
+    # Чат, в который положили файлы и ни о чём не спросили, уходит в
+    # выбранный сценарий вместе с файлами: сценарий у него ещё не выбран.
+    js(f"{chat('Файлы без запроса')}.click()")
+    until(f"{graph} === 'demo' && {active} === 'Файлы без запроса'")
+    pick_scenario("agent")
+    until(f"{active} === 'Файлы без запроса'")
+    deadline = time.monotonic() + 5
+    while not PATCHES and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert PATCHES == [("files-thread", {"metadata": {"graph_id": "agent"}})], PATCHES
+    assert not js("!!document.querySelector('.chat-item.draft')"), "Чат без запросов не перешёл в сценарий"
+
+    # Чат с разговором остаётся в своём сценарии: в новом открывается черновик.
+    js(f"{saved}.click()")
+    until(f"{active} === 'Сохранённый чат'")
+    pick_scenario("demo")
+    until("!!document.querySelector('.chat-item.active.draft')")
+    assert len(PATCHES) == 1, PATCHES
+    assert "Сохранённый чат" in js(titles)
+    js(f"{saved}.click()")
+    until(f"{graph} === 'agent' && {active} === 'Сохранённый чат'")
+
     # Файл брошен в черновик, и пока сервер заводит под него чат, оператор
     # уходит в другой. Поздний ответ не должен переключать его обратно.
     CREATE_DELAY = 1.5
     js("document.querySelector('.new-chat').click()")
     until("!!document.querySelector('.chat-item.active.draft')")
+    # Схема сценария могла ещё не доехать: поле файлов появляется вместе с ней.
+    until("!!document.querySelector('.chat-files input[type=file]')")
     js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
         const data=new DataTransfer();
         data.items.add(new File(['# note'],'note.md',{type:'text/markdown'}));
@@ -701,13 +793,13 @@ def regressions(call, js, until, click, shell):
     assert js(active) == "Сохранённый чат", f"Поздний ответ переключил чат: {js(active)!r}"
     assert js(count) == "0", f"На экране чужие файлы: {js(count)!r}"
 
-    # То же, но оператор уходит в другой сценарий. Поздний ответ перечитывал
-    # список чатов прежнего сценария и подставлял его в новый.
-    # Только сохранённые чаты: у черновика тот же класс, но не кнопка.
-    titles = "[...document.querySelectorAll('button.chat-item-open .chat-item-title')].map(t=>t.textContent)"
+    # То же, но оператор уходит в другой сценарий: черновик уезжает туда
+    # черновиком, а поздний ответ не возвращает его в прежний.
     created = smoke.REQUESTS.count("/threads")
     js("document.querySelector('.new-chat').click()")
     until("!!document.querySelector('.chat-item.active.draft')")
+    # Схема сценария могла ещё не доехать: поле файлов появляется вместе с ней.
+    until("!!document.querySelector('.chat-files input[type=file]')")
     js("""(()=>{const input=document.querySelector('.chat-files input[type=file]');
         const data=new DataTransfer();
         data.items.add(new File(['# note'],'note.md',{type:'text/markdown'}));
@@ -717,26 +809,22 @@ def regressions(call, js, until, click, shell):
     while smoke.REQUESTS.count("/threads") == created and time.monotonic() < deadline:
         time.sleep(0.05)
     assert smoke.REQUESTS.count("/threads") > created, "Загрузка в черновик не завела чат"
-    switched = len(SEARCHES)
-    js("document.querySelector('.pick-button').click()")
-    until("!!document.querySelector('.pick-menu [data-graph=demo]')")
-    js("document.querySelector('.pick-menu [data-graph=demo]').click()")
-    until(f"document.querySelector('.pick-button').dataset.graph === 'demo'"
-          f" && JSON.stringify({titles}) === '[\"Чат demo\"]'")
+    pick_scenario("demo")
+    until("!!document.querySelector('.chat-item.active.draft')")
     deadline = time.monotonic() + 5
     while len(UPLOADS) < 2 and time.monotonic() < deadline:
         time.sleep(0.05)
     assert UPLOADS == ["late-chat", "late-chat"], UPLOADS
     time.sleep(0.5)
-    assert js(titles) == ["Чат demo"], f"В сценарии demo список чужого: {js(titles)!r}"
-    assert "agent" not in SEARCHES[switched:], SEARCHES[switched:]
+    assert js(graph) == "demo", f"Поздний ответ вернул сценарий: {js(graph)!r}"
+    assert js("!!document.querySelector('.chat-item.active.draft')"), "Поздний ответ открыл чужой чат"
     CREATE_DELAY = 0.0
 
     # Сохранённые размеры — пожелание, а не приказ. Две колонки по 640,
     # растянутые при ширине 1920, после уменьшения окна до 1440 оставляли
-    # схеме 112 пикселей. Поле задачи, растянутое вверх, после открытия
-    # консоли сжимало схему до 2 пикселей и уводило кнопку отправки за край,
-    # и перезагрузка возвращала то же самое: предел считался только ручкой.
+    # схеме 112 пикселей. Поле задачи, растянутое вверх, в низком окне
+    # сжимало схему до 2 пикселей и уводило кнопку отправки за край, и
+    # перезагрузка возвращала то же самое: предел считался только ручкой.
     def viewport(width, height):
         call(
             "Emulation.setDeviceMetricsOverride",
@@ -752,31 +840,27 @@ def regressions(call, js, until, click, shell):
     call("Page.reload")
     until("!!document.querySelector('.task-composer textarea')", seconds=30)
     if not js("!!document.querySelector('.inspector')"):
-        js("document.querySelector('[aria-label=\"Колонка файлов и подробностей\"]').click()")
+        js("document.querySelector('[aria-label=\"Колонка чата и подробностей\"]').click()")
     until("!!document.querySelector('.inspector')")
     viewport(1440, 900)
     until("document.querySelector('.app-main').getBoundingClientRect().width >= 379")
-    if not js("!!document.querySelector('.console')"):
-        js("document.querySelector('.console-toggle').click()")
-    until("!!document.querySelector('.console')")
     fits = (
         "document.querySelector('.workspace').getBoundingClientRect().height >= 219"
         " && document.querySelector('.composer-submit').getBoundingClientRect().bottom"
         " <= document.querySelector('.app-body').getBoundingClientRect().bottom"
     )
+    viewport(1440, 640)
     until(fits)
-    # Выбранная высота не забыта: консоль закрыли — поле снова выше.
+    # Выбранная высота не забыта: места снова стало больше — поле снова выше.
     squeezed = js("document.querySelector('.task-composer textarea').getBoundingClientRect().height")
-    js("document.querySelector('.console-toggle').click()")
+    viewport(1440, 900)
     until(
         "document.querySelector('.task-composer textarea').getBoundingClientRect().height"
         f" > {squeezed}"
     )
-    js("document.querySelector('.console-toggle').click()")
+    viewport(1440, 640)
     call("Page.reload")
     until("!!document.querySelector('.task-composer textarea')", seconds=30)
-    if not js("!!document.querySelector('.console')"):
-        js("document.querySelector('.console-toggle').click()")
     until(fits)
     js(
         "['orbita.leftWidth','orbita.rightWidth','orbita.composer.height']"
@@ -804,8 +888,12 @@ def regressions(call, js, until, click, shell):
         "menu keyboard: Enter runs the focused item",
         "refused run keeps the unsent task",
         "active chat click keeps its files",
+        "one chat list for all scenarios",
+        "another scenario's chat opens with its scenario",
+        "chat without a request moves to the chosen scenario",
+        "chat with a run stays, new scenario opens a draft",
         "late chat creation does not switch the chat",
-        "late chat creation keeps the other scenario's chat list",
+        "late chat creation does not pull the operator back",
         "saved column and task field sizes yield to a smaller window",
     ]
 

@@ -1,15 +1,16 @@
 /**
  * Правая колонка: открытый чат и подробности выбранного.
  *
- * Две вкладки. «Чат» — файлы, загруженные в этот чат, параметры прогона и то,
- * что прогон создал (`ChatMaterials`). Раньше это была левая колонка с общими
- * папками задач; её место заняли сами чаты, а файлы встали сюда, рядом с
- * результатами того же чата.
+ * Две вкладки. «Чат» — весь открытый чат одной лентой (`ChatPanel`): файлы
+ * и параметры, разговор с ролями по ходу прогона и то, что прогон создал.
+ * Раньше разговор жил в нижней консоли «Выполнение», и её приходилось
+ * открывать и закрывать; файлы до этого были левой колонкой с общими
+ * папками задач.
  *
  * «Подробности» — то, чем колонка была раньше, и содержание у неё зависит от
- * выбора: узел — карточка узла, прогон — его показатели, ничего — короткая
- * справка о сценарии. Выбор узла сам переключает на эту вкладку: подробности
- * приходят к тому, кто их запросил.
+ * выбора: узел — карточка узла, прогон — его показатели и события движка,
+ * ничего — короткая справка о сценарии. Выбор узла сам переключает на эту
+ * вкладку: подробности приходят к тому, кто их запросил.
  *
  * Своей кнопки скрытия у колонки нет: колонки прячут переключатели в строке
  * контекста, и вторая такая же кнопка в шапке колонки только дублировала их.
@@ -23,6 +24,7 @@ import type { SafeWidgetContext, UiManifest, WidgetAction } from "../../engine/m
 import type { RuntimeSnapshot } from "../../engine/runtime/types";
 import { isInspectorWidget } from "../result";
 import { NodeInspector } from "./NodeInspector";
+import { RunEvents } from "./RunEvents";
 import { RunInspector } from "./RunInspector";
 import { ScenarioInspector } from "./ScenarioInspector";
 
@@ -42,6 +44,8 @@ export function Inspector({
   topology,
   selectedNode,
   onClearNode,
+  onSelectNode,
+  eventsFocus,
   scenarioTitle,
   threadId,
   startResize,
@@ -50,7 +54,7 @@ export function Inspector({
 }: {
   tab: RightTab;
   onTab: (tab: RightTab) => void;
-  /** Вкладка «Чат»: файлы, параметры и результаты открытого чата. */
+  /** Вкладка «Чат»: файлы, разговор и результаты открытого чата. */
   materials: ReactNode;
   /** Сколько файлов в чате; null — ещё не известно. */
   fileCount: number | null;
@@ -63,6 +67,10 @@ export function Inspector({
   topology: GraphTopology | null;
   selectedNode: string | null;
   onClearNode: () => void;
+  /** Щелчок по узлу в ленте событий: показать его на схеме. */
+  onSelectNode: (nodeId: string) => void;
+  /** Растёт, когда события попросили показать (колокольчик в шапке). */
+  eventsFocus: number;
   scenarioTitle: string;
   threadId: string | null;
   startResize: (event: PointerEvent<HTMLDivElement>) => void;
@@ -134,7 +142,10 @@ export function Inspector({
           {node && topology ? (
             <NodeInspector nodeId={node} topology={topology} manifest={manifest} runtime={runtime} />
           ) : started ? (
-            <RunInspector runtime={runtime} threadId={threadId} items={measures} />
+            <>
+              <RunInspector runtime={runtime} threadId={threadId} items={measures} />
+              <RunEvents runtime={runtime} onSelectNode={onSelectNode} focus={eventsFocus} />
+            </>
           ) : (
             <ScenarioInspector manifest={manifest} inputs={inputs} title={scenarioTitle} />
           )}

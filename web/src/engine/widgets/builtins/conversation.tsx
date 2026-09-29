@@ -28,15 +28,35 @@ export function toolCalls(message: unknown): Array<{ name?: string; args?: unkno
 }
 
 
+/**
+ * Длиннее этого сообщение показывается началом.
+ *
+ * Лента стоит в колонке чата, и ответ роли — это часто весь документ этапа
+ * на десяток тысяч знаков, а ответ инструмента — прочитанный файл целиком.
+ * Целиком такие читают в «Документах этапов»; в ленте из них нужно понять,
+ * что произошло, и не пролистывать экраны до следующего шага.
+ */
+const CLAMP_CHARS = 1200;
+/** Ответ инструмента — сырьё для роли, а не текст для человека: хватает начала. */
+const CLAMP_TOOL_CHARS = 400;
+
 export const MessageRow = memo(function MessageRow({ message }: { message: Message }) {
+  const [full, setFull] = useState(false);
   const role = message.type ?? "message";
   const calls = toolCalls(message);
   const body = messageText(message);
   if (!body && !calls.length) return null;
+  const limit = role === "tool" ? CLAMP_TOOL_CHARS : CLAMP_CHARS;
+  const long = body.length > limit;
   return <article className={`msg msg-${role}`}>
     <b className="msg-role">{ROLES[role] ?? role}</b>
     <div>
-      {body ? <div className="msg-text">{body}</div> : null}
+      {body ? <div className="msg-text">{long && !full ? `${body.slice(0, limit).trimEnd()}…` : body}</div> : null}
+      {long ? (
+        <button type="button" className="btn-ghost btn-sm msg-more" aria-expanded={full} onClick={() => setFull((value) => !value)}>
+          {full ? "Свернуть" : `Показать полностью · ${body.length.toLocaleString("ru-RU")} зн.`}
+        </button>
+      ) : null}
       {calls.map((call, position) => <div className="tool-call" key={position}>
         <b>{text(call.name)}</b>
         <span className="args">{JSON.stringify(call.args ?? {})}</span>

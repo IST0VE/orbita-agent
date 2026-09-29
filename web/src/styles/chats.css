@@ -77,12 +77,32 @@ button.chat-item-open:hover:not(:disabled) {
   color: var(--text-brand);
 }
 
-.chat-item-title {
+/* Название и под ним сценарий: список один на все сценарии, и чат надо
+   узнавать и по тому, чем его вели. */
+.chat-item-text {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
+  min-width: 0;
+  line-height: var(--leading-tight);
+}
+
+.chat-item-title,
+.chat-item-scenario {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-item-scenario {
+  font-size: var(--type-label);
+  font-weight: var(--weight-regular);
+  color: var(--text-muted);
+}
+
+.chat-item.active .chat-item-scenario {
+  color: var(--text-secondary);
 }
 
 .chat-item .hint {
@@ -207,8 +227,193 @@ button.chat-item-remove:hover:not(:disabled),
   border-radius: var(--radius-pill);
 }
 
-.chat-materials {
+/* --------------------------------------------------------------------- */
+/* Открытый чат: материалы сверху, лента разговора и результатов под ними  */
+/* --------------------------------------------------------------------- */
+.chat-panel {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
+  min-height: 0;
+}
+
+.chat-panel-materials {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Раскрытые материалы не выталкивают ленту: у них своя прокрутка. Пока
+   разговора нет, им можно больше — лента в это время почти пуста. */
+.chat-panel-materials[data-open="true"] {
+  max-height: 65%;
+}
+
+.chat-panel[data-talking="true"] .chat-panel-materials[data-open="true"] {
+  max-height: 45%;
+}
+
+.chat-panel-materials-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 0;
+  overflow: hidden auto;
+  padding: var(--space-2) 0 var(--space-3);
+}
+
+.chat-panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  flex: none;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  font-size: var(--type-dense);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  color: var(--text-secondary);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.chat-panel-toggle:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  border-color: transparent;
+}
+
+.chat-panel-toggle svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.chat-panel-toggle-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-panel-toggle .hint {
+  margin-left: auto;
+  flex: none;
+  font-size: var(--type-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-panel-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden auto;
+  padding: var(--space-4) var(--space-3) var(--space-5);
+}
+
+.chat-panel-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-2);
+}
+
+/* Лента разговора в колонке: без рамки карточки и без своей прокрутки —
+   прокручивается вся лента чата, и держится низа она сама. Заголовок
+   виджета («Прогон») здесь лишний: это и есть чат. */
+.chat-panel-conversation > .engine-widget {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-panel-conversation > .engine-widget > h3 {
+  display: none;
+}
+
+.chat-panel-conversation .engine-messages {
+  overflow: visible;
+  padding-right: 0;
+}
+
+/* Колонка узкая: кто сказал — строкой над сообщением, а не колонкой слева. */
+.chat-panel .msg {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.msg-more {
+  margin-top: var(--space-1);
+  font-size: var(--type-label);
+}
+
+/* События прогона во вкладке «Прогон»: свёрнуты, пока их не попросили. */
+.run-events > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-events > summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-events > summary::before {
+  content: "▸";
+  font-size: var(--type-label);
+  color: var(--text-muted);
+}
+
+.run-events[open] > summary::before {
+  content: "▾";
+}
+
+.run-events-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.run-events-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.run-events-tools .canvas-search {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.run-events-tools select {
+  flex: 1 1 120px;
+  min-width: 0;
+  min-height: 28px;
+  font-size: var(--type-dense);
+}
+
+/* В колонке лента в две строки: время и событие, под ними узел. */
+.run-events .engine-timeline > li {
+  grid-template-columns: 8px 64px minmax(0, 1fr);
+  row-gap: var(--space-1);
+  padding: var(--space-2);
+}
+
+.run-events .engine-timeline .timeline-detail,
+.run-events .engine-timeline .error {
+  grid-column: 2 / -1;
 }
 
 /* --------------------------------------------------------------------- */

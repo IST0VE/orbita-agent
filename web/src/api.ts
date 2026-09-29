@@ -354,6 +354,13 @@ export type Chat = {
   thread_id: string;
   /** Пусто — чату ещё не дали названия: первый запрос его не задавал. */
   title: string;
+  /**
+   * Сценарий чата. Список один на все сценарии, а состояние треда — своё у
+   * каждого графа: открыть чат значит открыть и его сценарий.
+   */
+  graph_id: string;
+  /** В чате уже был запрос. Чат без него — только файлы, и сценарий у него ещё можно сменить. */
+  started: boolean;
   created_at?: string;
   updated_at?: string;
   status?: string;
@@ -407,21 +414,29 @@ export function titleOf(text: string): string {
 const chatRow = (row: ThreadRow): Chat => {
   const own = typeof row.metadata?.title === "string" ? row.metadata.title : "";
   const first = row.extracted?.first;
+  const graph = row.metadata?.graph_id;
   return {
     thread_id: row.thread_id,
     title: own || (typeof first === "string" ? titleOf(first) : ""),
+    graph_id: typeof graph === "string" ? graph : "",
+    started: first !== undefined && first !== null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     status: row.status,
   };
 };
 
-/** Свои чаты этого сценария, свежие сверху. Историю сообщений не тянем: только шапки. */
-export async function searchChats(graphId: string): Promise<Chat[]> {
+/**
+ * Свои чаты всех сценариев, свежие сверху. Историю сообщений не тянем: только шапки.
+ *
+ * Раньше список фильтровался по сценарию, и чат искали, вспоминая сначала,
+ * каким сценарием его вели. Фильтра больше нет: чат несёт свой сценарий в
+ * `graph_id`, и открывается вместе с ним.
+ */
+export async function searchChats(): Promise<Chat[]> {
   const rows = await json<ThreadRow[]>("/threads/search", {
     method: "POST",
     body: JSON.stringify({
-      metadata: { graph_id: graphId },
       limit: 200,
       sort_by: "updated_at",
       sort_order: "desc",
@@ -446,6 +461,18 @@ export async function renameChat(threadId: string, title: string): Promise<Chat>
   const row = await json<ThreadRow>(`/threads/${encodeURIComponent(threadId)}`, {
     method: "PATCH",
     body: JSON.stringify({ metadata: { title } }),
+  });
+  return chatRow(row);
+}
+
+/**
+ * Перевести чат в другой сценарий. Годится только чату без запросов: у треда
+ * с прогоном состояние чужого графа, и новый граф прочитал бы его как своё.
+ */
+export async function moveChat(threadId: string, graphId: string): Promise<Chat> {
+  const row = await json<ThreadRow>(`/threads/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ metadata: { graph_id: graphId } }),
   });
   return chatRow(row);
 }

@@ -1,5 +1,5 @@
 /**
- * Левая колонка: чаты этого сценария.
+ * Левая колонка: все чаты оператора.
  *
  * Раньше здесь стояли общие папки задач, одни на всех вошедших: материалы
  * одного человека лежали на виду у остальных, а «история» сводилась к одному
@@ -7,8 +7,14 @@
  * его заводит пользователь, в нём живут запросы, результаты и загруженные
  * файлы, и чужих чатов сервер не отдаёт вовсе (`auth.py`).
  *
- * Файлы чата показывает правая колонка: они относятся к открытому чату, а не
- * к списку.
+ * Список один на все сценарии. Когда у каждого сценария был свой, чат искали
+ * в два шага — сначала вспоминали, каким сценарием его вели, потом листали
+ * его список, — а вчерашний разбор прятался, стоило переключить сценарий.
+ * Сценарий теперь подписан у самого чата, и открыть чат значит открыть и
+ * его сценарий.
+ *
+ * Файлы и ход прогона показывает правая колонка: они относятся к открытому
+ * чату, а не к списку.
  *
  * Своих кнопок «Скрыть» и «Новый чат» у колонки нет: обе стоят в строке
  * контекста, и копии здесь только дублировали их.
@@ -17,8 +23,9 @@
 import { useEffect, useMemo, useState, type PointerEvent } from "react";
 
 import type { Chat } from "../api";
-import { MessageSquare, Search, Trash2 } from "../ui/icons";
+import { Search, Trash2 } from "../ui/icons";
 import { StatusDot } from "../ui";
+import { scenarioIcon } from "./scenarios";
 
 /** С какого числа чатов нужен поиск: короткий список читается глазами. */
 const FILTER_FROM = 8;
@@ -48,7 +55,9 @@ export function ChatSidebar({
   loading,
   error,
   activeId,
-  scenario,
+  draftScenario,
+  draftGraph,
+  scenarioName,
   locked,
   onOpen,
   onDelete,
@@ -61,10 +70,14 @@ export function ChatSidebar({
   loading: boolean;
   error: string;
   activeId: string | null;
-  scenario: string;
+  /** Сценарий черновика — того, что откроется с первым запросом. */
+  draftScenario: string;
+  draftGraph: string;
+  /** Название сценария по графу: подпись под названием чата. */
+  scenarioName: (graphId: string) => string;
   /** Идёт прогон: переключать чат под ним нельзя. */
   locked: boolean;
-  onOpen: (threadId: string) => void;
+  onOpen: (chat: Chat) => void;
   onDelete: (threadId: string) => Promise<void>;
   onRetry: () => void;
   startResize: (event: PointerEvent<HTMLDivElement>) => void;
@@ -84,13 +97,18 @@ export function ChatSidebar({
   }, [armed]);
 
   const needle = query.trim().toLowerCase();
+  // Ищут и по названию, и по сценарию: «где был тот разбор схем» — это
+  // вопрос о сценарии, а не о словах в названии.
   const shown = useMemo(
-    () => (needle ? chats.filter((chat) => chatTitle(chat).toLowerCase().includes(needle)) : chats),
-    [chats, needle],
+    () => (needle
+      ? chats.filter((chat) => `${chatTitle(chat)} ${scenarioName(chat.graph_id)}`.toLowerCase().includes(needle))
+      : chats),
+    [chats, needle, scenarioName],
   );
   // Открытый чат ещё не заведён на сервере (нет ни файла, ни прогона) —
   // показываем его строкой сверху, чтобы было видно, где ты.
   const draft = activeId === null;
+  const DraftIcon = scenarioIcon(draftGraph);
 
   const remove = (threadId: string) => {
     if (armed !== threadId) {
@@ -130,18 +148,21 @@ export function ChatSidebar({
             <input
               aria-label="Найти чат"
               value={query}
-              placeholder="Найти чат…"
+              placeholder="Найти чат или сценарий…"
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
         ) : null}
 
-        <nav className="chat-list" aria-label={`Чаты сценария «${scenario}»`}>
+        <nav className="chat-list" aria-label="Все чаты">
           {draft ? (
             <div className="chat-item active draft" aria-current="page">
               <span className="chat-item-open">
-                <MessageSquare size={15} aria-hidden="true" />
-                <span className="chat-item-title">Новый чат</span>
+                <DraftIcon size={15} aria-hidden="true" />
+                <span className="chat-item-text">
+                  <span className="chat-item-title">Новый чат</span>
+                  <span className="chat-item-scenario">{draftScenario}</span>
+                </span>
                 <span className="hint">черновик</span>
               </span>
             </div>
@@ -150,22 +171,27 @@ export function ChatSidebar({
             const active = chat.thread_id === activeId;
             const running = chat.status === "busy";
             const waiting = chat.status === "interrupted";
+            const scenario = scenarioName(chat.graph_id);
+            const Icon = scenarioIcon(chat.graph_id);
             return (
-              <div key={chat.thread_id} className={`chat-item${active ? " active" : ""}`}>
+              <div key={chat.thread_id} className={`chat-item${active ? " active" : ""}`} data-graph={chat.graph_id}>
                 <button
                   type="button"
                   className="chat-item-open"
                   aria-current={active ? "page" : undefined}
                   disabled={locked && !active}
-                  title={chatTitle(chat)}
-                  onClick={() => onOpen(chat.thread_id)}
+                  title={scenario ? `${chatTitle(chat)} · ${scenario}` : chatTitle(chat)}
+                  onClick={() => onOpen(chat)}
                 >
                   {running || waiting ? (
                     <StatusDot tone={running ? "run" : "warn"} />
                   ) : (
-                    <MessageSquare size={15} aria-hidden="true" />
+                    <Icon size={15} aria-hidden="true" />
                   )}
-                  <span className="chat-item-title">{chatTitle(chat)}</span>
+                  <span className="chat-item-text">
+                    <span className="chat-item-title">{chatTitle(chat)}</span>
+                    {scenario ? <span className="chat-item-scenario">{scenario}</span> : null}
+                  </span>
                   <span className="hint">{when(chat.updated_at ?? chat.created_at)}</span>
                 </button>
                 <button
@@ -191,7 +217,7 @@ export function ChatSidebar({
         ) : null}
         {!loading && !error && !chats.length ? (
           <p className="hint chat-empty">
-            Здесь появятся ваши чаты. Напишите задачу внизу или загрузите файлы — чат заведётся сам.
+            Здесь появятся ваши чаты всех сценариев. Напишите задачу внизу или загрузите файлы — чат заведётся сам.
           </p>
         ) : null}
         {needle && chats.length && !shown.length ? <p className="hint">Ничего не нашлось.</p> : null}

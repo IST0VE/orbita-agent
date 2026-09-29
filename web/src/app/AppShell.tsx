@@ -1,5 +1,5 @@
 /**
- * Каркас приложения: шапка, строка контекста, рабочая область, консоль.
+ * Каркас приложения: шапка, строка контекста, рабочая область и две колонки.
  *
  * Только раскладка и ничего больше — содержимое приезжает готовыми частями.
  * Раньше эту роль исполнял `App.tsx`: он же держал состояние прогона, он же
@@ -30,7 +30,6 @@ export function AppShell({
   main,
   inspector,
   composer,
-  console: bottom,
   onDismissDrawer,
   children,
 }: {
@@ -49,7 +48,6 @@ export function AppShell({
   main?: ReactNode;
   inspector?: ReactNode;
   composer?: ReactNode;
-  console?: ReactNode;
   onDismissDrawer: () => void;
   /** Слои поверх всего: настройки, окно подтверждения. Смонтированы всегда. */
   children?: ReactNode;
@@ -91,7 +89,6 @@ export function AppShell({
         ) : null}
       </div>
 
-      {workspace ? bottom : null}
 
       {children}
     </div>
