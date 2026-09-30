@@ -16,7 +16,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import confluence, llm_retry, metrics, nodes, pause, tool_compat, tools
+from agent import confluence, llm_retry, metrics, nodes, pause, proposals, tool_compat, tools
 from agent.cost import charge, cost_summary, extract_usage
 from agent.nt.settings import load_settings
 from agent.nt_run.client import RunnerHTTP
@@ -31,6 +31,7 @@ from agent.nt_run.plan import (
 )
 from agent.pipeline import Pipeline, Role
 from agent.routes import budget_gate
+from agent.runtime import nested
 from agent.state import State as CommonState
 from agent.state import _merge_spend, _merge_usage
 
@@ -266,10 +267,19 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
         return {"run_history": feedback(state, 'Верни action: clarify, ready или finish. Для ready сначала успешно вызови write_test_files.'),
                 "stage": "repair_prompt"}
 
-    def clarify(state: State):
-        answer = interrupt({"action": "nt_clarify", "title": "Уточнение задачи НТ",
-                            "question": state["decision"]["question"],
-                            "document": state["decision"]["question"]})
+    def clarify(state: State, config: RunnableConfig):
+        question = state["decision"]["question"]
+        prompt = {"action": "nt_clarify", "title": "Уточнение задачи НТ",
+                  "question": question, "document": question}
+        if nested(config):
+            # Спросить некого: вопрос уезжает вызывающему предложением, а
+            # кампания заканчивается отчётом. Ответ — это новый прогон.
+            return {"proposals": proposals.offer(state, {
+                        "kind": "nt_clarify", "graph": PIPELINE.key, "approval_required": True,
+                        "prompt": prompt, "effect": {"question": question}}),
+                    "decision": {"action": "finish"},
+                    "last_error": "Нужно уточнение оператора: " + question, "stage": "clarify"}
+        answer = interrupt(prompt)
         value = answer.get("answer", "") if isinstance(answer, dict) else str(answer)
         return {"run_history": feedback(state, str(value)[:12000]), "stage": "clarify"}
 
@@ -287,7 +297,7 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
             return {"last_error": "План не прошёл проверку актуальных лимитов или исчерпан бюджет прогонов",
                     "decision": {"action": "finish"}, "run_commitment": {}, "stage": "validate"}
 
-    def approve_run(state: State):
+    def approve_run(state: State, config: RunnableConfig):
         try:
             # The script shown is compiled from the very set approved_hash covers, not read back
             # from artifacts and not recomputed here: what the operator approves cannot belong to
@@ -299,13 +309,28 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
                     "last_error": "План не соответствует стенду; запуск не предлагается",
                     "execution_log": record(state, "launch_approval", approved=False), "stage": "approve_run"}
         automatic = auto_approve if auto_approve is not None else os.getenv("NT_RUN_AUTO_APPROVE") == "1"
+        prompt = {"action": "nt_launch", "title": "Запуск НТ: пробный и основной прогон",
+            "document": "```json\n" + json.dumps(approved_set, ensure_ascii=False, indent=2)
+            + "\n```\n\n```javascript\n" + compile_script(plan, target) + "\n```",
+            "hint": "Подтверждение относится к этому сценарию, адресу стенда, тестовым данным и лимитам нагрузки."}
+        if nested(config):
+            # Нагрузку вложенный прогон не запускает даже с автоподтверждением:
+            # это внешнее действие, и решение о нём принадлежит вызывающему.
+            # План с одобряемым набором уезжает предложением; выполнить его
+            # может только `nt_run` верхнего уровня (см. proposals.APPLICABLE).
+            return {"proposals": proposals.offer(state, {
+                        "kind": "nt_launch", "graph": PIPELINE.key,
+                        "approval_required": not automatic, "prompt": prompt,
+                        "effect": {"commitment": approved_set,
+                                   "fingerprint": fingerprint(approved_set)}}),
+                    "approved_hash": "", "approved_run": {},
+                    "last_error": "Вложенный прогон: запуск НТ передан вызывающему графу",
+                    "execution_log": record(state, "launch_approval", approved=False, nested=True),
+                    "stage": "approve_run"}
         if automatic:
             answer = {"decision": "approved"}
         else:
-            answer = interrupt({"action": "nt_launch", "title": "Запуск НТ: пробный и основной прогон",
-                "document": "```json\n" + json.dumps(approved_set, ensure_ascii=False, indent=2)
-                + "\n```\n\n```javascript\n" + compile_script(plan, target) + "\n```",
-                "hint": "Подтверждение относится к этому сценарию, адресу стенда, тестовым данным и лимитам нагрузки."})
+            answer = interrupt(prompt)
         approved = isinstance(answer, dict) and answer.get("decision") == "approved"
         return {"approved_hash": fingerprint(approved_set) if approved else "",
                 "approved_run": approved_set if approved else {},
@@ -526,8 +551,12 @@ def build_graph(llm=None, *, runner=None, analyzer=None, poll_seconds=2,
     builder.add_conditional_edges("initialize", lambda s: "stop_test" if s["decision"].get("action") == "recover"
         else "report" if s.get("last_error") else "plan_next", ["stop_test", "report", "plan_next"])
     builder.add_conditional_edges("plan_next", plan_route, ["execute_tools", "clarify", "validate", "report", "repair_prompt"])
-    for key in ("execute_tools", "repair_prompt", "clarify", "review_run"):
+    for key in ("execute_tools", "repair_prompt", "review_run"):
         builder.add_edge(key, "plan_next")
+    # Вложенный прогон на уточнении заканчивает кампанию отчётом: вопрос уехал
+    # предложением, а звать модель снова без ответа незачем.
+    builder.add_conditional_edges("clarify", lambda s: "report" if s["decision"].get("action") == "finish"
+        else "plan_next", ["report", "plan_next"])
     builder.add_conditional_edges("validate", lambda s: "report" if s["last_error"] else "approve_run", ["report", "approve_run"])
     builder.add_conditional_edges("approve_run", lambda s: "prepare" if s["approved_hash"] else "report", ["prepare", "report"])
     builder.add_conditional_edges("prepare", lambda s: "smoke" if s["prepared_id"] else "report", ["smoke", "report"])

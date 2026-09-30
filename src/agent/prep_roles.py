@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
+from agent import changes, critic, evidence, jira, prep_prompts, tools
 from agent import config as cfg
-from agent import jira, prep_prompts, tools
 from agent import ledger as registry
+from agent.evidence import EvidenceItem
 from agent.pipeline import Pipeline, Role, Stage
 
 # Ключи в state["artifacts"], которые пишет не роль, а код. Лежат там же, где
@@ -12,14 +15,17 @@ from agent.pipeline import Pipeline, Role, Stage
 # `Pipeline.done()` перебирает роли, а не ключи, и отдельными разделами на
 # страницу публикации они не попадают.
 #
-# TICKET, LINKED, PAGES и FILES пишет нода чтения задачи
+# TICKET, LINKED, PAGES, FILES и CHANGE пишет нода чтения задачи
 # (`prep_graph.ticket_node`) до первой роли, SOURCES — узел роли поиска, когда
-# она выпустила документ (`Pipeline.ledger`).
+# она выпустила документ (`Pipeline.ledger`), CHECK — проверка каждого
+# документа (`review`), а CHANGE обновляют ещё она и узел `change` после плана.
 TICKET = "ticket"
 LINKED = "linked"
 PAGES = "pages"
 FILES = "files"
 SOURCES = "sources"
+CHECK = "citation_check"
+CHANGE = "change_requirements"
 
 # Всё, что код прочитал до ролей, получает каждая роль. 27 сентября 2026 его
 # видел только разбор: стенограмму встречи, выбранную оператором, прочитала
@@ -60,7 +66,11 @@ ROLES: tuple[Role, ...] = (
         # переписка хода, которую она получала раньше, не содержала ни тикета,
         # ни связанных задач, ни материалов оператора — код читает их мимо
         # переписки.
-        needs=(*READ_BY_CODE, "intake", "gaps"),
+        #
+        # Замечания проверки ссылок (CHECK) стоят последними: они растут от
+        # этапа к этапу, а стабильное идёт ближе к началу. Поиску они говорят,
+        # какие утверждения разбора не подтверждены и что стоит проверить.
+        needs=(*READ_BY_CODE, "intake", "gaps", CHECK),
         reads_files=True,
         briefed=True,
     ),
@@ -68,15 +78,18 @@ ROLES: tuple[Role, ...] = (
         key="plan",
         number="04",
         title="План работ и примерные задачи",
-        summary="Порядок работ и черновик Jira-декомпозиции с критериями приёмки",
-        needs=(*READ_BY_CODE, "intake", "gaps", "research", SOURCES),
+        summary="Требования с устойчивыми номерами, порядок работ и черновик Jira-декомпозиции",
+        # Требования изменения с прошлых прогонов (CHANGE) нужны тому, кто их
+        # пишет: номер требованию даёт код, и знакомое требование обязано
+        # остаться под своим номером (`changes.py`).
+        needs=(*READ_BY_CODE, CHANGE, "intake", "gaps", "research", SOURCES, CHECK),
     ),
     Role(
         key="draft",
         number="05",
         title="Первичная документация",
         summary="Черновик страницы: решение в первом приближении и открытые вопросы",
-        needs=(*READ_BY_CODE, "intake", "gaps", "research", "plan", SOURCES),
+        needs=(*READ_BY_CODE, "intake", "gaps", "research", "plan", SOURCES, CHECK),
     ),
 )
 
@@ -90,16 +103,22 @@ def prompt_for(key: str) -> str:
     return prep_prompts.for_role(key)
 
 
-def ticket_block(issue: dict, picked: dict, question: str) -> str:
+def _header(item: dict | None) -> str:
+    """Строка с id источника перед его текстом; пусто — записи нет."""
+    return evidence.header(EvidenceItem.from_dict(item)) if item else ""
+
+
+def ticket_block(issue: dict, picked: dict, question: str, item: dict | None = None) -> str:
     """
     Прочитанная задача в том виде, в каком её увидит разбор.
 
     К самому тикету добавляется то, чего в нём нет: как он был выбран и не
     ведёт ли ссылка оператора в другой трекер. И то и другое — предупреждения
     о том, что прочитана может быть не та задача, а заметить это способен
-    только человек, читающий документ.
+    только человек, читающий документ. Первой строкой — id источника
+    (`evidence.header`): по нему роли ссылаются на задачу.
     """
-    parts = [jira.format_issue(issue)]
+    parts = [part for part in (_header(item), jira.format_issue(issue)) if part]
 
     if picked.get("chosen") == "search":
         parts.append(
@@ -171,7 +190,10 @@ def linked_block(main: str, linked: list[dict]) -> str:
         elif item.get("error"):
             parts.append(f"## {item['key']}\n\n{relation}\nНе прочитана: {item['error']}")
         else:
-            parts.append(f"## {item['key']}\n\n{relation}\n\n{item['text']}")
+            head = _header(item.get("evidence"))
+            parts.append(
+                f"## {item['key']}\n\n{relation}\n" + (f"{head}\n" if head else "") + f"\n{item['text']}"
+            )
     if skipped:
         parts.append(
             "Не читались — достигнут потолок PREP_LINKED_ISSUES: "
@@ -189,9 +211,14 @@ def pages_block(pages: list[dict]) -> str:
         if item.get("skipped"):
             skipped.append(item["id"])
         elif item.get("error"):
-            parts.append(f"## [WIKI {item['id']}]\n\nНе прочитана: {item['error']}")
+            parts.append(f"## Страница {item['id']}\n\nНе прочитана: {item['error']}")
         else:
-            parts.append(f"## [WIKI {item['id']}] {item['title']}\n\n{item['text']}")
+            head = _header(item.get("evidence"))
+            parts.append(
+                f"## Страница {item['id']} «{item['title']}»\n\n"
+                + (f"{head}\n\n" if head else "")
+                + item["text"]
+            )
     if skipped:
         parts.append(
             "Не читались — достигнут потолок PREP_LINKED_PAGES: "
@@ -216,9 +243,13 @@ def files_block(found: dict | None, others: list[str]) -> str:
         parts.append(
             "Оператор выбрал для задачи: "
             + ", ".join(found["names"])
-            + ". Файлы прочитаны кодом и приведены ниже; ссылайся на них тегом `[ФАЙЛ имя]`."
+            + ". Файлы прочитаны кодом и приведены ниже; ссылайся на каждый по id "
+            "источника из его первой строки."
         )
-        parts += [f"## Файл {name}\n\n{text}" for name, text in found["each"].items()]
+        records = found.get("evidence") or {}
+        for name, text in found["each"].items():
+            head = _header(records.get(name))
+            parts.append(f"## Файл {name}\n\n" + (f"{head}\n\n" if head else "") + text)
         if found.get("skipped"):
             parts.append("Не прочитаны: " + ", ".join(found["skipped"]) + ".")
     if others:
@@ -257,7 +288,23 @@ _CODE_BLOCKS = {
         "Реестр не собран: этап поиска не выпустил документ. Что прочитано, видно "
         "только из документа этапа 03.",
     ),
+    CHANGE: (
+        "Требования изменения",
+        "Изменение не заведено: задача не прочитана. " + changes.NEW_RULE,
+    ),
+    CHECK: (
+        "Проверка ссылок предыдущих этапов",
+        "Проверки ещё не было: предыдущих документов нет.",
+    ),
 }
+
+# Что говорится роли о замечаниях проверки. Стоит перед таблицей, а не в
+# промпте: промпт общий и кешируется, а замечания бывают не у каждого прогона.
+_CHECK_NOTE = (
+    "Код сверил ссылки и цитаты документов выше с прочитанным. Утверждения из "
+    "таблицы замечаний не подтверждены источником: не переноси их как факт — "
+    "найди подтверждение в прочитанном, пометь `[ВЫВОД]` с основанием или `[TBD]`."
+)
 
 
 def brief(role: Role, task: str, artifacts: dict | None) -> str:
@@ -289,6 +336,8 @@ def brief(role: Role, task: str, artifacts: dict | None) -> str:
         if key in _CODE_BLOCKS:
             title, missing = _CODE_BLOCKS[key]
             found = (artifacts.get(key) or "").strip()
+            if found and key == CHECK:
+                found = f"{_CHECK_NOTE}\n\n{found}"
             parts.append(f"# {title}\n\n{found or missing}")
             continue
         source = BY_KEY[key]
@@ -328,6 +377,20 @@ def subject(state: dict) -> str:
         lines.append("Страницы Confluence по ссылкам прочитаны: " + ", ".join(pages))
     if ticket.get("files"):
         lines.append("Материалы оператора: " + ", ".join(ticket["files"]))
+    # Итог проверки ссылок — здесь, под задачей, а не только в свёрнутом
+    # приложении: 27 сентября 2026 страницу читали по «Коротко», и ложное
+    # расхождение из собственного черновика Orbita читатель принял за находку.
+    reports = state.get("citations") or {}
+    if reports:
+        counted = critic.summary(reports)
+        lines.append(
+            f"Проверка ссылок кодом: ссылок {counted['refs']}, цитат {counted['quotes']}, "
+            f"подтверждено {counted['verified']}, замечаний {counted['findings']}"
+            + (" — см. «Проверка ссылок» в конце страницы." if counted["findings"] else ".")
+        )
+    about = changes.describe(state.get("change"))
+    if about:
+        lines.append(about)
     return "\n\n".join(lines)
 
 
@@ -387,8 +450,80 @@ def ledger(state: dict, messages: list) -> dict:
                 "how": "выбран оператором, прочитан кодом",
             }
         )
-    history = state.get("messages") or messages
-    return {SOURCES: registry.render(registry.collect(history), prefetched)}
+    history = (state.get("messages") or messages)[state.get("evidence_start", 0):]
+    items = evidence.gather(state.get("evidence"), history)
+    return {SOURCES: registry.render(registry.collect(history), prefetched, evidence=items)}
+
+
+# --------------------------------------------------------------------------
+# Проверка документа кодом
+#
+# Каждый документ этапа сверяется с прочитанным сразу, как роль его выпустила
+# (`Pipeline.review`): замечания уезжают следующим ролям в бриф, а не
+# обнаруживаются на готовой странице. План, кроме того, отдаёт требования, и
+# номера им здесь даёт код (`changes.py`).
+# --------------------------------------------------------------------------
+TITLES = {role.key: f"{role.number}. {role.title}" for role in ROLES}
+_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _settle(state: dict, text: str) -> tuple[str, dict | None]:
+    """
+    Номера требований плана: сверка с требованиями изменения.
+
+    Возвращает документ с окончательными номерами и новое состояние изменения;
+    None — в плане нет раздела «Требования», и прежние требования не трогаются.
+    """
+    parsed = changes.parse(text)
+    if parsed is None:
+        return text, None
+    change = dict(state.get("change") or {})
+    # Сверка — с тем, что было у изменения до этого хода (`base`): его кладут
+    # прелюдия, прочитав базу, и узел `change`, записав итог. С `requirements`
+    # сверять нельзя — там уже результат этого хода, и повторная сверка
+    # сочла бы новые требования старыми.
+    settled = changes.reconcile(list(change.get("base") or []), parsed)
+    text = changes.rewrite(text, parsed, settled["assigned"], settled["remap"])
+    change.update(
+        {"requirements": settled["requirements"], "notes": settled["notes"], "settled": True}
+    )
+    return text, change
+
+
+def review(state: dict, role: Role, text: str) -> tuple[str, dict]:
+    """
+    Документ этапа после проверки кодом и что записать в состояние.
+
+    Прочитанное собирается из состояния и ответов инструментов треда
+    (`evidence.gather`): у роли поиска её собственные ответы уже лежат в
+    переписке, и проверка видит всё, что видела она.
+    """
+    update: dict = {"artifacts": {}}
+    if role.key == "plan":
+        text, change = _settle(state, text)
+        if change is not None:
+            update["change"] = change
+            update["artifacts"][CHANGE] = changes.block(change)
+    items = evidence.gather(
+        state.get("evidence"),
+        (state.get("messages") or [])[state.get("evidence_start", 0):],
+    )
+    documents = [
+        str(value) for key, value in (state.get("artifacts") or {}).items() if key in TITLES
+    ]
+    headings = {match.group(1) for doc in (*documents, text) for match in _HEADING.finditer(doc)}
+    checker = critic.Critic(
+        items,
+        request=str(state.get("task") or ""),
+        primary=str((state.get("ticket") or {}).get("evidence") or ""),
+        ignore={*headings, *(role.title for role in ROLES)},
+    )
+    report = checker.check(text, stage=role.key).to_dict()
+    reports = {**(state.get("citations") or {}), role.key: report}
+    ordered = {key: reports[key] for key in TITLES if key in reports}
+    update["citations"] = reports
+    update["artifacts"][CHECK] = critic.render(ordered, TITLES)
+    return text, update
 
 
 PIPELINE = Pipeline(
@@ -405,7 +540,9 @@ PIPELINE = Pipeline(
     # только папку задачи, этот — ещё Jira и Confluence. Набор один на все пять
     # ролей, включая те, что в цикл с инструментами не уходят: он уезжает в
     # кешируемый префикс, и роль без привязки послала бы запрос другой формы.
-    tools=tuple(tools.RESEARCH_TOOLS),
+    # Вариант с Evidence: ответ на чтение начинается с id источника, на
+    # который ссылаются роли (`tools.CITED_TOOLS`).
+    tools=tuple(tools.CITED_TOOLS),
     # Пять документов этого конвейера — один разговор от тикета до черновика
     # документации, и читают его подряд. Постранично их получал человек,
     # который просил «страницу по задаче», и закрывал четыре из пяти не читая.
@@ -421,15 +558,24 @@ PIPELINE = Pipeline(
             "её связанные задачи и файлы, выбранные оператором."
         ),
     ),
+    postlude=Stage(
+        key="change",
+        title="Изменение",
+        summary=(
+            "Без вызова модели записывает изменение: требования с устойчивыми "
+            "номерами, прочитанные источники и тред."
+        ),
+    ),
     tools_hint="Поиск и чтение страниц Confluence, связанные задачи Jira, файлы задачи.",
     # На странице читают итог: первичную документацию с её «Коротко», потом
     # план. Разбор, пробелы и выжимки нужны, чтобы проверить вывод, и лежат
     # за ними свёрнутыми.
     lead=("draft", "plan"),
     collapsed=("intake", "gaps", "research"),
-    appendix=((SOURCES, "Источники прогона"),),
+    appendix=((SOURCES, "Источники прогона"), (CHECK, "Проверка ссылок")),
     subject=subject,
     ledger=ledger,
+    review=review,
     tidy=True,
     russian=True,
 )

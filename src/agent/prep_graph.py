@@ -102,9 +102,21 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
+from agent import (
+    changes,
+    confluence,
+    credentials,
+    db,
+    evidence,
+    inputs,
+    jira,
+    metrics,
+    prep_roles,
+    sources,
+)
 from agent import config as cfg
-from agent import confluence, credentials, inputs, jira, metrics, prep_roles, sources
 from agent import graph as common_graph
+from agent.runtime import nested
 
 
 class State(common_graph.State, total=False):
@@ -115,6 +127,18 @@ class State(common_graph.State, total=False):
     # сводка: по ней интерфейс показывает источник, а нода понимает, что на
     # этом ходе ходить в трекер уже не нужно.
     ticket: dict
+    # Записи Evidence прочитанного кодом до ролей: `{id: запись с текстом}`
+    # (`evidence.py`). Прочитанное инструментами сюда не копируется — оно
+    # лежит в ответах инструментов треда, и `evidence.gather` собирает оба.
+    evidence: dict
+    # Индекс первого сообщения о текущей задаче: ответы инструментов прежней
+    # задачи остаются в истории чата, но не подтверждают новый документ.
+    evidence_start: int
+    # Проверка ссылок каждого документа: `{ключ роли: Report.to_dict()}`.
+    citations: dict
+    # Изменение, к которому относится тред: задача, id в базе, требования с
+    # устойчивыми номерами и то, с чем их сверять на этом ходе (`base`).
+    change: dict
 
 
 PIPELINE = prep_roles.PIPELINE
@@ -211,7 +235,11 @@ def _materials(question: str, config: RunnableConfig, remembered: Sequence[str] 
     """
     found, others = sources.materials(question, config, remembered)
     read = list((found or {}).get("names") or [])
-    return {"names": read, "block": prep_roles.files_block(found, others)}
+    return {
+        "names": read,
+        "block": prep_roles.files_block(found, others),
+        "evidence": dict((found or {}).get("evidence") or {}),
+    }
 
 
 def _linked(issue: dict) -> list[dict]:
@@ -239,7 +267,7 @@ def _linked(issue: dict) -> list[dict]:
             linked.append({"key": key, "relation": relation, "skipped": True})
             continue
         try:
-            other = jira.fetch_issue(key)
+            other, item = sources.read_issue(key)
         except jira.JiraError as exc:
             linked.append({"key": key, "relation": relation, "error": str(exc)})
             continue
@@ -249,7 +277,8 @@ def _linked(issue: dict) -> list[dict]:
                 "relation": relation,
                 "summary": other["summary"],
                 "url": other["url"],
-                "text": jira.format_issue(other),
+                "text": item.text,
+                "evidence": item.to_dict(),
             }
         )
     return linked
@@ -281,7 +310,7 @@ def _pages(texts: list[str]) -> list[dict]:
             pages.append({"id": page_id, "skipped": True})
             continue
         try:
-            page = confluence.fetch_page(page_id)
+            page, item = sources.read_page(page_id)
         except confluence.ConfluenceError as exc:
             pages.append({"id": page_id, "error": str(exc)})
             continue
@@ -291,7 +320,9 @@ def _pages(texts: list[str]) -> list[dict]:
                 "title": page.get("title") or "",
                 "url": page.get("url") or "",
                 "truncated": bool(page.get("truncated")),
-                "text": confluence.format_page(page),
+                "own": item.own,
+                "text": item.text,
+                "evidence": item.to_dict(),
             }
         )
     return pages
@@ -305,12 +336,92 @@ def _texts(issue: dict) -> list[str]:
 
 def _summary(items: list[dict]) -> list[dict]:
     """Сводка прочитанного без текста: для страницы и реестра, не для модели."""
-    return [{key: value for key, value in item.items() if key != "text"} for item in items]
+    return [
+        {key: value for key, value in item.items() if key not in ("text", "evidence")}
+        for item in items
+    ]
+
+
+def _records(*groups: list[dict]) -> dict:
+    """Записи Evidence прочитанного: `{id: запись}` для поля состояния `evidence`."""
+    found: dict = {}
+    for items in groups:
+        for item in items:
+            record = item.get("evidence")
+            if record:
+                found[record["id"]] = record
+    return found
+
+
+def _change(issue: dict) -> dict:
+    """
+    Изменение по задаче: из базы, если оно там есть, и пустое, если нет.
+
+    Здесь изменение только читается. Заводит и пишет его узел `change` в
+    конце хода: прогон, остановленный на середине, не должен оставлять в базе
+    изменение без единого документа.
+
+    `base` — с чем сверится план этого треда, `committed` — снимок базы, от
+    которого тред пишет (`changes.merge`). Сначала они совпадают; расходятся,
+    когда база не приняла итог хода и номера живут в треде.
+    """
+    base = {"key": issue["key"], "title": issue.get("summary") or "", "id": "",
+            "requirements": [], "base": [], "committed": [], "stored": False, "error": ""}
+    try:
+        found = changes.load(changes.owner(), issue["key"])
+    except db.DatabaseUnavailable as exc:
+        return {**base, "error": str(exc)}
+    if not found:
+        return base
+    requirements = list(found.get("requirements") or [])
+    return {**base, **found, "requirements": requirements, "base": requirements,
+            "committed": requirements, "stored": True}
+
+
+def _unread(picked: dict, change: dict | None) -> dict:
+    """
+    Изменение треда, когда задача не прочитана: без ключа, номера живут в треде.
+
+    Изменение прошлой задачи здесь не остаётся: иначе план по непрочитанной
+    ORB-2 записался бы в изменение ORB-1, прочитанной на прошлом ходе.
+    Остаётся только изменение без ключа, начатое для той же непрочитанной
+    задачи, — его номера нужны следующему плану этого треда.
+    """
+    wanted = str(picked.get("key") or "")
+    change = change or {}
+    if change and not change.get("key") and change.get("wanted", "") == wanted:
+        return change
+    return {"key": "", "wanted": wanted, "title": "", "id": "", "requirements": [],
+            "base": [], "committed": [], "stored": False, "error": ""}
 
 
 def ticket_node(state: State, config: RunnableConfig) -> dict:
     """
     Прочитать задачу, её связанные задачи и материалы оператора — без вызова модели.
+
+    Узел открывает каждый ход треда, поэтому здесь же снимается пометка
+    `settled`: требования, сверенные планом прошлого хода, — итог того хода.
+    Ход, не дошедший до узла `change` (остановка, бюджет, брошенная пауза),
+    оставил бы их «сверенными», и узел `change` этого хода записал бы в
+    базу старый список, даже если новый план о требованиях молчит.
+    """
+    update = _read_ticket(state, config)
+    old_ticket = state.get("ticket") or {}
+    new_ticket = update.get("ticket") or {}
+    old_source = str(old_ticket.get("key") or old_ticket.get("wanted") or "")
+    new_source = str(new_ticket.get("key") or new_ticket.get("wanted") or old_source)
+    if new_ticket and new_source != old_source:
+        update = {**update, "evidence_start": len(state.get("messages") or []),
+                  "citations": {}}
+    change = update.get("change", state.get("change"))
+    if change and change.get("settled"):
+        update = {**update, "change": {**change, "settled": False}}
+    return update
+
+
+def _read_ticket(state: State, config: RunnableConfig) -> dict:
+    """
+    Чтение задачи для `ticket_node`.
 
     Повторный ход треда в трекер не ходит: задача у треда одна, она уже
     прочитана, и переспрашивать её на каждое «перепиши план» значит платить
@@ -331,38 +442,60 @@ def ticket_node(state: State, config: RunnableConfig) -> dict:
         previous = (state.get("artifacts") or {}).get(prep_roles.FILES) or ""
         if materials["names"] == (known.get("files") or []) and materials["block"] == previous:
             return {}
-        return {"ticket": {**known, "files": materials["names"]}, "artifacts": files}
+        return {
+            "ticket": {**known, "files": materials["names"]},
+            "artifacts": files,
+            "evidence": {
+                **{key: value for key, value in (state.get("evidence") or {}).items()
+                   if value.get("system") != "file"},
+                **materials["evidence"],
+            },
+        }
 
     picked = _fetch(question)
     if picked.get("error") is None:
         try:
-            issue = jira.fetch_issue(picked["key"])
+            issue, record = sources.read_issue(picked["key"])
         except jira.JiraError as exc:
             picked = {**picked, "error": str(exc), "reason": f"{picked['key']} не прочитана: {exc}"}
     if picked.get("error"):
         # Без задачи остаются запрос оператора, его файлы и страницы по ссылкам
-        # из запроса: разбор начнёт с того, что задача не прочитана.
+        # из запроса: разбор начнёт с того, что задача не прочитана. Изменения
+        # без задачи нет: заводить его не по чему, и номера требований живут
+        # в треде (`changes.describe`).
         pages = _pages([question])
         reason = picked.pop("reason", picked["error"])
+        change = _unread(picked, state.get("change"))
         return {
             "ticket": {**picked, "files": materials["names"], "pages": _summary(pages)},
             "artifacts": {
                 prep_roles.TICKET: f"Задача не прочитана: {reason}.",
                 prep_roles.PAGES: prep_roles.pages_block(pages),
+                prep_roles.CHANGE: changes.block(change),
                 **files,
             },
+            "evidence": {**_records(pages), **materials["evidence"]},
+            "change": change,
             "messages": [AIMessage(content=f"Задача не прочитана: {reason}.")],
             "stage": "ticket",
         }
 
     linked = _linked(issue)
     pages = _pages([question, *_texts(issue), *(item.get("text") or "" for item in linked)])
+    # Изменение треда — по задаче. Тот же ключ, что на прошлом ходе, — то же
+    # изменение: его номера требований уже в состоянии, и база не нужна.
+    change = state.get("change") or {}
+    if change.get("key") != issue["key"]:
+        change = _change(issue)
     return {
         "ticket": {
             "key": issue["key"],
             "url": issue["url"],
             "summary": issue["summary"],
             "chosen": picked["chosen"],
+            # Id записи Evidence самой задачи: критик относит к ней утверждения
+            # о комментариях, в которых задача не названа (`critic.py`).
+            "evidence": record.id,
             # Сводка без текста: по ней страница называет прочитанное, а реестр
             # источников считает его (`prep_roles.subject`, `prep_roles.ledger`).
             "linked": _summary(linked),
@@ -370,16 +503,105 @@ def ticket_node(state: State, config: RunnableConfig) -> dict:
             "files": materials["names"],
         },
         "artifacts": {
-            prep_roles.TICKET: prep_roles.ticket_block(issue, picked, question),
+            prep_roles.TICKET: prep_roles.ticket_block(issue, picked, question, record.to_dict()),
             prep_roles.LINKED: prep_roles.linked_block(issue["key"], linked),
             prep_roles.PAGES: prep_roles.pages_block(pages),
+            prep_roles.CHANGE: changes.block(change),
             **files,
         },
+        "evidence": {
+            record.id: record.to_dict(),
+            **_records(linked, pages),
+            **materials["evidence"],
+        },
+        "change": change,
         "messages": [
             AIMessage(content=_note(issue, picked, linked, materials["names"], pages))
         ],
         "stage": "ticket",
     }
+
+
+def _plain(items: list[dict]) -> list[dict]:
+    """Требования без пометки хода (`change`): то, что лежит у изменения."""
+    return [{key: value for key, value in item.items() if key != "change"} for item in items]
+
+
+def change_node(state: State, config: RunnableConfig) -> dict:
+    """
+    Записать изменение: требования с номерами, прочитанное и тред — без модели.
+
+    Стоит после последней роли и до памяти и публикации (`Pipeline.postlude`):
+    если база, сверив номера под блокировкой, выдала другие — соседний тред
+    успел сохранить своё, — план и документация переписываются, и на страницу
+    уезжают окончательные номера. Остановленный на середине прогон сюда не
+    доходит: изменения без документов в базе быть не должно.
+
+    Отказ базы прогон не останавливает. Изменение остаётся в треде, номера
+    устойчивы в его пределах, а строка под задачей говорит, что не сохранено.
+    Снимок базы (`committed`) тогда не меняется: номера, выданные в треде,
+    так и остаются номерами треда, пока их не подтвердит база (`changes.merge`).
+    Во вложенном прогоне не пишет вовсе: запись — дело вызывающего графа
+    (`graph_registry`, эффект `change`).
+
+    Пометка `settled` снимается здесь же: требования сверены планом этого
+    хода, и следующий ход пишет только то, что сверит его собственный план.
+    """
+    change = dict(state.get("change") or {})
+    settled = change.pop("settled", False)
+    requirements = change.get("requirements") if settled else None
+    # Без записи в базу итог хода становится тем, с чем сверится следующий
+    # план: иначе он начал бы нумерацию с R-1.
+    kept = _plain(requirements if requirements is not None else change.get("base") or [])
+    if not change.get("key"):
+        if requirements is None:
+            return {}
+        change["base"] = kept
+        return {"change": change, "artifacts": {prep_roles.CHANGE: changes.block(change)}}
+    if nested(config):
+        change.update(
+            {"base": kept, "stored": False,
+             "error": "вложенный прогон — изменение записывает вызывающий граф"}
+        )
+        return {"change": change}
+    items = evidence.gather(
+        state.get("evidence"),
+        (state.get("messages") or [])[state.get("evidence_start", 0):],
+    )
+    try:
+        saved = changes.save(
+            owner=changes.owner(),
+            key=change["key"],
+            title=change.get("title") or "",
+            thread_id=str(((config or {}).get("configurable") or {}).get("thread_id") or ""),
+            graph=PIPELINE.key,
+            requirements=requirements,
+            evidence=[item.to_dict(text=False) for item in items.values()],
+            committed=change.get("committed") or [],
+        )
+    except db.DatabaseUnavailable as exc:
+        change.update({"base": kept, "stored": False, "error": str(exc)})
+        return {"change": change, "artifacts": {prep_roles.CHANGE: changes.block(change)}}
+
+    change.update(
+        {
+            "id": saved["id"],
+            "requirements": saved["requirements"],
+            "base": _plain(saved["requirements"]),
+            "committed": _plain(saved["requirements"]),
+            "stored": True,
+            "error": "",
+            "notes": [*(change.get("notes") or []), *saved.get("notes", [])],
+        }
+    )
+    artifacts = {prep_roles.CHANGE: changes.block(change)}
+    remap = saved.get("remap") or {}
+    if remap:
+        current = state.get("artifacts") or {}
+        for key in ("plan", "draft"):
+            if current.get(key):
+                artifacts[key] = changes.renumber(current[key], remap)
+    return {"change": change, "artifacts": artifacts}
 
 
 def _note(
@@ -431,6 +653,7 @@ def build_graph(llm: Any = None) -> StateGraph:
         pipeline=PIPELINE,
         admission=missing_source,
         prelude=ticket_node,
+        postlude=change_node,
         # Без этого поле `ticket` в состояние не попадает: LangGraph
         # выбрасывает из обновления ключи, которых нет в схеме, и узел чтения
         # ходил бы в трекер на каждом ходе треда заново.

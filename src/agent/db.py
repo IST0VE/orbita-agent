@@ -2,9 +2,10 @@
 База приложения в Postgres: то, что принадлежит пользователям, а не процессу.
 
 Треды и чекпоинты здесь не живут — их держит сам сервер LangGraph. Здесь то,
-чего у него нет: личные подключения Jira и Confluence (`credentials.py`), дальше —
-всё, что должно пережить пересоздание контейнера и принадлежать конкретному
-человеку.
+чего у него нет: личные подключения Jira и Confluence (`credentials.py`),
+изменения с их требованиями и Evidence (`changes.py`), внешние действия с их
+согласиями и журналом операций (`actions.py`) — всё, что должно пережить
+пересоздание контейнера и принадлежать конкретному человеку.
 
 Схема заводится на месте, при первом обращении: список `MIGRATIONS` проходит
 по порядку под advisory-блокировкой, сделанное отмечается в `schema_migrations`.
@@ -55,6 +56,135 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             PRIMARY KEY (subject, system)
         );
         """,
+    ),
+    (
+        2,
+        "изменения, требования и Evidence",
+        # Изменение живёт дольше треда (`changes.py`). Номер требования
+        # устойчив: строка не удаляется, выбывшее получает статус `dropped`, и
+        # его номер не занимается. Evidence — без текста источника: текст
+        # прочитан чьим-то токеном и остаётся в треде того, кто читал; здесь
+        # версия, хеш и читатель — чтобы узнать, изменился ли источник.
+        """
+        CREATE TABLE changes (
+            id          text        PRIMARY KEY,
+            owner       text        NOT NULL,
+            key         text        NOT NULL,
+            title       text        NOT NULL DEFAULT '',
+            created_at  timestamptz NOT NULL DEFAULT now(),
+            updated_at  timestamptz NOT NULL DEFAULT now(),
+            UNIQUE (owner, key)
+        );
+        CREATE TABLE change_threads (
+            change_id   text        NOT NULL REFERENCES changes (id) ON DELETE CASCADE,
+            thread_id   text        NOT NULL,
+            graph       text        NOT NULL,
+            first_at    timestamptz NOT NULL DEFAULT now(),
+            last_at     timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (change_id, thread_id)
+        );
+        CREATE TABLE requirements (
+            change_id   text        NOT NULL REFERENCES changes (id) ON DELETE CASCADE,
+            number      integer     NOT NULL,
+            text        text        NOT NULL,
+            fingerprint text        NOT NULL,
+            status      text        NOT NULL CHECK (status IN ('active', 'dropped')),
+            revision    integer     NOT NULL DEFAULT 1,
+            evidence    text[]      NOT NULL DEFAULT '{}',
+            thread_id   text        NOT NULL DEFAULT '',
+            created_at  timestamptz NOT NULL DEFAULT now(),
+            updated_at  timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (change_id, number)
+        );
+        CREATE TABLE requirement_history (
+            change_id   text        NOT NULL REFERENCES changes (id) ON DELETE CASCADE,
+            number      integer     NOT NULL,
+            revision    integer     NOT NULL,
+            text        text        NOT NULL,
+            status      text        NOT NULL,
+            thread_id   text        NOT NULL DEFAULT '',
+            saved_at    timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX requirement_history_change ON requirement_history (change_id, number);
+        CREATE TABLE evidence (
+            change_id    text        NOT NULL REFERENCES changes (id) ON DELETE CASCADE,
+            id           text        NOT NULL,
+            system       text        NOT NULL,
+            source_id    text        NOT NULL,
+            title        text        NOT NULL DEFAULT '',
+            url          text        NOT NULL DEFAULT '',
+            version      text        NOT NULL DEFAULT '',
+            location     text        NOT NULL DEFAULT '',
+            content_hash text        NOT NULL,
+            reader       text        NOT NULL,
+            own          boolean     NOT NULL DEFAULT false,
+            fetched_at   timestamptz NOT NULL,
+            thread_id    text        NOT NULL DEFAULT '',
+            PRIMARY KEY (change_id, id)
+        );
+        """,
+    ),
+    (
+        3,
+        "действия, согласования и журнал операций",
+        # Единый порядок внешних записей (`actions.py`). Действие — одно
+        # предложение с отпечатком содержимого, согласие привязано к отпечатку.
+        # Операции живут дольше действия: их ключ — область (тред и цель), и
+        # следующий ход того же треда по ним узнаёт, что уже сделано и с каким
+        # содержимым. Тел документов и описаний задач здесь нет — только
+        # заголовки, отпечатки и ключи на той стороне.
+        """
+        CREATE TABLE actions (
+            id          text        PRIMARY KEY,
+            kind        text        NOT NULL,
+            graph       text        NOT NULL DEFAULT '',
+            thread_id   text        NOT NULL DEFAULT '',
+            owner       text        NOT NULL,
+            scope       text        NOT NULL DEFAULT '',
+            digest      text        NOT NULL,
+            target      jsonb       NOT NULL DEFAULT '{}',
+            operations  jsonb       NOT NULL DEFAULT '[]',
+            status      text        NOT NULL,
+            result      jsonb       NOT NULL DEFAULT '{}',
+            created_at  timestamptz NOT NULL DEFAULT now(),
+            updated_at  timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX actions_owner ON actions (owner, updated_at DESC);
+        CREATE INDEX actions_thread ON actions (thread_id, updated_at DESC);
+        CREATE TABLE action_approvals (
+            action_id   text        NOT NULL REFERENCES actions (id) ON DELETE CASCADE,
+            decision    text        NOT NULL,
+            digest      text        NOT NULL,
+            actor       text        NOT NULL,
+            reason      text        NOT NULL DEFAULT '',
+            decided_at  timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX action_approvals_action ON action_approvals (action_id, decided_at);
+        CREATE TABLE action_operations (
+            scope        text        NOT NULL,
+            op           text        NOT NULL,
+            key          text        NOT NULL,
+            action_id    text        NOT NULL DEFAULT '',
+            state        text        NOT NULL
+                         CHECK (state IN ('pending', 'completed', 'failed', 'unknown')),
+            label        text        NOT NULL,
+            title        text        NOT NULL DEFAULT '',
+            remote       text        NOT NULL DEFAULT '',
+            url          text        NOT NULL DEFAULT '',
+            detail       text        NOT NULL DEFAULT '',
+            content_hash text        NOT NULL DEFAULT '',
+            remote_hash  text        NOT NULL DEFAULT '',
+            verified     text        NOT NULL DEFAULT '',
+            updated_at   timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (scope, op, key)
+        );
+        CREATE INDEX action_operations_action ON action_operations (action_id);
+        """,
+    ),
+    (
+        4,
+        "версия удалённой задачи для защиты дополнительных полей",
+        "ALTER TABLE action_operations ADD COLUMN remote_version text NOT NULL DEFAULT '';",
     ),
 )
 

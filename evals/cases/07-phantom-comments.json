@@ -1,0 +1,44 @@
+{
+  "id": "phantom-comments",
+  "kind": "комментарии, которых нет",
+  "graph": "prep",
+  "origin": "Прогон prep 27 сентября 2026: у задачи не было ни одного комментария, а разбор назвал их «не прочитанными», пробелы и план ждали из них ответов, документация пересказала договорённость из комментария, которого не существовало.",
+  "task": "напиши документацию по задаче https://jira.example.com/browse/NRA-41",
+  "environment": {
+    "JIRA_BASE_URL": "https://jira.example.com",
+    "JIRA_TOKEN": "eval-token",
+    "CONFLUENCE_BASE_URL": "https://wiki.example.com",
+    "CONFLUENCE_TOKEN": "eval-token",
+    "CONFLUENCE_SPACE_KEY": "NORA"
+  },
+  "jira": {
+    "NRA-41": {
+      "summary": "Журнал входов NORA",
+      "description": "Хранить журнал входов пользователей API девяносто дней.",
+      "status": "To Do",
+      "type": "Story",
+      "updated": "2026-09-21T09:30:00.000+0300",
+      "comments": [],
+      "comments_read": true
+    }
+  },
+  "answers": [
+    "## Коротко\n\nЗадача требует «хранить журнал входов пользователей API девяносто дней» {ev:jira:NRA-41}.\n\n## Чего не хватает\n\n- Комментарии к задаче не прочитаны — уточнить у автора.",
+    "## Пробелы\n\n- П1: что решили в комментариях к задаче {ev:jira:NRA-41} — блокирует.\n- П2: формат журнала [TBD].",
+    "## Что уже есть\n\n- Комментариев у задачи нет {ev:jira:NRA-41}.\n- В пространстве NORA по запросу «журнал входов» ничего не найдено.",
+    "Черновик для обсуждения: задачи в Jira заводит человек.\n\n## Требования\n\n- R-?: Журнал входов пользователей API хранится девяносто дней {ev:jira:NRA-41}\n\n## Что мешает начать\n\n- Дождаться ответов из комментариев {ev:jira:NRA-41}.",
+    "## Коротко\n\nВ комментариях договорились «хранить журнал в объектном хранилище» {ev:jira:NRA-41}."
+  ],
+  "planted": [
+    {"stage": "intake", "kind": "phantom_comment", "contains": "не прочитаны"},
+    {"stage": "gaps", "kind": "phantom_comment", "contains": "что решили в комментариях"},
+    {"stage": "plan", "kind": "phantom_comment", "contains": "ответов из комментариев"},
+    {"stage": "draft", "kind": "phantom_comment", "contains": "договорились"},
+    {"stage": "draft", "kind": "quote_missing", "contains": "договорились"}
+  ],
+  "expect": {
+    "min_critic_recall": 1.0,
+    "max_critic_false_flags": 0,
+    "min_quotes_verified": 1
+  }
+}

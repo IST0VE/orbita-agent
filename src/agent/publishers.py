@@ -71,6 +71,10 @@ class Publisher(Protocol):
         роняет остановку — узнать судьбу страницы приятно, но не обязательно.
         """
 
+    # Необязательный метод: `verify(result, title, document) -> dict` —
+    # сверка после записи (`actions.VERIFIED`, `DIFFERS`, `UNVERIFIED` и
+    # `detail`). Цель без него записанное не перечитывает.
+
 
 class ConfluencePublisher:
     """Корпоративная wiki: та самая цель, ради которой всё писалось."""
@@ -108,6 +112,39 @@ class ConfluencePublisher:
             # Идентификатор нужен, чтобы показать diff: тело страницы отдаёт
             # только чтение по id, а поиск по заголовку его не возвращает.
             "page_id": str(existing.get("id") or ""),
+        }
+
+    def verify(self, result: dict, title: str, document: str) -> dict:
+        """
+        Страница после записи: та версия, тот заголовок, тот текст.
+
+        Текст сравнивается без разметки (`storage_to_text`) и без лишних
+        пробелов: Confluence переписывает storage format — атрибуты, пустые
+        абзацы, сущности, — и побайтовое сравнение расходилось бы на каждой
+        странице. Версия и заголовок сравниваются как есть: их wiki не трогает.
+        """
+        page_id = str(result.get("page_id") or "")
+        if not page_id:
+            return {"verified": "unverified", "detail": "запись не вернула идентификатор страницы"}
+        title, document = checked(title, document)
+        try:
+            s = confluence.load_settings()
+            data = confluence.backend(s).read_page(page_id, s)
+        except confluence.ConfluenceError as exc:
+            return {"verified": "unverified", "detail": f"страница не прочитана: {exc}"}
+        problems = []
+        version = (data.get("version") or {}).get("number")
+        if result.get("version") is not None and version != result.get("version"):
+            problems.append(f"версия {version}, а запись вернула {result.get('version')}")
+        if str(data.get("title") or "") != title:
+            problems.append("заголовок на странице другой")
+        stored = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
+        if _flat(confluence.storage_to_text(stored)) != _flat(confluence.storage_to_text(document)):
+            problems.append("текст страницы отличается от отправленного")
+        return {
+            "verified": "differs" if problems else "verified",
+            "detail": "; ".join(problems),
+            "remote_hash": hashlib.sha256(_flat(confluence.storage_to_text(stored)).encode()).hexdigest()[:32],
         }
 
 
@@ -179,6 +216,22 @@ class FilePublisher:
         if not path.exists():
             return {"action": "create", "path": str(path)}
         return {"action": "update", "path": str(path), "url": path.resolve().as_uri()}
+
+    def verify(self, result: dict, title: str, document: str) -> dict:
+        """Файл после записи байт в байт: диск разметку не переписывает."""
+        title, document = checked(title, document)
+        path = Path(str(result.get("path") or self.path_for(title)))
+        try:
+            stored = path.read_bytes()
+        except OSError as exc:
+            return {"verified": "unverified", "detail": f"файл не прочитан: {exc}"}
+        sent = f"# {title}\n\n{document}\n".encode()
+        same = stored == sent
+        return {
+            "verified": "verified" if same else "differs",
+            "detail": "" if same else "файл на диске отличается от записанного",
+            "remote_hash": hashlib.sha256(stored).hexdigest()[:32],
+        }
 
 
 class NullPublisher:
@@ -446,6 +499,27 @@ def current_text(publisher: Publisher, title: str, preview: dict) -> str | None:
             return None
         return page
     return None
+
+
+def _flat(text: str) -> str:
+    """Текст без переводов строк и лишних пробелов: для сверки после записи."""
+    return " ".join((text or "").split())
+
+
+def verify(publisher: Publisher, result: dict, title: str, document: str) -> dict:
+    """
+    Сверка записанного документа, если цель её умеет. Отказ — `unverified`.
+
+    Сверка ничего не меняет и не отменяет: документ уже записан. Поэтому любой
+    сбой чтения становится причиной в итоге, а не исключением в узле.
+    """
+    check = getattr(publisher, "verify", None)
+    if check is None or result.get("status") not in {"created", "updated"}:
+        return {}
+    try:
+        return dict(check(result, title, document))
+    except Exception as exc:  # noqa: BLE001 - сверка не роняет публикацию
+        return {"verified": "unverified", "detail": f"сверка не выполнена: {exc}"}
 
 
 def diff_of(before: str | None, after: str) -> dict:

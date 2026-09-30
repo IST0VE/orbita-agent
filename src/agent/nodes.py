@@ -51,7 +51,7 @@ from agent.documents import (
 )
 from agent.pipeline import Pipeline
 from agent.routes import budget_gate
-from agent.runtime import options
+from agent.runtime import nested, options
 from agent.state import State, _merge_spend, _merge_usage
 from agent.tools import FILE_TOOLS as TOOLS
 
@@ -684,6 +684,15 @@ def make_role_node(
                 response = response.model_copy(update={"content": clean})
                 text = clean
 
+        reviewed: dict = {}
+        if document and pipeline.review:
+            # Проверка кодом после формы: ссылки ищутся в выровненном тексте с
+            # починенными тегами. Денег не стоит, поэтому ворот бюджета нет.
+            checked, reviewed = pipeline.review(state, role, text)
+            if checked != text:
+                response = response.model_copy(update={"content": checked})
+                text = checked
+
         update = {
             # Приписка с паузы уезжает в состояние тем же обновлением, что и
             # ответ роли: до него она жила только в локальной переменной, и
@@ -707,6 +716,8 @@ def make_role_node(
                 # следующая роль получает оба, а собрать его позже было бы не
                 # из чего — переписка следующего хода уже другая.
                 update["artifacts"].update(pipeline.ledger(state, own))
+            update["artifacts"].update(reviewed.pop("artifacts", {}))
+            update.update(reviewed)
         return update
 
     return role_node
@@ -764,9 +775,10 @@ def context_node(
     """
     # Счётчик обнуляется на любом исходе ноды: не состоявшаяся подстановка —
     # это всё равно начало нового прогона. Отказ по входу прошлого прогона
-    # (`refused`) и его ошибка (`failure`) снимаются тем же доводом, что и
-    # остановка.
-    fresh = {"tool_turns": 0, "halt": {}, "refused": "", "failure": ""}
+    # (`refused`), его ошибка (`failure`) и предложения вложенного прогона
+    # (`proposals`) снимаются тем же доводом, что и остановка: вызывающий
+    # иначе получил бы вместе с новыми предложениями прошлые.
+    fresh = {"tool_turns": 0, "halt": {}, "refused": "", "failure": "", "proposals": []}
     messages = state.get("messages") or []
     last = messages[-1] if messages else None
     if last is None or getattr(last, "type", "") != "human":
@@ -813,8 +825,12 @@ def remember_node(state: State, config: RunnableConfig) -> dict:
     Без дополнительного вызова модели: строка собирается из уже готовых
     вопроса и ответа. Лишний вызов стоил бы денег на каждом ходе и не добавлял
     бы ничего, чего в тексте уже нет.
+
+    Вложенный прогон не пишет: его ход — часть хода вызывающего графа, и тот
+    запомнит его сам. Иначе одна задача оседала бы в памяти дважды, причём
+    вложенная — вопросом, который оператор не задавал.
     """
-    if not cfg.memory_enabled():
+    if not cfg.memory_enabled() or nested(config):
         return {}
 
     turns = split_turns(state.get("messages") or [])
@@ -865,7 +881,9 @@ def make_gate_node(role: roles.Role, pipeline: Pipeline = roles.PIPELINE):
         # на который он только что ответил.
         if state.get("halt"):
             return {}
-        if not cfg.pipeline_require_approval():
+        # Вложенный прогон ворот не ставит: документы этапов вызывающий
+        # получит целиком, и спросить про них оператора — его решение.
+        if nested(config) or not cfg.pipeline_require_approval():
             return {}
         # Режим `first`: спрашивают только про первый документ — на нём стоят
         # все остальные, и ошибка в нём дороже всего (PIPELINE_APPROVAL_STAGES).

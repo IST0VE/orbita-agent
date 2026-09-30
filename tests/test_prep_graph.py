@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
-from agent import confluence, inputs, nodes, prep_graph, prep_prompts, prep_roles, tools
+from agent import confluence, evidence, inputs, nodes, prep_graph, prep_prompts, prep_roles, tools
 from agent import graph as common_graph
 from agent import jira as jira_api
 
@@ -105,6 +105,28 @@ ANSWERS = [
 ]
 
 
+def test_a_new_ticket_cannot_cite_evidence_from_the_previous_ticket(monkeypatch):
+    old = evidence.for_file("old.txt", "Старое утверждение")
+    new = evidence.for_file("new.txt", "Новый материал")
+    content, meta = evidence.attach(old)
+    history = [ToolMessage(content=content, artifact={"evidence": meta}, tool_call_id="old")]
+    state = {"ticket": {"key": "ORB-1"}, "messages": history,
+             "evidence": {old.id: old.to_dict()}, "citations": {"intake": {"findings": []}}}
+    monkeypatch.setattr(prep_graph, "_read_ticket", lambda *_: {
+        "ticket": {"key": "ORB-2", "evidence": new.id},
+        "evidence": {new.id: new.to_dict()},
+    })
+
+    update = prep_graph.ticket_node(state, {})
+    current = {**state, **update, "messages": [*history, AIMessage(content="Новая задача")]}
+    _, reviewed = prep_roles.review(current, prep_roles.ROLES[0], f"Факт [{old.id}].")
+
+    assert update["evidence_start"] == len(history)
+    assert list(update["evidence"]) == [new.id]
+    assert update["citations"] == {}
+    assert any(item["kind"] == "unknown_ref" for item in reviewed["citations"]["intake"]["findings"])
+
+
 @pytest.fixture(autouse=True)
 def no_publishing(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
@@ -168,7 +190,8 @@ def test_the_plan_sees_everything_that_was_read():
     plan = prep_roles.BY_KEY["plan"]
 
     assert plan.needs == (
-        *prep_roles.READ_BY_CODE, "intake", "gaps", "research", prep_roles.SOURCES,
+        *prep_roles.READ_BY_CODE, prep_roles.CHANGE, "intake", "gaps", "research",
+        prep_roles.SOURCES, prep_roles.CHECK,
     )
 
 
@@ -655,12 +678,13 @@ def test_the_run_of_27_september_would_not_go_blind(configured, monkeypatch: pyt
             "роль поиска потеряла список запросов"
         )
     answers = [m for m in research[-1] if m.type == "tool"]
-    assert str(answers[-1].content).startswith("Страница 2"), (
+    assert "«Страница 2»" in str(answers[-1].content).splitlines()[0], (
         "роль поиска не увидела страницу, которую только что попросила"
     )
     assert list(state["artifacts"]) == [
-        prep_roles.TICKET, prep_roles.LINKED, prep_roles.PAGES, prep_roles.FILES,
-        "intake", "gaps", "research", prep_roles.SOURCES, "plan", "draft",
+        prep_roles.TICKET, prep_roles.LINKED, prep_roles.PAGES, prep_roles.CHANGE,
+        prep_roles.FILES, "intake", prep_roles.CHECK, "gaps", "research",
+        prep_roles.SOURCES, "plan", "draft",
     ]
 
 
@@ -984,7 +1008,9 @@ def test_the_prompts_carry_the_rules_the_27_september_run_broke():
     assert "Цитата о системе X — факт только о X" in common
     assert "ошибки распознавания" in common
     assert "Искать в wiki и читать найденное — работа этапа 03" in common
-    assert "Тег источника ставь только к тому, что в источнике написано" in common
+    assert "Ссылку ставь только к тому, что в источнике написано" in common
+    assert "собранная самой Orbita" in common
+    assert "«комментариев нет» — это ответ, а не пробел" in common
     assert "одно–три слова" in prep_prompts.ROLE_PROMPTS["gaps"]
     assert "Ходы — потолок, а не норма" in prep_prompts.ROLE_PROMPTS["research"]
     assert "поэтому придумали" in prep_prompts.ROLE_PROMPTS["intake"]
@@ -1042,7 +1068,8 @@ def test_pages_linked_from_the_request_and_the_ticket_are_read_by_code(configure
 
     assert read == ["44444", "55555"]
     block = update["artifacts"][prep_roles.PAGES]
-    assert "## [WIKI 44444] Страница 44444" in block
+    assert "## Страница 44444 «Страница 44444»" in block
+    assert "Источник [EV-" in block
     assert "Текст 55555" in block
     assert [item["id"] for item in update["ticket"]["pages"]] == ["44444", "55555"]
     assert all("text" not in item for item in update["ticket"]["pages"])

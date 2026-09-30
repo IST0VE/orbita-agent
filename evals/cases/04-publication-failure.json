@@ -20,7 +20,7 @@
   ],
   "expect": {
     "publication_status": "skipped",
-    "publication_mentions": "не заданы в .env",
+    "publication_mentions": "не заданы переменные окружения",
     "max_published_files": 0,
     "min_grounded_claims": 1,
     "max_unsupported_claims": 3

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -48,17 +49,28 @@ class ScriptedModel:
     конвейера, а сценарий описывает содержание, а не арифметику.
     """
 
-    def __init__(self, answers: list[str]) -> None:
+    def __init__(self, answers: list[str | dict]) -> None:
         self.answers = list(answers) or [""]
         self.calls = 0
 
     def invoke(self, messages: list, **_: Any) -> AIMessage:
         answer = self.answers[min(self.calls, len(self.answers) - 1)]
         self.calls += 1
+        # Ответ может быть и вызовом инструментов: `{"tool_calls": [{"name",
+        # "args"}]}`. Так сценарий повторяет роль поиска, которая читает
+        # страницу сама, — и её чтение проходит через настоящий инструмент.
+        calls = []
+        if isinstance(answer, dict):
+            calls = [
+                {"name": call["name"], "args": call.get("args") or {}, "id": f"call-{self.calls}-{n}"}
+                for n, call in enumerate(answer.get("tool_calls") or [])
+            ]
+            answer = str(answer.get("content") or "")
         # Счётчики расхода настоящие по форме: их разбирает тот же `costmeter`,
         # что и ответы провайдера, и стоимость считается тем же кодом.
         return AIMessage(
             content=answer,
+            tool_calls=calls,
             response_metadata={"token_usage": {
                 "prompt_cache_hit_tokens": 900,
                 "prompt_cache_miss_tokens": 120,
@@ -102,8 +114,11 @@ REFERENCE_PRICE = {
 
 #: Префиксы переменных проекта: набор не должен зависеть от личного `.env`.
 #: Иначе настроенный Confluence у разработчика меняет исход случая с публикацией.
+#: POSTGRES_ — тоже: иначе случай конвейера подготовки записал бы изменение
+#: в базу разработчика (`changes.py`).
 PREFIXES = ("LLM_", "PRICE_", "CONFLUENCE_", "AGENT_", "BUDGET_", "KNOWLEDGE_", "MEMORY_",
-            "PUBLISH_", "CHECKPOINT_", "JIRA_", "ATLASSIAN_", "NT_", "DIAGRAM_")
+            "PUBLISH_", "CHECKPOINT_", "JIRA_", "ATLASSIAN_", "NT_", "DIAGRAM_",
+            "POSTGRES_", "PREP_", "TOOL_")
 
 
 def _isolate(case: dict, workdir: Path, *, live: bool = False) -> None:
@@ -150,7 +165,171 @@ def isolated(case: dict, workdir: Path, *, live: bool):
 def run_case(case: dict, workdir: Path, *, live: bool = False) -> dict:
     """Один случай: прогон, показатели и то, что от него ожидалось."""
     with isolated(case, workdir, live=live):
+        if case.get("graph") == "prep":
+            with sources_of(case):
+                return _run_prep(case, workdir, live=live)
         return _run_case(case, workdir, live=live)
+
+
+# --------------------------------------------------------------------------
+# Конвейер подготовки задачи
+#
+# Он читает Jira и Confluence, поэтому случай несёт их содержимое с собой:
+# задачи по ключу, страницы по id и что находит поиск. Сеть не участвует —
+# чтение подменено на время случая. Остальное — настоящее: узел чтения задачи,
+# инструменты, запись Evidence, проверка ссылок и узел изменения.
+# --------------------------------------------------------------------------
+_EV = re.compile(r"\{ev:(jira|confluence|file):([^}]+)\}")
+
+
+@contextmanager
+def sources_of(case: dict):
+    from agent import confluence, jira
+
+    issues = case.get("jira") or {}
+    pages = case.get("confluence") or {}
+    found = case.get("search") or {}
+
+    def fetch_issue(key, *_, **__):
+        key = str(key).strip().upper()
+        if key not in issues:
+            raise jira.JiraError(f"задача {key} не найдена (404)")
+        return {"key": key, "url": f"https://jira.example.com/browse/{key}", **issues[key]}
+
+    def fetch_page(page_id, *_, **__):
+        page_id = str(page_id).strip()
+        if page_id not in pages:
+            raise confluence.ConfluenceError(f"страница {page_id} не найдена (404)")
+        return {"id": page_id, "url": f"https://wiki.example.com/pages/{page_id}",
+                "truncated": False, **pages[page_id]}
+
+    saved = (jira.fetch_issue, jira.search, confluence.fetch_page, confluence.search)
+    jira.fetch_issue = fetch_issue
+    jira.search = lambda *_, **__: list(found.get("jira") or [])
+    confluence.fetch_page = fetch_page
+    confluence.search = lambda *_, **__: list(found.get("confluence") or [])
+    try:
+        yield
+    finally:
+        jira.fetch_issue, jira.search, confluence.fetch_page, confluence.search = saved
+
+
+def evidence_ids(case: dict) -> dict[tuple[str, str], str]:
+    """
+    Id источников случая — тем же кодом, каким их даёт конвейер.
+
+    Сценарий ссылается на источник заглушкой `{ev:confluence:700001}`: id
+    зависит от версии источника, и переписывать его руками в каждом ответе
+    значило бы ломать случай любой правкой разметки.
+    """
+    from agent import evidence
+
+    found = {}
+    for key, issue in (case.get("jira") or {}).items():
+        found[("jira", key)] = evidence.make_id("jira", key, str(issue.get("updated") or ""))
+    for page_id, page in (case.get("confluence") or {}).items():
+        found[("confluence", page_id)] = evidence.make_id(
+            "confluence", page_id, str(page.get("version"))
+        )
+    for name, text in (case.get("materials") or {}).items():
+        found[("file", name)] = evidence.make_id("file", name, evidence.digest(text)[:12])
+    return found
+
+
+def _with_ids(answer, ids: dict) -> Any:
+    def swap(text: str) -> str:
+        return _EV.sub(lambda m: ids[(m.group(1), m.group(2))], text)
+
+    if isinstance(answer, dict):
+        return {**answer, "content": swap(str(answer.get("content") or ""))}
+    return swap(answer)
+
+
+def critic_metrics(citations: dict, planted: list[dict] | None, *, live: bool) -> dict:
+    """
+    Что нашла проверка ссылок и совпало ли это с заложенными провалами.
+
+    planted — провалы, которые сценарий повторяет дословно: этап, вид
+    замечания и кусок строки. Найденное сверх них — ложные замечания: критик,
+    который шумит, перестают читать так же быстро, как критик, который молчит.
+    У настоящей модели (`--live`) заложенного нет: там счёт замечаний — это
+    сколько раз модель нарушила правила.
+    """
+    from agent import critic
+
+    found = critic.findings(citations)
+    counted = critic.summary(citations)
+    result = {
+        "evidence_refs": counted["refs"],
+        "quotes_verified": counted["verified"],
+        "critic_findings": len(found),
+        "critic_kinds": counted["kinds"],
+    }
+    if live or planted is None:
+        return {**result, "critic_recall": None, "critic_false_flags": None}
+    matched: set[int] = set()
+    caught = 0
+    for plant in planted:
+        hits = [
+            index for index, item in enumerate(found)
+            if item["stage"] == plant["stage"] and item["kind"] == plant["kind"]
+            and plant["contains"] in item["text"]
+        ]
+        if hits:
+            caught += 1
+            matched.update(hits)
+    return {
+        **result,
+        "critic_recall": round(caught / len(planted), 3) if planted else 1.0,
+        "critic_false_flags": len(found) - len(matched),
+    }
+
+
+def _run_prep(case: dict, workdir: Path, *, live: bool) -> dict:
+    from agent import prep_graph, prep_roles, publishers
+
+    folder = _materials(case, workdir / "input")
+    ids = evidence_ids(case)
+    answers = [_with_ids(answer, ids) for answer in case.get("answers") or []]
+    model = None if live else ScriptedModel(answers)
+    app = prep_graph.build_graph(llm=model).compile()
+    config = {"configurable": {"thread_id": f"eval-{case['id']}", "input_dir": folder,
+                               "input_file": list(case.get("picked") or [])}}
+
+    started = time.time()
+    failure = ""
+    try:
+        state = app.invoke({"messages": [HumanMessage(case["task"])]}, config=config)
+    except Exception as exc:  # noqa: BLE001 - отказ прогона это тоже результат
+        state, failure = {}, f"{type(exc).__name__}: {exc}"
+    seconds = round(time.time() - started, 3)
+
+    pipeline = prep_roles.PIPELINE
+    documents = {
+        key: text for key, text in (state.get("artifacts") or {}).items() if key in pipeline.keys
+    }
+    measured = checks.measure(documents, materials=case.get("materials"),
+                              versions=case.get("material_versions"),
+                              facts=case.get("facts"), contradictions=case.get("contradictions"))
+    publication = state.get("publication") or {}
+    cost = state.get("cost") or {}
+    published = publishers.documents() if not failure else []
+    return {
+        "id": case["id"],
+        "kind": case["kind"],
+        "mode": "live" if live else "scripted",
+        "material_versions": checks.material_versions(case.get("materials") or {}),
+        "failed_to_run": failure,
+        "stages_done": len(documents),
+        "publication_status": publication.get("status", ""),
+        "publication_reason": publication.get("reason", ""),
+        "published_files": len(published),
+        "usd": round(float(cost.get("usd", 0.0)), 6),
+        "seconds": seconds,
+        "calls": int(cost.get("calls", 0)),
+        **measured,
+        **critic_metrics(state.get("citations") or {}, case.get("planted"), live=live),
+    }
 
 
 def _run_case(case: dict, workdir: Path, *, live: bool) -> dict:

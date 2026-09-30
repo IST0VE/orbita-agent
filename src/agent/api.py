@@ -35,10 +35,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from agent import actions as external_actions
 from agent import (
+    changes,
     chat_files,
     confluence,
     credentials,
+    db,
     inputs,
     jira_writer,
     logbook,
@@ -643,6 +646,95 @@ async def get_library(request: Request) -> JSONResponse:
         return _error(f"библиотека не прочитана: {exc}", 500)
 
 
+# ---------------------------------------------------------------------------
+# Изменения: требования с устойчивыми номерами и прочитанное (changes.py)
+#
+# Только чтение и только свои: изменение пересказывает источники, прочитанные
+# личным токеном, и чужое по id не отдаётся — ответ тот же 404, что и на
+# несуществующее, чтобы перебором нельзя было узнать, что оно есть.
+# ---------------------------------------------------------------------------
+async def get_changes(request: Request) -> JSONResponse:
+    """
+    Мои изменения: задача, число требований, тредов и прочитанных источников.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    try:
+        found = await asyncio.to_thread(changes.listing, owner)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="changes_unavailable")
+    return JSONResponse({"changes": found})
+
+
+async def get_change(request: Request) -> JSONResponse:
+    """
+    Изменение целиком: требования, их история, Evidence без текста и треды.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    change_id = request.path_params["change_id"]
+    try:
+        found = await asyncio.to_thread(changes.one, owner, change_id)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="changes_unavailable")
+    if found is None:
+        return _error("изменение не найдено", 404, error_code="change_not_found")
+    return JSONResponse(found)
+
+
+# ---------------------------------------------------------------------------
+# Внешние действия: предложения, согласия, журнал операций (actions.py)
+#
+# Аудит записей наружу: что предложено, кто и на какой отпечаток согласился,
+# что уехало и чем кончилась сверка. Только чтение и только свои — по той же
+# причине, что у изменений: заголовки задач и страниц пересказывают
+# прочитанное личным токеном.
+# ---------------------------------------------------------------------------
+#: Сколько действий отдаёт список. Больше на странице не читают, а журнал
+#: одного активного треда за неделю укладывается с запасом.
+ACTIONS_LIMIT = 100
+
+
+async def get_actions(request: Request) -> JSONResponse:
+    """
+    Мои действия, свежие первыми; `?thread=` — только одного чата.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    thread = str(request.query_params.get("thread") or "")
+    try:
+        found = await asyncio.to_thread(
+            lambda: external_actions.store().list(owner, thread=thread, limit=ACTIONS_LIMIT)
+        )
+    except external_actions.JournalUnavailable as exc:
+        return _error(str(exc), 503, error_code="actions_unavailable")
+    return JSONResponse({"actions": found})
+
+
+async def get_action(request: Request) -> JSONResponse:
+    """
+    Действие целиком: предложенные операции, согласия с отпечатками, журнал и сверка.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    action_id = request.path_params["action_id"]
+    try:
+        found = await asyncio.to_thread(lambda: external_actions.store().get(owner, action_id))
+    except external_actions.JournalUnavailable as exc:
+        return _error(str(exc), 503, error_code="actions_unavailable")
+    if found is None:
+        return _error("действие не найдено", 404, error_code="action_not_found")
+    return JSONResponse(found)
+
+
 #: Первая уборка — не на старте: сервер ещё поднимает треды из хранилища.
 _SWEEP_FIRST_S = 300
 _SWEEP_EVERY_S = 6 * 3600
@@ -1087,6 +1179,10 @@ routes = [
     Route("/api/chats/{thread_id}/files/content", get_chat_file, methods=["GET"]),
     Route("/api/chats/{thread_id}/attach", attach_chat_file, methods=["POST"]),
     Route("/api/library", get_library, methods=["GET"]),
+    Route("/api/changes", get_changes, methods=["GET"]),
+    Route("/api/changes/{change_id}", get_change, methods=["GET"]),
+    Route("/api/actions", get_actions, methods=["GET"]),
+    Route("/api/actions/{action_id}", get_action, methods=["GET"]),
     Route("/api/published", get_published, methods=["GET"]),
     Route("/api/published/file", get_published_file, methods=["GET"]),
     Route("/api/logs", get_logs, methods=["GET"]),

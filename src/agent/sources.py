@@ -20,6 +20,12 @@ Jira, сам текст сообщения, — но способов его н�
 Ни одна функция отсюда не вызывает модель. Адрес страницы, имя файла и ключ
 задачи уже написаны в запросе оператора; просить модель позвать инструмент
 с известным аргументом — это оплаченный вызов, который ничего не выбирает.
+
+Всё прочитанное выходит отсюда вместе с записью Evidence (`evidence.py`):
+источник, версия, какая часть прочитана, хеш текста и чей токен читал.
+Словари прежние, запись лежит в них под ключом `evidence`: графам, которые
+пока на неё не ссылаются, она не мешает, а тем, что ссылаются, не нужно
+собирать её заново по тем же данным.
 """
 
 from __future__ import annotations
@@ -29,8 +35,9 @@ from collections.abc import Collection, Sequence
 from urllib.parse import urlsplit
 
 from agent import config as cfg
-from agent import confluence, inputs, jira
+from agent import confluence, evidence, inputs, jira
 from agent.documents import operator_question, task_of, text_of
+from agent.evidence import EvidenceItem
 from agent.runtime import options
 
 
@@ -80,6 +87,21 @@ class Budget:
     def overflowed(self) -> bool:
         """Материал упёрся в потолок. Без потолка — никогда."""
         return self.exhausted
+
+
+def read_issue(key: str) -> tuple[dict, EvidenceItem]:
+    """
+    Задача Jira и её запись Evidence. Текст записи — ровно то, что увидит
+    модель (`jira.format_issue`): цитату проверяют по нему, а не по полям.
+    """
+    issue = jira.fetch_issue(key)
+    return issue, evidence.for_issue(issue, jira.format_issue(issue))
+
+
+def read_page(page_id: str) -> tuple[dict, EvidenceItem]:
+    """Страница Confluence и её запись Evidence; текст — `confluence.format_page`."""
+    page = confluence.fetch_page(page_id)
+    return page, evidence.for_page(page, confluence.format_page(page))
 
 
 #: Сколько источников по ссылкам из запроса читается до первой роли. Остальные
@@ -203,6 +225,14 @@ def linked(question: str, skip: Collection[tuple[str, str]] = ()) -> list[dict]:
             continue
         excerpt = budget.spend(budget.head(body))
         found["truncated"] = found["truncated"] or len(excerpt) < len(body)
+        # Запись — по тому, что уйдёт модели: голова текста под общим потолком,
+        # а не страница целиком. Иначе цитата из отрезанного хвоста считалась
+        # бы подтверждённой, хотя модель её не видела.
+        found["evidence"] = (
+            evidence.for_page({**page, "truncated": found["truncated"]}, excerpt)
+            if system == "confluence"
+            else evidence.for_issue(issue, excerpt)
+        ).to_dict()
         items.append({**ref, **found, "asked": key, "text": excerpt})
     return items
 
@@ -290,6 +320,9 @@ def from_confluence(question: str) -> dict | None:
         "truncated": page["truncated"],
         "extra": ids[1:],
         "foreign": confluence.foreign_hosts(question),
+        # Модель видит здесь голый текст страницы, без заголовка и ссылки
+        # (`jira_graph`, `update_graph`), и запись собрана по нему же.
+        "evidence": evidence.for_page(page, page["text"]).to_dict(),
     }
 
 
@@ -375,4 +408,15 @@ def from_files(question: str, task: str, picked: str | Sequence[str] = ()) -> di
         "each": each,
         "text": "\n\n".join(parts),
         "truncated": budget.overflowed,
+        # Запись на каждый файл, а не на склейку: ссылка в документе ведёт на
+        # файл, и цитату проверяют в том файле, на который сослались.
+        "evidence": {
+            name: evidence.for_file(name, text, truncated=_cut(text)).to_dict()
+            for name, text in each.items()
+        },
     }
+
+
+def _cut(text: str) -> bool:
+    """Файл прочитан не целиком: `inputs.read` пишет об этом последней строкой."""
+    return bool(re.search(r"\[…файл обрезан на \d+ символах из \d+\]\s*$", text or ""))

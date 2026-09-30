@@ -17,7 +17,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+from agent.evidence import by_source
 
 #: Как источник помечается в документах конвейера. Та же форма, что велят
 #: промпты (`prep_prompts.COMMON`): реестр и текст ролей ссылаются одинаково.
@@ -33,6 +36,16 @@ def _key(system: str, item: dict) -> tuple[str, str]:
 def tag(system: str, ident: str) -> str:
     """`[WIKI 12345]`, `[JIRA ORB-1]`, `[ФАЙЛ встреча.md]`."""
     return f"[{TAGS.get(system, system.upper())} {ident}]"
+
+
+_SYSTEM_OF = {value: key for key, value in TAGS.items()}
+
+
+def _source_key(label: str) -> tuple[str, str]:
+    """Обратно к паре (система, идентификатор) из тега `[WIKI 12345]`."""
+    head, _, ident = label.strip("[]").partition(" ")
+    system = _SYSTEM_OF.get(head, head.lower())
+    return system, ident if system == "file" else ident.upper()
 
 
 def collect(messages: list) -> dict:
@@ -100,14 +113,32 @@ def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def render(collected: dict, prefetched: list[dict] | None = None) -> str:
+def _reader(value: str) -> str:
+    """Чьим токеном прочитано — по-человечески."""
+    if not value:
+        return "—"
+    return "общий токен .env" if value == "env" else f"личный токен {value}"
+
+
+def render(
+    collected: dict,
+    prefetched: list[dict] | None = None,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+) -> str:
     """
     Реестр Markdown-таблицами.
 
     prefetched — прочитанное кодом до ролей: `[{"system", "key"|"id"|"name",
     "title", "url", "how", "error"}]`. Стоит первым: с него начинается прогон.
+
+    evidence — записи Evidence прогона (`evidence.gather`). С ними у каждого
+    прочитанного появляются id, на который ссылаются документы, версия
+    источника и чей токен его читал: без этой таблицы `[EV-3f9a2c]` в тексте
+    некуда было бы развернуть.
     """
     prefetched = prefetched or []
+    sources = by_source(evidence) if evidence else {}
     read_rows: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     errors: dict[tuple[str, str], str] = {}
@@ -147,7 +178,22 @@ def render(collected: dict, prefetched: list[dict] | None = None) -> str:
         "в нём не пересказаны, а посчитаны."
     ]
     parts.append(f"### Прочитано: {len(read_rows)}")
-    if read_rows:
+    if read_rows and sources:
+        rows = ["| Id | Тег | Источник | Как получен | Версия | Прочитано |",
+                "| --- | --- | --- | --- | --- | --- |"]
+        for a, b, c in read_rows:
+            item = sources.get(_source_key(a))
+            if item is not None and item.own:
+                c += "; страница собрана самой Orbita — не первоисточник"
+            rows.append(
+                "| {} | {} | {} | {} | {} | {} |".format(
+                    _cell(item.id if item else "—"), _cell(a), _cell(b), _cell(c),
+                    _cell(item.version if item else "—"),
+                    _cell(_reader(item.reader) if item else "—"),
+                )
+            )
+        parts.append("\n".join(rows))
+    elif read_rows:
         parts.append(
             "\n".join(
                 ["| Тег | Источник | Как получен |", "| --- | --- | --- |"]

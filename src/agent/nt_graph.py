@@ -58,7 +58,7 @@ from agent.nt.settings import Settings, load_settings
 from agent.nt_state import State
 from agent.nt_tools import NT_TOOLS, build_tools
 from agent.routes import budget_gate
-from agent.runtime import options
+from agent.runtime import nested, options
 
 PIPELINE = nt_roles.PIPELINE
 log = logging.getLogger(__name__)
@@ -502,6 +502,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         метрик и границам контура, и разрешение на них оператор уже дал
         настройками. `NT_TOOL_APPROVAL=all` расширяет вопрос на любой вызов,
         `off` убирает остановку совсем.
+
+        Вложенный прогон не спрашивает: вызовы, которые требуют решения,
+        отклоняются политикой, как отклонил бы оператор. Выполнить их молча
+        значило бы решить за оператора то, что настройки оставили ему, — а
+        ряд такого запроса на вердикт по SLA и так не влияет.
         """
         limits = settings_for()
         mode = limits.tool_approval
@@ -523,6 +528,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         waiting = [call for call in calls if asks(call)]
         if mode == "off" or not waiting:
             return {"stage": "approve_tools", "tool_approval": {}}
+        if nested(config):
+            return {"stage": "approve_tools", "tool_approval": {
+                "approved": [], "rejected": [call["id"] for call in waiting],
+                "reason": "", "by": "nested"}}
         payload = {
             "action": "query",
             "title": "Модель просит выполнить запросы к источникам",
@@ -545,10 +554,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             "rejected": [] if approved else identifiers,
             "reason": decision.get("reason", "")}}
 
-    def denied_responses(calls, reason):
+    def denied_responses(calls, reason, by=""):
         """Ответ инструмента на отклонённый вызов: висячих вызовов остаться не должно."""
-        text = _json(failure("POLICY_DENIED", "operator rejected this call"
-                             + (f": {reason}" if reason else "")))
+        who = ("nested run: this call needs an operator decision and was not executed"
+               if by == "nested" else "operator rejected this call")
+        text = _json(failure("POLICY_DENIED", who + (f": {reason}" if reason else "")))
         return [ToolMessage(content=text, tool_call_id=call["id"], name=call["name"])
                 for call in calls]
 
@@ -560,11 +570,13 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         if denied:
             calls = pending_calls(state)
             refusals = denied_responses([c for c in calls if c["id"] in denied],
-                                        approval.get("reason", ""))
+                                        approval.get("reason", ""), approval.get("by", ""))
             kept = [c for c in calls if c["id"] not in denied]
             if not kept:
                 return {"investigation_history": [*history, *refusals],
-                        "stop_reason": "operator_rejected", "stage": "additional_tools"}
+                        "stop_reason": ("nested_denied" if approval.get("by") == "nested"
+                                        else "operator_rejected"),
+                        "stage": "additional_tools"}
             # Отклонённые вызовы снимаются с ответа модели, иначе ToolNode
             # выполнит их вместе с разрешёнными.
             extra = dict(getattr(history[-1], "additional_kwargs", None) or {})

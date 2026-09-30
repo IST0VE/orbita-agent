@@ -13,8 +13,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import config as cfg
 from agent import (
+    actions,
     credentials,
     drafts,
     inputs,
@@ -23,13 +23,16 @@ from agent import (
     nodes,
     outgoing,
     pause,
+    proposals,
+    publish_nodes,
     publishers,
     update_plan,
     update_roles,
 )
+from agent import config as cfg
 from agent.cost import charge, cost_summary, extract_usage
 from agent.routes import budget_gate
-from agent.runtime import options
+from agent.runtime import nested, options
 from agent.sources import question_of
 from agent.state import Options as BaseOptions
 from agent.state import State as BaseState
@@ -50,9 +53,12 @@ class State(BaseState, total=False):
 
 
 def failed(reason: str) -> dict:
+    # Предложения снимаются и отказом: на провалившемся ходе предлагать
+    # нечего, а прошлый ход треда вызывающему уже не относится.
     return {
         "error": reason,
         "publication": {"status": "failed", "reason": reason},
+        "proposals": [],
         "messages": [AIMessage(content=reason)],
     }
 
@@ -102,6 +108,7 @@ def read_node(state: State, config: RunnableConfig) -> dict:
         "publication_plan": {},
         "approval": {},
         "publication": {},
+        "proposals": [],
         "source": {
             "original": original,
             "materials": materials,
@@ -198,7 +205,7 @@ def apply_node(state: State) -> dict:
 destination = publishers.destination
 
 
-def prepare_node(state: State) -> dict:
+def prepare_node(state: State, config: RunnableConfig) -> dict:
     if not state["revision"]["changes"]:
         return {"publication": {"status": "unchanged", "reason": "Нет подтверждённых изменений."}}
     publisher = publishers.current()
@@ -231,6 +238,7 @@ def prepare_node(state: State) -> dict:
         "target": publisher.name,
         "format": publisher.renderer.name,
         "destination": destination(publisher),
+        "where": publisher.location_key(title),
     }
     plan["expected"] = publisher.preview(title)
     plan["draft"] = drafts.page(
@@ -241,31 +249,104 @@ def prepare_node(state: State) -> dict:
         where=publisher.name,
         preview=plan["expected"],
     )
-    return {"publication_plan": plan, "stage": "prepare"}
+    update = {"publication_plan": plan, "stage": "prepare"}
+    if nested(config):
+        # Предложение той же формы, что у конвейеров (`publish_nodes`): одна
+        # страница, одобряемый набор с версией на момент предпросмотра. По
+        # нему вызывающий и сохранит новую версию — `publish_proposed`.
+        page = {"role": "updated", "title": title, "document": document, "digest": plan["digest"]}
+        pages = {"publisher": publisher, "pages": [page], "digest": plan["digest"]}
+        update["proposals"] = proposals.offer(
+            state,
+            {
+                "kind": "publish",
+                "graph": "update",
+                # Этот граф спрашивает всегда, независимо от
+                # PUBLISH_REQUIRE_APPROVAL: см. `approve_node`.
+                "approval_required": True,
+                "prompt": _prompt(state, plan),
+                "effect": publish_nodes.proposed_effect(
+                    pages, publish_nodes.publish_commitment(pages, [plan["expected"]])
+                ),
+            },
+        )
+    return update
 
 
-def approve_node(state: State) -> dict:
-    plan = state["publication_plan"]
-    answer = interrupt(
-        {
-            "action": "publish",
-            "title": "Сохранить новую версию документа",
-            "target": plan["target"],
-            "drafts": [plan["draft"]],
-            "document": state["artifacts"]["changes"],
-            "warnings": [
-                "Будет сохранена отдельная новая версия. Основной документ останется на месте.",
-                *state["revision"]["questions"],
-            ],
-        }
+def _prompt(state: State, plan: dict) -> dict:
+    """Что оператор видит перед сохранением новой версии."""
+    return {
+        "action": "publish",
+        "title": "Сохранить новую версию документа",
+        "target": plan["target"],
+        "drafts": [plan["draft"]],
+        "document": state["artifacts"]["changes"],
+        "warnings": [
+            "Будет сохранена отдельная новая версия. Основной документ останется на месте.",
+            *state["revision"]["questions"],
+        ],
+    }
+
+
+def save_action(plan: dict, config: RunnableConfig) -> dict:
+    """
+    Сохранение новой версии как предложение общего порядка (`actions.py`).
+
+    Операция одна — страница, и в её отпечаток входит всё, на что соглашается
+    оператор: текст, цель, назначение и состояние страницы на момент показа.
+    """
+    thread = str((config.get("configurable") or {}).get("thread_id") or "")
+    expected = plan.get("expected") or {}
+    return actions.seal(
+        "publish",
+        graph="update",
+        target={"system": plan["target"], "format": plan["format"],
+                "destination": plan["destination"]},
+        operations=[{
+            "op": "page",
+            "key": plan.get("where") or plan["title"],
+            "title": plan["title"],
+            "hash": plan["digest"],
+            "action": str(expected.get("action") or "unknown"),
+            "version": expected.get("version"),
+            "page_id": str(expected.get("page_id") or ""),
+        }],
+        thread=thread,
+        owner=actions.actor(),
+        scope=actions.run_key(thread, "publish", plan["target"]),
     )
-    return {"approval": nodes.approval_of(answer), "stage": "approve"}
 
 
-def publish_node(state: State) -> dict:
-    if (state.get("approval") or {}).get("decision") != "approved":
-        return {"publication": {"status": "rejected", "reason": "Сохранение отклонено."}}
+def approve_node(state: State, config: RunnableConfig) -> dict:
+    if nested(config):
+        # Вопрос уехал предложением: вложенный прогон оператора не спрашивает.
+        return {"stage": "approve"}
+    action = save_action(state["publication_plan"], config)
+    answer = interrupt(actions.shown(_prompt(state, state["publication_plan"]), action))
+    # Согласие — на эту версию текста в это место, а не на слово «сохранить».
+    approval = actions.bind(answer, action["digest"])
+    actions.Recorder(action).decide(approval)
+    return {"approval": approval, "stage": "approve"}
+
+
+def publish_node(state: State, config: RunnableConfig) -> dict:
+    if nested(config):
+        return {
+            "publication": {
+                "status": "proposed",
+                "reason": "вложенный прогон: сохранение передано вызывающему графу",
+            },
+            "stage": "publish",
+        }
+    approval = state.get("approval") or {}
     plan = state["publication_plan"]
+    action = save_action(plan, config)
+    stale = actions.stale(approval, action["digest"])
+    if stale:
+        return {"publication": {"status": "stale", "reason": stale}, "stage": "publish",
+                "messages": [AIMessage(content=f"Новая версия не сохранена: {stale}.")]}
+    if approval.get("decision") != "approved":
+        return {"publication": {"status": "rejected", "reason": "Сохранение отклонено."}}
     publisher = publishers.current()
     if (
         not publishers.is_enabled()
@@ -275,16 +356,24 @@ def publish_node(state: State) -> dict:
         return failed(
             "Настройки публикации изменились после подготовки. Запустите обновление заново."
         )
-    try:
-        kwargs = {"expected": plan.get("expected", {})} if publisher.name == "confluence" else {}
-        result = dict(publisher.publish(plan["title"], plan["document"], **kwargs))
-    except publishers.PublishError as exc:
-        return failed(f"Новая версия не сохранена: {exc}")
-    result["role"] = "updated"
+    recorder = actions.Recorder(action)
+    page = {"role": "updated", "title": plan["title"], "document": plan["document"],
+            "digest": plan["digest"]}
+    expected = (
+        {publisher.location_key(plan["title"]): plan.get("expected", {})}
+        if publisher.name == "confluence" else None
+    )
+    (result,) = publish_nodes.write_pages(publisher, [page], expected=expected, recorder=recorder)
+    recorder.done(result.get("status", "failed"), result)
+    if result.get("status") == "failed":
+        return failed(f"Новая версия не сохранена: {result.get('reason', 'без причины')}")
+    note = f"Новая версия сохранена: {plan['title']}."
+    if result.get("verified") == actions.DIFFERS:
+        note += f" Сверка после записи: {result.get('verify_detail')}."
     return {
         "publication": {**result, "pages": [result]},
         "stage": "publish",
-        "messages": [AIMessage(content=f"Новая версия сохранена: {plan['title']}.")],
+        "messages": [AIMessage(content=note)],
     }
 
 

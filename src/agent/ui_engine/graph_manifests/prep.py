@@ -12,5 +12,7 @@ name_documents(
         prep_roles.PAGES: {"title": "Страницы по ссылкам"},
         prep_roles.FILES: {"title": "Материалы оператора"},
         prep_roles.SOURCES: {"title": "Источники прогона"},
+        prep_roles.CHECK: {"title": "Проверка ссылок"},
+        prep_roles.CHANGE: {"title": "Требования изменения"},
     },
 )

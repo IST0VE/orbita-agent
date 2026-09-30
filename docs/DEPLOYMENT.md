@@ -197,9 +197,10 @@ docker compose up -d
 | Файлы чатов | `CHAT_FILES_DIR`, обычно `data/chats/` | `/data/chats` в томе `data` |
 | Библиотека примеров | `input/` или `AGENT_INPUT_DIR` | `./input` хоста → `/data/input`, на запись |
 | Опубликованные Markdown | `PUBLISH_DIR`, обычно `published/`; документы пользователя — в `users/<sub>/` | `/data/published` в томе `data` |
-| Журнал операций Jira | `JIRA_JOURNAL_PATH`, обычно `data/jira-operations.sqlite3` | `/data/jira-operations.sqlite3` в томе `data` |
+| Журнал действий (Jira и публикации) | PostgreSQL по `POSTGRES_URI`, если он задан явно; без него — `JIRA_JOURNAL_PATH`, обычно `data/jira-operations.sqlite3` | PostgreSQL в томе `pgdata`; без базы — `/data/jira-operations.sqlite3` в томе `data` |
 | Треды dev-сервера | `.langgraph_api/` рядом с рабочей папкой | `/app/.langgraph_api` в томе `threads` |
 | Личные подключения Jira и Confluence | PostgreSQL по `POSTGRES_URI` | PostgreSQL в томе `pgdata`; ключ — `USER_SECRETS_KEY` в `.env` |
+| Изменения и требования `prep` | PostgreSQL по `POSTGRES_URI`, если он задан явно; без него — только в треде | PostgreSQL в томе `pgdata` |
 | Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, только профиль `demo` |
 | Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | `/data/nt-runs` в томе `nt-runs` |
 | Список стендов runner | `config/nt-runner.json` | `./config` хоста → `/app/config`, только чтение |

@@ -119,7 +119,13 @@ def pages(plan: dict, previews: list[dict] | None = None) -> list[dict]:
     ]
 
 
-def issues(plan: jira_plan.Plan, project: str, *, source: str = "") -> tuple[list[dict], list[str]]:
+def issues(
+    plan: jira_plan.Plan,
+    project: str,
+    *,
+    source: str = "",
+    operations: list[dict] | None = None,
+) -> tuple[list[dict], list[str]]:
     """
     Черновики задач: карточка за карточкой в том порядке, в каком заведутся.
 
@@ -128,7 +134,13 @@ def issues(plan: jira_plan.Plan, project: str, *, source: str = "") -> tuple[lis
     что настоящих не существует. Тип берётся из схемы проекта, если её удалось
     спросить: подмена `Story` на `Task` должна быть видна до заведения, а не в
     предупреждениях после.
+
+    `operations` — судьба карточек из журнала (`jira_writer.operations`).
+    Исправленная карточка показывается правкой заведённой задачи, со ссылкой
+    и различиями с тем, что лежит в трекере; неизменённая черновиком не
+    показывается — она никуда не уедет, и о ней говорит одна строка.
     """
+    fate = {op["key"]: op for op in operations or []}
     types: dict[str, str] = {}
     warnings: list[str] = []
     if project:
@@ -142,30 +154,76 @@ def issues(plan: jira_plan.Plan, project: str, *, source: str = "") -> tuple[lis
             warnings = [f"типы проекта не прочитаны ({exc})"]
 
     drafts = []
+    kept: list[str] = []
     for item in plan.items:
+        op = fate.get(item.local) or {}
+        action = op.get("action") or jira_writer.CREATE
+        if action == jira_writer.UNCHANGED:
+            kept.append(f"{item.local} → {op.get('remote') or '?'}")
+            continue
         kind = types.get(item.type, item.type)
         # Ровно то, что уедет: та же проверка исходящего текста, что и в
         # `jira_writer.create_issue`. Показывать оператору непроверенное тело,
         # а отправлять проверенное — значит спрашивать согласие не на то.
         body = outgoing.sanitize(item.body(source=source), "description")
-        drafts.append(
-            {
-                "id": item.local,
-                "kind": "issue",
-                "title": outgoing.sanitize(item.summary, "summary"),
-                "action": "create",
-                "where": project or "проект не выбран",
-                "format": "text",
-                "document": body,
-                "chars": len(body),
-                "url": "",
-                "note": f"тип плана {item.type} заводится как {kind}"
-                if kind != item.type
-                else "",
-                "fields": _issue_fields(item, kind),
-            }
-        )
+        note = f"тип плана {item.type} заводится как {kind}" if kind != item.type else ""
+        card = {
+            "id": item.local,
+            "kind": "issue",
+            "title": outgoing.sanitize(item.summary, "summary"),
+            "action": "create",
+            "where": project or "проект не выбран",
+            "format": "text",
+            "document": body,
+            "chars": len(body),
+            "url": "",
+            "note": note,
+            "fields": _issue_fields(item, kind),
+        }
+        if action == jira_writer.UPDATE:
+            card.update(
+                action="update",
+                url=str(op.get("url") or ""),
+                note=f"правка заведённой задачи {op.get('remote')}: тема и описание; "
+                "тип, родитель и метки не меняются",
+                diff=publishers.diff_of(
+                    _issue_text(str(op.get("remote") or "")),
+                    _filled(card["title"] + "\n" + body),
+                ),
+            )
+        elif action == jira_writer.RECOVER:
+            card.update(
+                action="unknown",
+                note="прошлая отправка осталась без ответа: сначала задачу ищут в трекере "
+                "по метке операции и заводят, только если её там нет",
+            )
+        drafts.append(card)
+    if kept:
+        warnings = [
+            "Без изменений с прошлой записи, в трекер не отправляются: " + ", ".join(kept),
+            *warnings,
+        ]
     return drafts, warnings
+
+
+def _filled(text: str) -> str:
+    """
+    Строки без пустых: ADF Cloud не хранит пустых строк между абзацами, и без
+    этого различия показывали бы каждый абзац изменённым.
+    """
+    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+
+
+def _issue_text(key: str) -> str | None:
+    """Тема и описание заведённой задачи для различий. None — не прочитано."""
+    if not key:
+        return None
+    try:
+        fields = jira_writer.current_fields(key)
+    except jira_writer.JiraError:
+        return None
+    return _filled(jira_writer.plain(fields.get("summary")) + "\n"
+                   + jira_writer.text_of(fields.get("description")))
 
 
 def _issue_fields(item: jira_plan.Item, kind: str) -> list[dict]:

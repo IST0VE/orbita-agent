@@ -661,6 +661,9 @@ def fetch_page(page_id: str, settings: Settings | None = None) -> dict:
         "url": page_url(data, s),
         "text": text[: s.read_max_chars],
         "truncated": len(text) > s.read_max_chars,
+        # Номер версии — часть записи Evidence (`evidence.for_page`): по нему
+        # видно, что прочитана не та страница, которая лежит сейчас.
+        "version": (data.get("version") or {}).get("number"),
     }
 
 

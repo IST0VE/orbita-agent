@@ -1,0 +1,55 @@
+{
+  "id": "foreign-system-quote",
+  "kind": "цитата о другой системе",
+  "graph": "prep",
+  "origin": "Прогон prep 27 сентября 2026: цитаты со страниц про соседнюю систему (sync config, прокси, файл пользователей) ушли в документ как факты о системе задачи.",
+  "task": "напиши документацию по задаче https://jira.example.com/browse/NRA-52",
+  "environment": {
+    "JIRA_BASE_URL": "https://jira.example.com",
+    "JIRA_TOKEN": "eval-token",
+    "CONFLUENCE_BASE_URL": "https://wiki.example.com",
+    "CONFLUENCE_TOKEN": "eval-token",
+    "CONFLUENCE_SPACE_KEY": "NORA"
+  },
+  "jira": {
+    "NRA-52": {
+      "summary": "Хранение учётных записей NORA",
+      "description": "Пароли пользователей API NORA хранятся в /etc/nora/users.htpass. Спецификация: https://wiki.example.com/pages/viewpage.action?pageId=700010 . Похожая схема у соседей: https://wiki.example.com/pages/viewpage.action?pageId=700011",
+      "status": "In Progress",
+      "type": "Story",
+      "updated": "2026-09-22T12:00:00.000+0300",
+      "comments": [],
+      "comments_read": true
+    }
+  },
+  "confluence": {
+    "700010": {
+      "title": "NORA: учётные записи",
+      "version": 5,
+      "text": "Файл /etc/nora/users.htpass содержит пользователей API, хеш sha512. Смена пароля — через nora-passwd."
+    },
+    "700011": {
+      "title": "VEGA: синхронизация конфигурации",
+      "version": 9,
+      "text": "Конфигурация VEGA синхронизируется через vega-sync. Пользователи хранятся в users_config и меняются одной командой."
+    }
+  },
+  "answers": [
+    "## Коротко\n\n- Пользователи API хранятся в «/etc/nora/users.htpass» {ev:confluence:700010}.\n- Пароль меняют через `nora-passwd` {ev:confluence:700010}.",
+    "## Пробелы\n\n- П1: как меняются пароли у пользователей VEGA — полезно [TBD].",
+    "## Выжимки\n\n- В NORA конфигурация синхронизируется через `vega-sync` {ev:confluence:700011}.\n- Пользователи NORA меняются «одной командой» {ev:confluence:700011}.\n- Файл «/etc/nora/users.htpass» содержит пользователей API {ev:confluence:700010}.",
+    "Черновик для обсуждения: задачи в Jira заводит человек.\n\n## Требования\n\n- R-?: Пароли пользователей API хранятся в «/etc/nora/users.htpass» {ev:confluence:700011}\n- R-?: Смена пароля выполняется через `nora-passwd` {ev:confluence:700010}",
+    "## Коротко\n\n- Изменения NORA вносятся через «vega-sync» {ev:confluence:700011}.\n- Страница про VEGA, применимость к NORA не подтверждена {ev:confluence:700011} [ВЫВОД]."
+  ],
+  "planted": [
+    {"stage": "research", "kind": "foreign_subject", "contains": "синхронизируется через"},
+    {"stage": "research", "kind": "foreign_subject", "contains": "одной командой"},
+    {"stage": "plan", "kind": "quote_elsewhere", "contains": "Пароли пользователей API хранятся"},
+    {"stage": "draft", "kind": "foreign_subject", "contains": "Изменения NORA"}
+  ],
+  "expect": {
+    "min_critic_recall": 1.0,
+    "max_critic_false_flags": 0,
+    "min_quotes_verified": 6
+  }
+}

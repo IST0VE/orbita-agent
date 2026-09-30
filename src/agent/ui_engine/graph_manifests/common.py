@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from agent.pipeline import Pipeline
 
+#: Отпечаток показанного предложения в ответе на остановку перед записью
+#: наружу (`agent/actions.py`): SHA-256 в шестнадцатеричном виде.
+DIGEST = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+
 
 def pipeline_nodes(pipeline: Pipeline) -> dict:
     """
@@ -356,6 +360,7 @@ def base_manifest(pipeline: Pipeline) -> dict:
                     "properties": {
                         "decision": {"enum": ["approved", "rejected", "drafts"]},
                         "reason": {"type": "string", "maxLength": 4000},
+                        "digest": DIGEST,
                     },
                 },
             },

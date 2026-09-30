@@ -1,0 +1,61 @@
+{
+  "id": "own-draft-as-source",
+  "kind": "собственный черновик как источник",
+  "graph": "prep",
+  "origin": "Прогон prep 27 сентября 2026: роль поиска прочитала страницу, которую тремя днями раньше опубликовала сама Orbita, и документы вывели из неё «расхождение» статуса и сроков.",
+  "task": "напиши документацию по задаче https://jira.example.com/browse/NRA-36",
+  "environment": {
+    "JIRA_BASE_URL": "https://jira.example.com",
+    "JIRA_TOKEN": "eval-token",
+    "CONFLUENCE_BASE_URL": "https://wiki.example.com",
+    "CONFLUENCE_TOKEN": "eval-token",
+    "CONFLUENCE_SPACE_KEY": "NORA"
+  },
+  "jira": {
+    "NRA-36": {
+      "summary": "Смена алгоритма паролей в NORA",
+      "description": "Пароли пользователей API перевести с MD5 на SHA-512. Пользователи API хранятся в файле /etc/nora/users.htpass.",
+      "status": "In Progress",
+      "type": "Story",
+      "updated": "2026-09-20T10:00:00.000+0300",
+      "comments": [
+        {"author": "Анна", "created": "2026-09-10", "text": "Менять постепенно: сразу всех пользователей перевести нельзя."}
+      ],
+      "comments_read": true
+    }
+  },
+  "confluence": {
+    "700001": {
+      "title": "NRA-36: подготовка задачи",
+      "version": 2,
+      "text": "Страница собрана автоматически конвейером подготовки задачи Orbita. Обновлено: 2026-09-24T10:00:00. Правки руками затрёт следующий прогон треда.\nЗадача\nNRA-36\nСтатус задачи: Done. Срок: 2026-09-01."
+    }
+  },
+  "search": {
+    "confluence": [
+      {"id": "700001", "title": "NRA-36: подготовка задачи", "url": "https://wiki.example.com/pages/700001", "excerpt": "Статус задачи: Done"}
+    ]
+  },
+  "answers": [
+    "## Коротко\n\nЗадача требует перевести пароли пользователей API «с MD5 на SHA-512» {ev:jira:NRA-36}.\n- Менять постепенно: «сразу всех пользователей перевести нельзя» {ev:jira:NRA-36}.\n\n## Чего не хватает\n\n- Срок перехода не указан [TBD].",
+    "## Пробелы\n\n| № | Чего не знаем | Критичность |\n| --- | --- | --- |\n| П1 | Срок перехода | влияет |\n\n## Запросы к Confluence\n\n- NORA пароли (П1)",
+    {"tool_calls": [
+      {"name": "confluence_search", "args": {"query": "NORA пароли"}},
+      {"name": "confluence_page", "args": {"page_id": "700001"}}
+    ]},
+    "## Найденные источники\n\n- Страница «NRA-36: подготовка задачи» {ev:confluence:700001}.\n\n## Расхождения\n\n- Статус: в задаче In Progress {ev:jira:NRA-36}, а на странице «Статус задачи: Done» {ev:confluence:700001}.",
+    "Черновик для обсуждения: задачи в Jira заводит человек.\n\n## Требования\n\n- R-?: Пароли пользователей API хранятся в SHA-512 {ev:jira:NRA-36}\n- R-?: Переход постепенный, без одномоментной смены всех пользователей {ev:jira:NRA-36}\n\n## Что мешает начать\n\n- Задача закрыта по странице {ev:confluence:700001}, но открыта в Jira {ev:jira:NRA-36}: уточнить статус.",
+    "## Коротко\n\nЗадача NRA-36 переводит пароли API на SHA-512 {ev:jira:NRA-36}. Главная находка — расхождение статуса: Done {ev:confluence:700001} против In Progress {ev:jira:NRA-36}.\n\n## Источники\n\n- {ev:jira:NRA-36} — задача NRA-36."
+  ],
+  "planted": [
+    {"stage": "research", "kind": "own_source", "contains": "подготовка задачи"},
+    {"stage": "research", "kind": "own_source", "contains": "Статус задачи: Done"},
+    {"stage": "plan", "kind": "own_source", "contains": "Задача закрыта по странице"},
+    {"stage": "draft", "kind": "own_source", "contains": "Главная находка"}
+  ],
+  "expect": {
+    "min_critic_recall": 1.0,
+    "max_critic_false_flags": 0,
+    "min_quotes_verified": 4
+  }
+}

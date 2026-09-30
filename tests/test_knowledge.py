@@ -207,4 +207,6 @@ def test_substitution_happens_once_per_question(monkeypatch: pytest.MonkeyPatch)
     # ходов в инструменты, остановку, отказ по входу и ошибку прошлого прогона она
     # снимает всегда — это новый прогон, а не повторная подстановка.
     assert "messages" not in again and "task" not in again
-    assert again == {"tool_turns": 0, "halt": {}, "refused": "", "failure": ""}
+    assert again == {
+        "tool_turns": 0, "halt": {}, "refused": "", "failure": "", "proposals": []
+    }

@@ -1,7 +1,7 @@
 """UI semantics for the Jira decomposition graph."""
 
 from agent import jira_roles
-from agent.ui_engine.graph_manifests.common import base_manifest, name_documents
+from agent.ui_engine.graph_manifests.common import DIGEST, base_manifest, name_documents
 
 MANIFEST = base_manifest(jira_roles.PIPELINE)
 name_documents(MANIFEST, {jira_roles.SOURCE: {"title": "Исходная аналитика"}})
@@ -60,6 +60,7 @@ MANIFEST["interrupts"].append(
                     "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
                 },
                 "reason": {"type": "string", "maxLength": 4000},
+                "digest": DIGEST,
             },
         },
     }

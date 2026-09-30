@@ -29,14 +29,21 @@
 в проекте нет, и не заведено ничего. Здесь наоборот: что прошло — прошло, что
 не прошло — перечислено с причиной. Прогон, заведший восемь задач из десяти,
 полезнее прогона, не заведшего ни одной.
+
+Следующий ход того же треда пачку не заводит заново. Журнал (`actions.py`)
+помнит по области «тред и проект», что заведено и с каким содержимым, и
+карточка решает свою судьбу сама (`operations`): новая заводится, исправленная
+правится на месте, неизменённая не трогается. Правка не затирает чужую: перед
+ней задача читается и сравнивается с тем, что Orbita записала последней.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
+from agent import actions, jira, jira_fields, jira_journal, jira_plan, outgoing
 from agent import config as cfg
-from agent import jira, jira_fields, jira_journal, jira_plan, outgoing
 
 JiraError = jira.JiraError
 
@@ -113,6 +120,51 @@ def _paragraph(text: str) -> dict:
     if text:
         node["content"] = [{"type": "text", "text": text}]
     return node
+
+
+# --------------------------------------------------------------------------
+# Сравнимый вид задачи
+#
+# Трекер хранит не совсем то, что ему прислали: Cloud режет текст ADF на куски
+# по разметке, Data Center меняет переводы строк. Поэтому задача сравнивается
+# по тексту без разметки и лишних пробелов — побайтовая сверка расходилась бы
+# на каждой записи и называла бы чужой правкой собственную нормализацию.
+# --------------------------------------------------------------------------
+_BLOCKS = frozenset(
+    {"paragraph", "heading", "listItem", "bulletList", "orderedList", "codeBlock",
+     "blockquote", "tableCell", "tableHeader", "rule"}
+)
+
+
+def plain(value: Any) -> str:
+    """Поле задачи в сравнимом виде: ADF Cloud и строка Data Center одинаково."""
+    if isinstance(value, (dict, list)):
+        parts: list[str] = []
+
+        def walk(node: Any) -> None:
+            if isinstance(node, list):
+                for child in node:
+                    walk(child)
+                return
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "text":
+                parts.append(str(node.get("text") or ""))
+            walk(node.get("content") or [])
+            if node.get("type") in _BLOCKS:
+                parts.append(" ")
+
+        walk(value)
+        text = "".join(parts)
+    else:
+        text = "" if value is None else str(value)
+    return " ".join(text.split())
+
+
+def remote_hash(fields: dict) -> str:
+    """Отпечаток темы и описания задачи — отправленных или прочитанных из трекера."""
+    joined = plain(fields.get("summary")) + "\n" + plain(fields.get("description"))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
 
 
 # --------------------------------------------------------------------------
@@ -397,11 +449,7 @@ def create_issue(
     labels = [*item.labels, operation] if operation else list(item.labels)
     if labels:
         fields["labels"] = labels
-    for field, value in (extra_fields or {}).items():
-        # Cloud multiline custom fields use the same document format as description.
-        metadata = schema.get("field_metadata", {}).get(field, {})
-        custom = (metadata.get("schema") or {}).get("custom", "")
-        fields[field] = text_to_adf(value) if _cloud(s) and custom.endswith(":textarea") and isinstance(value, str) else value
+    fields.update(_extra(extra_fields, schema.get("field_metadata", {}), s))
     if schema.get("reporter"):
         fields["reporter"] = schema["reporter"]
     if item.type == jira_plan.EPIC and schema.get("epic_name"):
@@ -437,7 +485,101 @@ def create_issue(
         "url": jira.issue_url(key, s),
         "type": type_name or item.type,
         "summary": item.summary,
+        # Что уехало, в сравнимом виде: по нему сверка после записи и
+        # проверка перед правкой узнают, чужая ли разница.
+        "remote_hash": remote_hash(fields),
     }
+
+
+def _extra(extra_fields: dict | None, metadata: dict, s: jira.Settings) -> dict:
+    """Сопоставленные поля плана; многострочные в Cloud — документом ADF, как описание."""
+    found: dict[str, Any] = {}
+    for field, value in (extra_fields or {}).items():
+        custom = ((metadata.get(field) or {}).get("schema") or {}).get("custom", "")
+        textarea = _cloud(s) and custom.endswith(":textarea") and isinstance(value, str)
+        found[field] = text_to_adf(value) if textarea else value
+    return found
+
+
+def update_fields(
+    item: jira_plan.Item,
+    s: jira.Settings,
+    *,
+    keys: dict[str, str] | None = None,
+    source: str = "",
+    extra_fields: dict | None = None,
+    mapped: set[str] | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """
+    Что правка карточки отправит в заведённую задачу: тема, описание, поля плана.
+
+    Тип, родитель и метки не трогаются. Тип меняется в Jira отдельным
+    переносом задачи, а не полем; родителя ведёт `_restore_parents`; метки
+    несут метку операции и то, что люди повесили на доске сами.
+    """
+    description = item.body(keys, source, mapped=mapped)
+    fields: dict[str, Any] = {
+        "summary": item.summary,
+        "description": text_to_adf(description) if _cloud(s) else description,
+    }
+    fields.update(_extra(extra_fields, metadata or {}, s))
+    try:
+        return outgoing.guard(fields, "fields")
+    except outgoing.OutgoingBlocked as exc:
+        raise JiraError(str(exc)) from exc
+
+
+def _current(key: str, s: jira.Settings) -> dict:
+    """Тема, описание, метки и время последней правки задачи в трекере."""
+    data = _get("GET", f"{s.api_path}/issue/{key}", s,
+                params={"fields": "summary,description,labels,updated"})
+    return (data.get("fields") or {}) if isinstance(data, dict) else {}
+
+
+def current_fields(key: str, settings: jira.Settings | None = None) -> dict:
+    """То же для черновика правки: показать, что лежит в трекере сейчас."""
+    return _current(key, settings or jira.load_settings())
+
+
+def text_of(value: Any) -> str:
+    """
+    Описание задачи построчно — для различий на остановке.
+
+    `plain` сворачивает текст в строку, и различия по нему были бы одной
+    строкой «было — стало». Здесь каждый абзац и пункт списка — своя строка,
+    пункт — с тем же «- », с которым его пишет `Item.body`.
+    """
+    if not isinstance(value, (dict, list)):
+        return "" if value is None else str(value)
+    lines: list[str] = []
+
+    def inline(node: Any) -> str:
+        if isinstance(node, list):
+            return "".join(inline(child) for child in node)
+        if not isinstance(node, dict):
+            return ""
+        if node.get("type") == "text":
+            return str(node.get("text") or "")
+        return inline(node.get("content") or [])
+
+    def block(node: Any, prefix: str = "") -> None:
+        if isinstance(node, list):
+            for child in node:
+                block(child, prefix)
+            return
+        if not isinstance(node, dict):
+            return
+        kind = node.get("type")
+        if kind in ("doc", "bulletList", "orderedList"):
+            block(node.get("content") or [], prefix)
+        elif kind == "listItem":
+            block(node.get("content") or [], "- ")
+        else:
+            lines.append(prefix + inline(node))
+
+    block(value)
+    return "\n".join(lines)
 
 
 def link(blocker: str, blocked: str, settings: jira.Settings | None = None) -> None:
@@ -504,6 +646,129 @@ def _recover(
     return "unknown", None, reason
 
 
+# --------------------------------------------------------------------------
+# Что делать с каждой карточкой
+#
+# Решает журнал, а не модель и не текст ответа. Карточка, заведённая прошлым
+# ходом с тем же содержимым, не отправляется; с другим — правится на месте;
+# без записи — заводится. Это то, что оператор видит в предложении и на что
+# соглашается: `operations` входит в отпечаток предложения (`actions.seal`).
+# --------------------------------------------------------------------------
+CREATE = "create"
+UPDATE = "update"
+UNCHANGED = "unchanged"
+RECOVER = "recover"
+
+
+def operations(
+    plan: jira_plan.Plan,
+    *,
+    run: str = "",
+    journal: Any = None,
+    source: str = "",
+) -> list[dict]:
+    """
+    Судьба каждой карточки на этом ходе: create, update, unchanged или recover.
+
+    `recover` — прошлая отправка без ответа: перед чем-либо ещё её ищут в
+    трекере по метке операции (`_recover`), а не шлют второй раз.
+    Запись без отпечатка содержимого (журнал до правки на месте, задача,
+    восстановленная сверкой) считается неизменённой: править вслепую то, с
+    чем не с чем сравнить, нельзя.
+    """
+    found = []
+    for item in plan.items:
+        wanted = item.digest(source)
+        record = journal.record(run, "issue", item.local) if journal is not None and run else None
+        op: dict[str, Any] = {"op": "issue", "key": item.local, "title": item.summary,
+                              "hash": wanted}
+        state = (record or {}).get("state")
+        if not record or state == actions.FAILED:
+            op["action"] = CREATE
+        elif state == actions.COMPLETED:
+            changed = bool(record.get("content_hash")) and record["content_hash"] != wanted
+            op.update(action=UPDATE if changed else UNCHANGED, remote=record.get("remote", ""),
+                      url=record.get("url", ""))
+        else:
+            op["action"] = RECOVER
+        found.append(op)
+    return found
+
+
+def _revise(
+    item: jira_plan.Item,
+    found: dict,
+    record: dict,
+    s: jira.Settings,
+    *,
+    run: str,
+    book: Any,
+    fields: dict,
+    wanted: str,
+) -> tuple[str, str]:
+    """
+    Правка заведённой задачи на месте. Итог: `updated`, `conflict`, `failed`, `unknown`.
+
+    Перед правкой задача читается и сравнивается с тем, что Orbita записала
+    последней (`remote_hash` журнала). Разница — значит, её правили на доске,
+    и перезаписать её значило бы молча стереть чужую работу. Совпадение с
+    ожидаемым после прошлой, не подтверждённой правки значит, что та дошла.
+    """
+    key = found["key"]
+    sent = remote_hash(fields)
+    try:
+        observed = _current(key, s)
+        current = remote_hash(observed)
+    except JiraError as exc:
+        return "failed", f"{key} не прочитана перед правкой ({exc})"
+    version = str(observed.get("updated") or "")
+    extra = set(fields) - {"summary", "description"}
+    earlier = book.record(run, "update", item.local) or {}
+    landed = (earlier.get("state") in (actions.PENDING, actions.UNKNOWN)
+              and bool(earlier.get("remote_hash"))
+              and current == earlier["remote_hash"])
+    if current == sent and not extra:
+        book.begin(run, "update", item.local, content_hash=wanted, remote_hash=sent, title=item.summary)
+        book.finish(run, "update", item.local, remote=key, url=found["url"],
+                    detail="правка уже в трекере")
+        book.rebase(run, "issue", item.local, content_hash=wanted, remote_hash=current,
+                    remote_version=version)
+        return "updated", ""
+    if landed and not extra:
+        # Предыдущий PUT дошёл. Если это была другая редакция, сначала делаем
+        # её точкой отсчёта, а затем отправляем нынешнюю, не объявляя её готовой.
+        book.finish(run, "update", item.local, remote=key, url=found["url"],
+                    detail="предыдущая правка восстановлена чтением")
+        book.rebase(run, "issue", item.local,
+                    content_hash=str(earlier.get("content_hash") or ""),
+                    remote_hash=current, remote_version=version)
+        record = {**record, "remote_hash": current, "remote_version": version}
+    if extra and (not record.get("remote_version") or not version
+                  or version != record["remote_version"]):
+        return "conflict", (
+            f"{key}: дополнительные поля не правились — версия задачи в Jira "
+            "изменилась или не была сохранена после последней записи Orbita"
+        )
+    if not record.get("remote_hash") or current != record["remote_hash"]:
+        return "conflict", (
+            f"{key} изменена в Jira после записи Orbita — правка не отправлена, "
+            "чтобы не затереть чужие изменения; перенесите её руками"
+        )
+    book.begin(run, "update", item.local, content_hash=wanted, remote_hash=sent, title=item.summary)
+    try:
+        _get("PUT", f"{s.api_path}/issue/{key}", s, json={"fields": fields})
+    except JiraError as exc:
+        if isinstance(exc, jira.JiraUnknown):
+            book.unresolved(run, "update", item.local, str(exc))
+            return "unknown", str(exc)
+        book.fail(run, "update", item.local, str(exc))
+        return "failed", str(exc)
+    book.finish(run, "update", item.local, remote=key, url=found["url"])
+    book.rebase(run, "issue", item.local, content_hash=wanted, remote_hash=sent,
+                remote_version="")
+    return "updated", ""
+
+
 def create_issues(
     plan: jira_plan.Plan,
     project: str,
@@ -521,11 +786,14 @@ def create_issues(
     в `failed` с причиной. Создание ребёнка откладывается до создания родителя,
     чтобы повтор мог завершить всю иерархию без осиротевших задач.
 
-    `run` — устойчивый ключ прогона. С ним каждая операция проходит через
-    журнал (`jira_journal`): повтор узла после падения между принятым POST и
-    сохранением результата не заводит задачу второй раз, а находит уже
-    заведённую по метке операции. Без `run` поведение прежнее — так вызывают
-    из тестов и из чужого кода, которому нечего восстанавливать.
+    `run` — устойчивый ключ области (тред и проект). С ним каждая операция
+    проходит через журнал (`actions.py`): повтор узла после падения между
+    принятым POST и сохранением результата не заводит задачу второй раз, а
+    находит уже заведённую по метке операции. Карточку, заведённую прошлым
+    ходом, журнал узнаёт по локальному ключу: с тем же содержимым она не
+    отправляется, с другим — правится на месте (`_revise`). Без `run`
+    поведение прежнее — так вызывают из тестов и из чужого кода, которому
+    нечего восстанавливать.
     """
     s = settings or jira.load_settings()
     project = (project or "").strip().upper()
@@ -546,15 +814,44 @@ def create_issues(
     book = journal if (journal is not None and run) else None
 
     for item in plan.items:
+        metadata = schema.get("create_fields", {}).get(numbers.get(types.get(item.type, item.type), ""), {})
+        extra_fields, mapped, field_warnings = jira_fields.map_item(item, metadata)
+        wanted = item.digest(source)
         if book is not None:
             state, found, reason = _recover(book, run, "issue", item.local, s)
             if state == "done" and found:
-                # Уже заведено этим же прогоном: ключ нужен детям, а второй
-                # POST завёл бы дубликат с теми же словами.
+                # Уже заведено: ключ нужен детям, а второй POST завёл бы
+                # дубликат с теми же словами.
                 keys[item.local] = found["key"]
-                created.append({"local": item.local, "key": found["key"], "url": found["url"],
-                                "type": types.get(item.type, item.type), "summary": item.summary,
-                                "recovered": True})
+                entry = {"local": item.local, "key": found["key"], "url": found["url"],
+                         "type": types.get(item.type, item.type), "summary": item.summary}
+                record = book.record(run, "issue", item.local) or {}
+                if record.get("content_hash") and record["content_hash"] != wanted:
+                    try:
+                        fields = update_fields(item, s, keys=keys, source=source,
+                                               extra_fields=extra_fields, mapped=mapped,
+                                               metadata=metadata)
+                    except JiraError as exc:
+                        outcome, reason = "failed", str(exc)
+                    else:
+                        outcome, reason = _revise(item, found, record, s, run=run, book=book,
+                                                  fields=fields, wanted=wanted)
+                    if outcome == "updated":
+                        created.append({**entry, "updated": True})
+                    elif outcome == "unknown":
+                        created.append({**entry, "unchanged": True})
+                        unresolved.append({"local": item.local, "summary": item.summary,
+                                           "reason": reason})
+                        warnings.append(f"{found['key']}: результат правки неизвестен ({reason})")
+                    else:
+                        created.append({**entry, "unchanged": True})
+                        failed.append({"local": item.local, "summary": item.summary,
+                                       "reason": reason, "conflict": outcome == "conflict"})
+                    continue
+                # Тот же прогон повторился — «восстановлено»; прошлый ход
+                # завёл то же самое — «без изменений».
+                again = record.get("action_id", "") == getattr(book, "action", "")
+                created.append({**entry, "recovered" if again else "unchanged": True})
                 continue
             if state == "unknown":
                 unresolved.append({"local": item.local, "summary": item.summary, "reason": reason})
@@ -565,8 +862,6 @@ def create_issues(
                 )
                 continue
 
-        metadata = schema.get("create_fields", {}).get(numbers.get(types.get(item.type, item.type), ""), {})
-        extra_fields, mapped, field_warnings = jira_fields.map_item(item, metadata)
         warnings.extend(field_warnings)
         filled = FILLED | set(extra_fields) | {schema.get("epic_name"), schema.get("epic_link")}
         if schema.get("reporter"):
@@ -583,8 +878,14 @@ def create_issues(
             continue
         # Запись «отправляем» делается ДО запроса. Журнал, заполняемый после
         # ответа, не знает ровно о том случае, ради которого он заведён:
-        # о принятом POST, ответ на который не дошёл.
-        operation = book.begin(run, "issue", item.local) if book is not None else ""
+        # о принятом POST, ответ на который не дошёл. Отпечаток содержимого
+        # пишется сюда же: задача, найденная потом по метке, без него не
+        # отличила бы следующую правку от неизменённой карточки.
+        operation = (
+            book.begin(run, "issue", item.local, content_hash=wanted, title=item.summary)
+            if book is not None
+            else ""
+        )
         try:
             result = create_issue(
                 item,
@@ -610,8 +911,10 @@ def create_issues(
                 book.fail(run, "issue", item.local, str(exc))
             failed.append({"local": item.local, "summary": item.summary, "reason": str(exc)})
             continue
+        sent = result.pop("remote_hash", "")
         if book is not None:
-            book.finish(run, "issue", item.local, remote=result["key"], url=result["url"])
+            book.finish(run, "issue", item.local, remote=result["key"], url=result["url"],
+                        remote_hash=sent)
             if parent_key:
                 book.begin(run, "parent", item.local)
                 book.finish(run, "parent", item.local, remote=parent_key)
@@ -764,9 +1067,80 @@ def format_created(result: dict) -> str:
     """
     lines = []
     for issue in result.get("created") or []:
-        lines.append(f"- {issue['key']} — {issue['summary']} ({issue['type']}) {issue['url']}")
+        note = (" — обновлена" if issue.get("updated")
+                else " — без изменений" if issue.get("unchanged") else "")
+        lines.append(f"- {issue['key']} — {issue['summary']} ({issue['type']}) {issue['url']}{note}")
     for issue in result.get("failed") or []:
-        lines.append(f"- [{issue['local']}] не заведена: {issue['reason']}")
+        what = "не обновлена" if issue.get("conflict") else "не заведена"
+        lines.append(f"- [{issue['local']}] {what}: {issue['reason']}")
+    for item in (result.get("verification") or {}).get("differs") or []:
+        lines.append(f"- сверка: {item['key']} — {item['reason']}")
     for warning in result.get("warnings") or []:
         lines.append(f"- внимание: {warning}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Сверка после записи
+# --------------------------------------------------------------------------
+def verify_issues(
+    result: dict,
+    *,
+    run: str,
+    journal: Any,
+    settings: jira.Settings | None = None,
+) -> dict:
+    """
+    Что трекер хранит под ключами, которые он вернул. Итог — в `result["verification"]`.
+
+    Читается каждая записанная и ещё не сверенная операция области: тема и
+    описание сравниваются в нормализованном виде (`plain`) с тем, что уехало,
+    и проверяется метка операции. Расхождение — не отказ: задача заведена, и
+    отменять её поздно. Оно видно оператору и становится точкой отсчёта для
+    следующей правки, чтобы нормализация трекера не выглядела чужой правкой.
+    Не прочиталось — `unverified`; повторно такая запись не сверяется.
+    """
+    if journal is None or not run:
+        return result
+    s = settings or jira.load_settings()
+    verified: list[dict] = []
+    differs: list[dict] = []
+    unverified: list[dict] = []
+    for record in journal.records(run):
+        if (record["op"] not in ("issue", "update") or record["state"] != actions.COMPLETED
+                or record["verified"] or not record["remote"]):
+            continue
+        key, local = record["remote"], record["key"]
+        label = record["label"] if record["op"] == "issue" else label_of(run, local)
+        try:
+            fields = _current(key, s)
+        except JiraError as exc:
+            journal.checked(run, record["op"], local, actions.UNVERIFIED, detail=str(exc))
+            unverified.append({"key": key, "local": local, "reason": str(exc)})
+            continue
+        observed = remote_hash(fields)
+        version = str(fields.get("updated") or "")
+        problems = []
+        if record["remote_hash"] and observed != record["remote_hash"]:
+            problems.append("тема или описание в трекере отличаются от отправленных")
+        if label not in (fields.get("labels") or []):
+            problems.append(f"нет метки операции {label}")
+        verdict = actions.DIFFERS if problems else actions.VERIFIED
+        journal.checked(run, record["op"], local, verdict, detail="; ".join(problems),
+                        remote_hash=observed, remote_version=version)
+        journal.rebase(run, "issue", local, content_hash=record["content_hash"],
+                       remote_hash=observed, remote_version=version)
+        if problems:
+            differs.append({"key": key, "local": local, "reason": "; ".join(problems)})
+        else:
+            verified.append({"key": key, "local": local})
+    if verified or differs or unverified:
+        result = {**result, "verification": {
+            "verified": verified, "differs": differs, "unverified": unverified,
+        }}
+    return result
+
+
+def label_of(run: str, local: str) -> str:
+    """Метка задачи карточки: та, с которой она заводилась."""
+    return jira_journal.label_for(run, "issue", local)

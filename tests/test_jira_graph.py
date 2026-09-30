@@ -776,6 +776,15 @@ def test_a_document_becomes_issues_after_the_operator_names_the_project(
     responses.add(responses.POST, f"{base}/rest/api/3/issue", json={"key": "ORB-1"}, status=201)
     responses.add(responses.POST, f"{base}/rest/api/3/issue", json={"key": "ORB-2"}, status=201)
 
+    def stored(request):
+        # Сверка после записи читает задачу: трекер отдаёт то, что ему прислали.
+        posts = [call for call in responses.calls if call.request.method == "POST"]
+        index = int(request.url.split("ORB-")[1].split("?")[0]) - 1
+        return 200, {}, json.dumps({"fields": json.loads(posts[index].request.body)["fields"]})
+
+    for key in ("ORB-1", "ORB-2"):
+        responses.add_callback(responses.GET, f"{base}/rest/api/3/issue/{key}", callback=stored)
+
     model = GenericFakeChatModel(messages=iter(ANSWERS))
     app = jira_graph.build_graph(llm=model).compile(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "jira-e2e", "input_dir": TASK_DIR}}
@@ -791,10 +800,16 @@ def test_a_document_becomes_issues_after_the_operator_names_the_project(
     assert [issue["key"] for issue in state["issues"]["created"]] == ["ORB-1", "ORB-2"]
     assert state["issues"]["project"] == "ORB"
     # Ребёнок уехал с настоящим ключом эпика, а не с локальным.
-    child = json.loads(responses.calls[-1].request.body)["fields"]
+    posts = [call for call in responses.calls if call.request.method == "POST"]
+    child = json.loads(posts[-1].request.body)["fields"]
     assert child["parent"] == {"key": "ORB-1"}
     # Ключи видно и в треде: за ними приходят сразу, а не в документ.
     assert "ORB-2" in state["messages"][-1].content
+    # После записи задачи перечитаны: лежит то, что отправили, с меткой операции.
+    check = state["issues"]["verification"]
+    assert [item["key"] for item in check["verified"]] == ["ORB-1", "ORB-2"]
+    assert check["differs"] == [] and check["unverified"] == []
+    assert "Сверка после записи: совпало 2" in state["messages"][-1].content
 
 
 # --------------------------------------------------------------------------
