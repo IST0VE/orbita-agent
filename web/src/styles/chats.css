@@ -684,3 +684,75 @@ dialog.chat-library > p {
 .composer-error {
   margin: 0 var(--space-4);
 }
+
+/* --------------------------------------------------------------------- */
+/* Оценка результата                                                      */
+/* --------------------------------------------------------------------- */
+.outcome-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.outcome-card .hint {
+  margin: 0;
+}
+
+.outcome-saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+}
+
+.outcome-saved span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.outcome-saved svg {
+  color: var(--on-success-soft);
+}
+
+.outcome-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.outcome-verdict {
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+}
+
+.outcome-verdict[aria-pressed="true"],
+.outcome-verdict[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--on-orange-soft);
+  background: var(--accent-orange-soft);
+  border-color: var(--accent-orange-border);
+}
+
+.outcome-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--type-dense);
+  color: var(--text-secondary);
+}
+
+.outcome-field input {
+  max-width: 140px;
+}
+
+.outcome-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

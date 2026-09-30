@@ -53,7 +53,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
 
 const PREFIX: Array<[RegExp, SettingsGroupId]> = [
   [/^(LLM|PRICE)_/, "ai"],
-  [/^(CONFLUENCE|JIRA|ATLASSIAN|PUBLISH)_/, "integrations"],
+  [/^(CONFLUENCE|JIRA|ATLASSIAN|PUBLISH|FLOW)_/, "integrations"],
   [/^(API_|POSTGRES|CHECKPOINT_)/, "connections"],
   [/^NT_(PROMETHEUS|INFLUX|KUBERNETES|LOAD_TESTING|RUNNER)/, "connections"],
 ];

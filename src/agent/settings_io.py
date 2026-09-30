@@ -89,6 +89,7 @@ _RESERVED_NAMES = frozenset(
         "NO_PROXY",
         "API_ADMIN_TOKEN",
         "METRICS_TOKEN",
+        "METRICS_DB_PASSWORD",
         "NT_RUNNER_TOKEN",
         "POSTGRES_PASSWORD",
         "POSTGRES_URI",

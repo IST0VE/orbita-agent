@@ -46,6 +46,7 @@ _PREFIXES = (
     "PUBLISH_",
     "CHECKPOINT_",
     "DIAGRAM_",
+    "FLOW_",
     "POSTGRES_",
     "JIRA_",
     "ATLASSIAN_",

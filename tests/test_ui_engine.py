@@ -17,6 +17,7 @@ from agent import (
     api,
     audit_graph,
     drawio_graph,
+    flow_graph,
     jira_graph,
     nt_graph,
     nt_run_graph,
@@ -43,7 +44,9 @@ from agent.ui_engine.registry import ManifestNotFound, UiRegistry, registry
 
 
 def test_all_builtin_graphs_have_valid_versioned_manifests():
-    assert registry.graph_ids() == ("agent", "audit", "drawio", "jira", "nt", "nt_run", "prep", "update")
+    assert registry.graph_ids() == (
+        "agent", "audit", "drawio", "jira", "metrics", "nt", "nt_run", "prep", "update"
+    )
     for graph_id in registry.graph_ids():
         item = registry.resolve(graph_id)
         assert item.value["schema_version"] == "1.0"
@@ -110,6 +113,7 @@ def test_manifest_nodes_match_the_compiled_graph():
         "audit": audit_graph.graph,
         "drawio": drawio_graph.graph,
         "jira": jira_graph.graph,
+        "metrics": flow_graph.graph,
         "nt": nt_graph.graph,
         "nt_run": nt_run_graph.graph,
         "prep": prep_graph.graph,

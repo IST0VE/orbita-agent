@@ -5,7 +5,9 @@
 чего у него нет: личные подключения Jira и Confluence (`credentials.py`),
 изменения с их требованиями и Evidence (`changes.py`), внешние действия с их
 согласиями и журналом операций (`actions.py`) — всё, что должно пережить
-пересоздание контейнера и принадлежать конкретному человеку.
+пересоздание контейнера и принадлежать конкретному человеку. Здесь же метрики
+потока задач (`flow_store.py`) и оценки результатов прогонов (`outcomes.py`):
+их читает ещё и Grafana, своей ролью только на чтение (`grant_reader`).
 
 Схема заводится на месте, при первом обращении: список `MIGRATIONS` проходит
 по порядку под advisory-блокировкой, сделанное отмечается в `schema_migrations`.
@@ -20,11 +22,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import logging
+import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 import psycopg
+from psycopg import sql
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from agent import config as cfg
@@ -186,6 +194,125 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         "версия удалённой задачи для защиты дополнительных полей",
         "ALTER TABLE action_operations ADD COLUMN remote_version text NOT NULL DEFAULT '';",
     ),
+    (
+        5,
+        "метрики потока задач",
+        # Доска, её задачи и спринты (`flow_store.py`). История задачи лежит
+        # целиком (`timeline`), а факты рядом — колонками: их считает код при
+        # сборе, а Grafana читает простым SQL, без разбора JSON в запросе.
+        # Людей здесь нет: исполнитель не читается и не хранится, названий
+        # задач тоже нет — ключ, тип, статусы и даты.
+        """
+        CREATE TABLE flow_boards (
+            board_id       integer     PRIMARY KEY,
+            name           text        NOT NULL DEFAULT '',
+            kind           text        NOT NULL DEFAULT '',
+            project        text        NOT NULL DEFAULT '',
+            jql            text        NOT NULL DEFAULT '',
+            estimate_field text        NOT NULL DEFAULT '',
+            hours          boolean     NOT NULL DEFAULT false,
+            state          text        NOT NULL DEFAULT '',
+            detail         text        NOT NULL DEFAULT '',
+            synced_by      text        NOT NULL DEFAULT '',
+            synced_at      timestamptz,
+            window_start   timestamptz,
+            issues         integer     NOT NULL DEFAULT 0,
+            truncated      boolean     NOT NULL DEFAULT false,
+            updated_at     timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE flow_issues (
+            board_id         integer     NOT NULL REFERENCES flow_boards (board_id) ON DELETE CASCADE,
+            key              text        NOT NULL,
+            issue_type       text        NOT NULL DEFAULT '',
+            subtask          boolean     NOT NULL DEFAULT false,
+            orbita           boolean     NOT NULL DEFAULT false,
+            status           text        NOT NULL DEFAULT '',
+            category         text        NOT NULL DEFAULT '',
+            estimate         double precision,
+            created_at       timestamptz NOT NULL,
+            started_at       timestamptz,
+            done_at          timestamptz,
+            cycle_days       double precision,
+            lead_days        double precision,
+            reopens          integer     NOT NULL DEFAULT 0,
+            analysis_returns integer,
+            blocked_hours    double precision NOT NULL DEFAULT 0,
+            timeline         jsonb       NOT NULL DEFAULT '{}',
+            jira_updated     timestamptz,
+            synced_at        timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (board_id, key)
+        );
+        CREATE INDEX flow_issues_done ON flow_issues (board_id, done_at);
+        CREATE TABLE flow_sprints (
+            board_id                   integer     NOT NULL REFERENCES flow_boards (board_id) ON DELETE CASCADE,
+            sprint_id                  integer     NOT NULL,
+            name                       text        NOT NULL DEFAULT '',
+            state                      text        NOT NULL DEFAULT '',
+            start_at                   timestamptz,
+            end_at                     timestamptz,
+            complete_at                timestamptz,
+            committed_count            integer     NOT NULL DEFAULT 0,
+            committed_points           double precision NOT NULL DEFAULT 0,
+            completed_count            integer     NOT NULL DEFAULT 0,
+            completed_points           double precision NOT NULL DEFAULT 0,
+            completed_committed_count  integer     NOT NULL DEFAULT 0,
+            completed_committed_points double precision NOT NULL DEFAULT 0,
+            added_count                integer     NOT NULL DEFAULT 0,
+            removed_count              integer     NOT NULL DEFAULT 0,
+            carried_count              integer     NOT NULL DEFAULT 0,
+            computed_at                timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (board_id, sprint_id)
+        );
+        """,
+    ),
+    (
+        6,
+        "оценка результата прогона",
+        # Одна оценка на тред (`outcomes.py`): последняя правка побеждает, а
+        # время первой оценки остаётся — от него считается время до принятого
+        # результата. Рядом снимок треда на момент оценки: сколько было ходов,
+        # сколько стоило, что сказала проверка ссылок.
+        """
+        CREATE TABLE run_outcomes (
+            thread_id         text        PRIMARY KEY,
+            owner             text        NOT NULL,
+            graph             text        NOT NULL DEFAULT '',
+            verdict           text        NOT NULL
+                              CHECK (verdict IN ('accepted', 'edited', 'reworked', 'rejected')),
+            minutes           integer     CHECK (minutes IS NULL OR minutes BETWEEN 0 AND 10000),
+            reason            text        NOT NULL DEFAULT '',
+            thread_created_at timestamptz,
+            turns             integer,
+            cost_usd          double precision,
+            llm_calls         integer,
+            refs              integer,
+            verified          integer,
+            findings          integer,
+            jira_created      integer,
+            created_at        timestamptz NOT NULL DEFAULT now(),
+            updated_at        timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX run_outcomes_owner ON run_outcomes (owner, updated_at DESC);
+        CREATE INDEX run_outcomes_created ON run_outcomes (created_at);
+        """,
+    ),
+)
+
+#: Роль Grafana: читает метрики и ничего больше (`grant_reader`).
+READER = "orbita_metrics"
+
+#: Что роли читателя видно. У оценок прогона нет владельца, треда и текста
+#: причины: Grafana пускает зрителей без входа, а источник данных у неё один
+#: на всех, и любой зритель может отправить в него свой SELECT.
+READER_GRANTS = (
+    ("flow_boards", "board_id, name, kind, project, estimate_field, hours, state, "
+                    "synced_at, window_start, issues, truncated, updated_at"),
+    ("flow_issues", "board_id, key, issue_type, subtask, orbita, status, category, estimate, "
+                    "created_at, started_at, done_at, cycle_days, lead_days, reopens, "
+                    "analysis_returns, blocked_hours, jira_updated"),
+    ("flow_sprints", "*"),
+    ("run_outcomes", "graph, verdict, minutes, thread_created_at, turns, cost_usd, llm_calls, "
+                     "refs, verified, findings, jira_created, created_at, updated_at"),
 )
 
 
@@ -195,6 +322,74 @@ class DatabaseUnavailable(RuntimeError):
 
 _pool: ConnectionPool | None = None
 _lock = threading.Lock()
+_LOG = logging.getLogger(__name__)
+
+
+def scram_verifier(password: str, *, salt: bytes | None = None, iterations: int = 4096) -> str:
+    """
+    Пароль роли в виде, в котором его хранит Postgres (SCRAM-SHA-256).
+
+    `ALTER ROLE … PASSWORD 'открытый текст'` оставляет пароль в журнале сервера
+    при `log_statement=ddl` и в `pg_stat_activity` на время запроса. Готовый
+    верификатор Postgres принимает как есть, и открытого пароля в базе не бывает.
+    """
+    salt = salt or os.urandom(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", "sha256").digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", "sha256").digest()
+    encode = lambda raw: base64.b64encode(raw).decode("ascii")  # noqa: E731
+    return f"SCRAM-SHA-256${iterations}:{encode(salt)}${encode(stored_key)}:{encode(server_key)}"
+
+
+def grant_reader(conn: psycopg.Connection, password: str, role: str = READER) -> None:
+    """
+    Завести роль читателя метрик для Grafana и дать ей ровно `READER_GRANTS`.
+
+    Права выдаются заново на каждом старте: сначала всё отнимается, потом
+    выдаётся список. Колонка, убранная из списка, иначе осталась бы открытой
+    навсегда. `statement_timeout` — потому что запросы в эту роль шлёт любой
+    зритель доски, и тяжёлый SELECT не должен держать базу приложения.
+
+    `role` — имя роли; другое, чем `READER`, нужно только проверке на живой
+    базе: роль общая на весь сервер Postgres, и тест не должен менять пароль
+    той, которой ходит настоящая Grafana.
+    """
+    name = sql.Identifier(role)
+    with conn.transaction():
+        conn.execute(
+            sql.SQL(
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {literal}) "
+                "THEN CREATE ROLE {role} LOGIN; END IF; END $$"
+            ).format(literal=sql.Literal(role), role=name)
+        )
+        conn.execute(
+            sql.SQL("ALTER ROLE {role} WITH LOGIN PASSWORD {verifier}").format(
+                role=name, verifier=sql.Literal(scram_verifier(password))
+            )
+        )
+        conn.execute(sql.SQL("ALTER ROLE {role} SET statement_timeout = '30s'").format(role=name))
+        database = conn.execute("SELECT current_database()").fetchone()[0]
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {db} TO {role}").format(
+                db=sql.Identifier(database), role=name
+            )
+        )
+        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {role}").format(role=name))
+        conn.execute(sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}").format(role=name))
+        for table, columns in READER_GRANTS:
+            what = (
+                sql.SQL("SELECT")
+                if columns == "*"
+                else sql.SQL("SELECT ({})").format(
+                    sql.SQL(", ").join(sql.Identifier(column.strip()) for column in columns.split(","))
+                )
+            )
+            conn.execute(
+                sql.SQL("GRANT {what} ON {table} TO {role}").format(
+                    what=what, table=sql.Identifier(table), role=name
+                )
+            )
 
 
 def _migrate(conn: psycopg.Connection) -> None:
@@ -210,10 +405,10 @@ def _migrate(conn: psycopg.Connection) -> None:
             """
         )
         done = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
-        for version, name, sql in MIGRATIONS:
+        for version, name, statement in MIGRATIONS:
             if version in done:
                 continue
-            conn.execute(sql)
+            conn.execute(statement)
             conn.execute(
                 "INSERT INTO schema_migrations (version, name) VALUES (%s, %s)", (version, name)
             )
@@ -238,6 +433,16 @@ def _open() -> ConnectionPool:
     except (PoolTimeout, psycopg.Error) as exc:
         pool.close()
         raise DatabaseUnavailable(f"база Orbita недоступна (POSTGRES_URI): {_reason(exc)}") from exc
+    password = cfg.metrics_db_password()
+    if password:
+        # Без роли читателя доска метрик пуста, но приложение работает: отказ
+        # здесь (нет права CREATEROLE у пользователя базы) — повод написать в
+        # журнал, а не останавливать личные подключения и журнал действий.
+        try:
+            with pool.connection() as conn:
+                grant_reader(conn, password)
+        except psycopg.Error as exc:
+            _LOG.warning("роль %s для Grafana не заведена: %s", READER, _reason(exc))
     return pool
 
 

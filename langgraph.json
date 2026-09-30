@@ -10,7 +10,8 @@
     "audit": "./src/agent/audit_graph.py:graph",
     "update": "./src/agent/update_graph.py:graph",
     "nt": "./src/agent/nt_graph.py:graph",
-    "nt_run": "./src/agent/nt_run_graph.py:graph"
+    "nt_run": "./src/agent/nt_run_graph.py:graph",
+    "metrics": "./src/agent/flow_graph.py:graph"
   },
   "env": ".env",
   "auth": {

@@ -89,6 +89,18 @@ def metrics_token() -> str | None:
     return value if value and len(value) >= 16 else None
 
 
+def metrics_db_password() -> str | None:
+    """
+    Пароль роли `orbita_metrics`, которой Grafana читает метрики из Postgres.
+
+    Задан — агент при подключении к базе заводит роль и даёт ей SELECT только
+    на таблицы метрик (`db.grant_reader`). Короче 16 символов — не принимается:
+    роль открыта всем зрителям доски.
+    """
+    value = env_opt("METRICS_DB_PASSWORD")
+    return value if value and len(value) >= 16 else None
+
+
 def api_max_request_bytes() -> int:
     """Жёсткий потолок JSON-тела служебного API."""
     return env_int("API_MAX_REQUEST_BYTES", 65536, minimum=1024, maximum=10 * 1024 * 1024)

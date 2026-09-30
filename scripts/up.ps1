@@ -95,8 +95,9 @@ $settings = Read-DotEnv
 # ключ личных токенов. Оба нужны один раз и потом не меняются. METRICS_TOKEN —
 # токен Prometheus из профиля monitoring: без профиля он просто не нужен.
 # GRAFANA_ADMIN_PASSWORD — пароль admin в Grafana того же профиля; без него
-# Grafana заводится с admin / admin.
-foreach ($name in "API_ADMIN_TOKEN", "NT_RUNNER_TOKEN", "METRICS_TOKEN", "POSTGRES_PASSWORD", "USER_SECRETS_KEY", "GRAFANA_ADMIN_PASSWORD") {
+# Grafana заводится с admin / admin. METRICS_DB_PASSWORD — пароль роли, которой
+# Grafana читает из базы метрики потока задач (доска «Orbita · поток задач»).
+foreach ($name in "API_ADMIN_TOKEN", "NT_RUNNER_TOKEN", "METRICS_TOKEN", "METRICS_DB_PASSWORD", "POSTGRES_PASSWORD", "USER_SECRETS_KEY", "GRAFANA_ADMIN_PASSWORD") {
     if (-not $settings[$name]) {
         Set-DotEnvValue $name (New-Secret)
         Write-Host "В .env записан случайный $name."

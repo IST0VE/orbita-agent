@@ -301,6 +301,9 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/orbita.json
+      # Пароль роли orbita_metrics для доски потока задач (источник «Orbita DB»,
+      # config/grafana/provisioning/datasources/postgres.yml). Роль заводит агент.
+      ORBITA_METRICS_DB_PASSWORD: ${METRICS_DB_PASSWORD:-}
       # Grafana не ходит наружу за новостями, обновлениями и статистикой.
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
@@ -321,6 +324,8 @@ services:
       start_interval: 2s
     depends_on:
       prometheus:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   # Профиль, а не обычный сервис: `docker compose up` не должен тратить деньги

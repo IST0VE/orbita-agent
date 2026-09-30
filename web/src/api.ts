@@ -519,3 +519,39 @@ export const attachToChat = (
   });
 
 export const loadLibrary = () => json<Library>("/api/library");
+
+/* ------------------------------------------------------------------ */
+/* Оценка результата чата                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Принят ли результат чата и сколько времени ушло на проверку и правку.
+ *
+ * Главная метрика пилота — трудозатраты до принятого результата, и из треда
+ * её не вычислить: ходы и стоимость сервер снимает сам, а вердикт и минуты
+ * знает только человек. Снимок треда (ходы, стоимость, проверка ссылок)
+ * сервер берёт из состояния, а не из запроса.
+ */
+export type Outcome = {
+  thread_id: string;
+  graph: string;
+  verdict: string;
+  verdict_title: string;
+  minutes: number | null;
+  reason: string;
+  turns: number | null;
+  cost_usd: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OutcomeDoc = { outcome: Outcome | null; verdicts: Record<string, string> };
+
+const outcomePath = (threadId: string) => `/api/outcomes/${encodeURIComponent(threadId)}`;
+
+export const loadOutcome = (threadId: string) => json<OutcomeDoc>(outcomePath(threadId));
+
+export const saveOutcome = (
+  threadId: string,
+  answer: { verdict: string; minutes: number | null; reason: string },
+) => json<OutcomeDoc>(outcomePath(threadId), { method: "PUT", body: JSON.stringify(answer) });

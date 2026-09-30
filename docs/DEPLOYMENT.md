@@ -201,6 +201,7 @@ docker compose up -d
 | Треды dev-сервера | `.langgraph_api/` рядом с рабочей папкой | `/app/.langgraph_api` в томе `threads` |
 | Личные подключения Jira и Confluence | PostgreSQL по `POSTGRES_URI` | PostgreSQL в томе `pgdata`; ключ — `USER_SECRETS_KEY` в `.env` |
 | Изменения и требования `prep` | PostgreSQL по `POSTGRES_URI`, если он задан явно; без него — только в треде | PostgreSQL в томе `pgdata` |
+| Метрики потока задач и оценки результатов | PostgreSQL по `POSTGRES_URI`, если он задан явно; без него метрики считаются по свежему чтению Jira и не сохраняются, оценки не принимаются | PostgreSQL в томе `pgdata`; Grafana читает их ролью `orbita_metrics` (`METRICS_DB_PASSWORD`) |
 | Чекпоинты собственного Python-кода | В памяти или PostgreSQL, по настройке | PostgreSQL в томе `pgdata`, только профиль `demo` |
 | Файлы и журнал runner НТ | `.nt-runs/` либо `--root` runner | `/data/nt-runs` в томе `nt-runs` |
 | Список стендов runner | `config/nt-runner.json` | `./config` хоста → `/app/config`, только чтение |

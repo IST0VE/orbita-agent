@@ -66,7 +66,7 @@ PUBLISH_TARGET=file
 JIRA_CREATE_ISSUES=0
 ```
 
-`API_ADMIN_TOKEN`, `NT_RUNNER_TOKEN`, `METRICS_TOKEN`, `POSTGRES_PASSWORD` и `USER_SECRETS_KEY` оставьте пустыми: скрипт запуска сгенерирует их сам. Последний шифрует личные токены Jira и Confluence в базе — не теряйте `.env`, иначе пользователям придётся ввести токены заново. `LLM_PROVIDER=anthropic` штатный образ не поддерживает — в нём нет этого адаптера; используйте `deepseek` или `openai`.
+`API_ADMIN_TOKEN`, `NT_RUNNER_TOKEN`, `METRICS_TOKEN`, `METRICS_DB_PASSWORD`, `POSTGRES_PASSWORD` и `USER_SECRETS_KEY` оставьте пустыми: скрипт запуска сгенерирует их сам. Последний шифрует личные токены Jira и Confluence в базе — не теряйте `.env`, иначе пользователям придётся ввести токены заново. `LLM_PROVIDER=anthropic` штатный образ не поддерживает — в нём нет этого адаптера; используйте `deepseek` или `openai`.
 
 **Адреса в `.env`.** Внутри контейнера `127.0.0.1` и `localhost` означают сам контейнер. Для сервисов на этой же машине (Prometheus, Jira) пишите `host.docker.internal`. Адреса в локальной сети, например `192.168.x.x`, работают, только если новая машина в той же сети. Модель по HTTP допустима только на loopback, поэтому из Docker к ней нужен HTTPS — подробнее в [развёртывании](DEPLOYMENT.md#сервисы-на-этой-же-машине).
 

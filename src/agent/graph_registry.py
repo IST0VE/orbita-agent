@@ -120,19 +120,29 @@ def _pipeline(
     stops: tuple[Stop, ...] = (),
     effects: tuple[Effect, ...] = (),
 ) -> GraphSpec:
-    """Граф общей сборки: пауза в ролях, ворота перед каждой ролью после первой."""
+    """
+    Граф общей сборки: пауза в ролях, ворота перед каждой ролью после первой.
+
+    У конвейера из одной роли ворот нет — и остановки «stage» тоже: её негде
+    сделать, а объявленная остановка без узла обещала бы интерфейсу форму,
+    которую он никогда не покажет.
+    """
+    gates = tuple(f"gate_{role}" for role in roles[1:])
+    stage = (
+        Stop(
+            "stage",
+            gates,
+            "PIPELINE_REQUIRE_APPROVAL=1; при PIPELINE_APPROVAL_STAGES=first — "
+            "только после первого этапа",
+            SKIPPED,
+        ),
+    ) if gates else ()
     return GraphSpec(
         name=name,
         module=module,
         stops=(
             Stop("pause", roles, PAUSE_WHEN, KEPT),
-            Stop(
-                "stage",
-                tuple(f"gate_{role}" for role in roles[1:]),
-                "PIPELINE_REQUIRE_APPROVAL=1; при PIPELINE_APPROVAL_STAGES=first — "
-                "только после первого этапа",
-                SKIPPED,
-            ),
+            *stage,
             Stop("publish", ("approve",), PUBLISH_WHEN, PROPOSED),
             *stops,
         ),
@@ -168,6 +178,22 @@ GRAPHS: tuple[GraphSpec, ...] = (
     ),
     _pipeline("drawio", "agent.drawio_graph", ("survey", "components", "page", "review")),
     _pipeline("audit", "agent.audit_graph", ("trace", "conflicts", "verdict")),
+    _pipeline(
+        "metrics",
+        "agent.flow_graph",
+        ("summary",),
+        effects=(
+            # Запись в свою базу, как у изменений `prep`: вложенный прогон её не
+            # делает и считает показатели по свежему чтению Jira.
+            Effect(
+                "flow",
+                ("flow",),
+                "задачи и спринты доски Jira в Postgres (POSTGRES_URI), прочитанные "
+                "токеном пользователя прогона",
+                SKIPPED,
+            ),
+        ),
+    ),
     _pipeline(
         "jira",
         "agent.jira_graph",

@@ -6,7 +6,8 @@
 CORS, вторая точка отказа и лишняя память ради трёх обработчиков.
 
 Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы чатов,
-библиотека примеров и журнал сервера для интерфейса.
+библиотека примеров, журнал сервера для интерфейса, оценки результатов чатов
+и метрики потока досок Jira.
 Всё, что касается графа, тредов и прогонов, остаётся у самого сервера —
 дублировать его роуты незачем.
 
@@ -42,16 +43,20 @@ from agent import (
     confluence,
     credentials,
     db,
+    flow_jira,
+    flow_store,
+    flow_sync,
     inputs,
     jira_writer,
     logbook,
     metrics,
+    outcomes,
     pause,
     publishers,
     settings_io,
 )
 from agent import config as cfg
-from agent.auth import delete_thread, owns_thread, thread_exists
+from agent.auth import delete_thread, owns_thread, thread_exists, thread_record
 from agent.security import ApiSecurityMiddleware, admin_error, auth_error, principal_of
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
@@ -735,6 +740,200 @@ async def get_action(request: Request) -> JSONResponse:
     return JSONResponse(found)
 
 
+# ---------------------------------------------------------------------------
+# Оценка результата прогона (outcomes.py)
+#
+# Своя и только своя: оценку ставит владелец треда, и чужой тред отвечает тем
+# же 404, что и несуществующий. Снимок треда — ходы, стоимость, проверка
+# ссылок — берётся на сервере из состояния треда, а не из тела запроса:
+# браузер мог бы прислать любые числа.
+# ---------------------------------------------------------------------------
+async def get_outcome(request: Request) -> JSONResponse:
+    """
+    Моя оценка результата этого чата и список вердиктов.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    owner = principal_of(request.scope).subject
+    try:
+        outcomes.available()
+        found = await asyncio.to_thread(outcomes.store.get, owner, thread_id)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    return JSONResponse({"outcome": found, "verdicts": outcomes.VERDICTS})
+
+
+async def put_outcome(request: Request) -> JSONResponse:
+    """
+    Оценить результат чата: `{"verdict": ..., "minutes": ..., "reason": ...}`.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    try:
+        body = await _json_body(request)
+        answer = outcomes.parse(body)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="outcome_invalid")
+    owner = principal_of(request.scope).subject
+    thread = await thread_record(thread_id) or {}
+    seen = outcomes.snapshot(thread, thread.get("values") if isinstance(thread.get("values"), dict) else {})
+    try:
+        outcomes.available()
+        saved = await asyncio.to_thread(outcomes.store.save, owner, thread_id, answer, seen)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    except outcomes.OutcomeError as exc:
+        return _error(str(exc), 409, error_code="outcome_conflict")
+    return JSONResponse({"outcome": saved, "verdicts": outcomes.VERDICTS})
+
+
+def _days(request: Request, default: int) -> int:
+    raw = request.query_params.get("days", str(default))
+    if not raw.isdigit() or not 1 <= int(raw) <= 730:
+        raise ValueError("days — целое число от 1 до 730")
+    return int(raw)
+
+
+async def get_outcomes_summary(request: Request) -> JSONResponse:
+    """
+    Оценки всех за `days` дней по сценариям и вердиктам — для пилота. Только администратору.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        days = _days(request, 30)
+        outcomes.available()
+        found = await asyncio.to_thread(outcomes.store.summary, days)
+    except ValueError as exc:
+        return _error(str(exc), error_code="outcomes_invalid_query")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    return JSONResponse({"days": days, "rows": found, "verdicts": outcomes.VERDICTS})
+
+
+# ---------------------------------------------------------------------------
+# Метрики потока задач (flow_sync.py)
+#
+# Только администратору: доска собирается токеном того, кто попросил, а
+# показатели видны всем, кто смотрит сводку, — открыть её каждому значило бы
+# показывать доску людям, у которых в Jira к ней доступа нет. Пользователь
+# получает те же показатели графом `metrics`, своим токеном.
+# ---------------------------------------------------------------------------
+#: Идущие сборы: ссылка держит задачу, иначе её соберёт сборщик мусора.
+_FLOW_TASKS: set[asyncio.Task] = set()
+
+
+def _board_id(request: Request) -> int:
+    raw = request.path_params["board_id"]
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError("номер доски — целое положительное число")
+    return int(raw)
+
+
+async def get_flow_boards(request: Request) -> JSONResponse:
+    """
+    Собранные доски: когда и чем кончился последний сбор, сколько задач.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        flow_store.available()
+        found = await asyncio.to_thread(flow_store.store.boards)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    for board in found:
+        board.pop("jql", None)
+    return JSONResponse({"boards": flow_sync.jsonable(found), "scheduled": list(cfg.flow_boards())})
+
+
+async def post_flow_sync(request: Request) -> JSONResponse:
+    """
+    Собрать доску сейчас: `{"full": true}` — перечитать окно целиком, `days` — его глубина.
+
+    Сбор идёт минутами (пауза перед каждым запросом к Jira), поэтому ответ —
+    202 сразу, а итог виден в `GET /api/flow/boards`.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        board_id = _board_id(request)
+        body = await _json_body(request) if request.headers.get("content-length") not in (None, "0") else {}
+        days = body.get("days")
+        if days is not None and (not isinstance(days, int) or not 1 <= days <= 730):
+            raise ValueError("days — целое число от 1 до 730")
+        flow_store.available()
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="flow_invalid")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    who = principal_of(request.scope).subject
+
+    def run() -> None:
+        try:
+            flow_sync.sync(board_id, who=who, days=days, full=bool(body.get("full")))
+        except Exception:
+            _LOG.exception("flow: сбор доски %s не удался", board_id)
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    _FLOW_TASKS.add(task)
+    task.add_done_callback(_FLOW_TASKS.discard)
+    return JSONResponse({"board_id": board_id, "state": flow_store.RUNNING}, status_code=202)
+
+
+async def get_flow_summary(request: Request) -> JSONResponse:
+    """
+    Показатели собранной доски за `days` дней и за столько же до них. Без нового сбора.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        board_id = _board_id(request)
+        days = _days(request, 90)
+        flow_store.available()
+        measured = await asyncio.to_thread(
+            flow_sync.measure, board_id, days, refresh=False
+        )
+    except ValueError as exc:
+        return _error(str(exc), error_code="flow_invalid")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    except flow_jira.FlowJiraError as exc:
+        return _error(str(exc), 404, error_code="flow_board_not_found")
+    return JSONResponse(flow_sync.jsonable({
+        "board": measured.board, "current": measured.current,
+        "previous": measured.previous, "notes": measured.notes,
+    }))
+
+
+#: Первый фоновый сбор — не на старте: сервер ещё поднимает треды, а Jira
+#: не должна получать пачку запросов от каждого перезапуска контейнера.
+_FLOW_FIRST_S = 600
+
+
+async def _flow_forever() -> None:
+    await asyncio.sleep(_FLOW_FIRST_S)
+    while True:
+        if not flow_sync.due():
+            return
+        try:
+            await asyncio.to_thread(flow_sync.sync_all)
+        except Exception:
+            _LOG.exception("flow: фоновый сбор не удался")
+        await asyncio.sleep(cfg.flow_sync_interval_h() * 3600)
+
+
 #: Первая уборка — не на старте: сервер ещё поднимает треды из хранилища.
 _SWEEP_FIRST_S = 300
 _SWEEP_EVERY_S = 6 * 3600
@@ -777,14 +976,23 @@ async def _sweep_forever() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: Starlette):
-    """Фоновая уборка папок удалённых чатов. LangGraph сливает её со своей."""
-    task = asyncio.create_task(_sweep_forever())
+    """
+    Фоновые задачи: уборка папок удалённых чатов и сбор FLOW_BOARDS.
+
+    LangGraph сливает этот lifespan со своим. Сбор досок заводится, только
+    если он включён: пустой цикл, спящий сутки, никому не нужен.
+    """
+    tasks = [asyncio.create_task(_sweep_forever())]
+    if flow_sync.due():
+        tasks.append(asyncio.create_task(_flow_forever()))
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def get_logs(request: Request) -> JSONResponse:
@@ -1183,6 +1391,12 @@ routes = [
     Route("/api/changes/{change_id}", get_change, methods=["GET"]),
     Route("/api/actions", get_actions, methods=["GET"]),
     Route("/api/actions/{action_id}", get_action, methods=["GET"]),
+    Route("/api/outcomes", get_outcomes_summary, methods=["GET"]),
+    Route("/api/outcomes/{thread_id}", get_outcome, methods=["GET"]),
+    Route("/api/outcomes/{thread_id}", put_outcome, methods=["PUT"]),
+    Route("/api/flow/boards", get_flow_boards, methods=["GET"]),
+    Route("/api/flow/boards/{board_id}/sync", post_flow_sync, methods=["POST"]),
+    Route("/api/flow/boards/{board_id}/summary", get_flow_summary, methods=["GET"]),
     Route("/api/published", get_published, methods=["GET"]),
     Route("/api/published/file", get_published_file, methods=["GET"]),
     Route("/api/logs", get_logs, methods=["GET"]),

@@ -164,6 +164,11 @@ async def owns_thread(principal: Principal, thread_id: str, *, must_exist: bool 
     return (thread.get("metadata") or {}).get(OWNER) == principal.subject
 
 
+async def thread_record(thread_id: str) -> dict | None:
+    """Тред с метаданными и последним состоянием (`values`) — для снимка при оценке."""
+    return await _thread(thread_id)
+
+
 async def thread_exists(thread_id: str) -> bool:
     """Есть ли тред вообще — для уборки папок удалённых чатов."""
     return await _thread(thread_id) is not None

@@ -29,6 +29,7 @@ import type { SafeWidgetContext, UiManifest, WidgetAction } from "../engine/mani
 import type { RuntimeSnapshot } from "../engine/runtime/types";
 import { useStickyScroll } from "../hooks/useStickyScroll";
 import { ChevronDown, ChevronRight, MessageSquare, Paperclip } from "../ui/icons";
+import { OutcomeCard } from "./OutcomeCard";
 
 type SectionId = "input" | "workspace" | "output";
 
@@ -234,6 +235,17 @@ export function ChatPanel({
             </h2>
             {results.map(node)}
           </section>
+        ) : null}
+        {/*
+          Оценивают то, что только что прочитали: под результатами. И не только
+          сразу после прогона — чат, открытый назавтра, после проверки документа
+          на свежую голову, тоже можно оценить; нельзя — пока прогон идёт.
+        */}
+        {ready && talking && context.chat?.threadId ? (
+          <OutcomeCard
+            threadId={context.chat.threadId}
+            finished={!["queued", "running", "interrupted"].includes(runtime.runStatus)}
+          />
         ) : null}
       </div>
     </div>

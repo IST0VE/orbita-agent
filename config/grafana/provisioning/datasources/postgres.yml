@@ -1,0 +1,27 @@
+# База Orbita для доски «Orbita · поток задач»: метрики потока задач и оценки
+# результатов прогонов. uid закреплён: на него ссылается каждая панель
+# config/grafana/dashboards/orbita-flow.json.
+#
+# Вход — ролью orbita_metrics, а не владельцем базы. Роль заводит сам агент,
+# когда в .env задан METRICS_DB_PASSWORD (db.grant_reader), и видит она
+# только таблицы метрик, без личных токенов, журнала действий и текстов
+# оценок: зрители доски пускаются без входа, а запрос в источник может
+# отправить любой из них.
+apiVersion: 1
+
+datasources:
+  - name: Orbita DB
+    uid: orbita-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: orbita_metrics
+    editable: false
+    jsonData:
+      database: orbita
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 4
+    secureJsonData:
+      password: $ORBITA_METRICS_DB_PASSWORD
