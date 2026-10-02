@@ -290,15 +290,15 @@ def test_the_search_role_looks_for_word_forms_too():
 
 @responses.activate
 def test_the_administrator_can_widen_the_search(monkeypatch):
-    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "GSLB, DOCS")
+    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "AUTHGW, DOCS")
     responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
 
     confluence.search("вебхук", V1)
 
     assert responses.calls[0].request.params["cql"] == (
-        'type = "page" AND space in ("SUP", "GSLB", "DOCS") AND text ~ "вебхук"'
+        'type = "page" AND space in ("SUP", "AUTHGW", "DOCS") AND text ~ "вебхук"'
     )
-    assert confluence.scope_label(V1) == "пространства SUP, GSLB, DOCS"
+    assert confluence.scope_label(V1) == "пространства SUP, AUTHGW, DOCS"
 
 
 @responses.activate

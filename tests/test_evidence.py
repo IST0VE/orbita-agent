@@ -22,9 +22,9 @@ ISSUE = {
 }
 PAGE = {
     "id": "900002",
-    "title": "gslb-user-mgmt",
+    "title": "authgw-user-mgmt",
     "url": "https://wiki.example.com/x/900002",
-    "text": "Пользователи API лежат в /app/etc/.htusers.",
+    "text": "Пользователи API лежат в /app/etc/.apiusers.",
     "truncated": False,
     "version": 7,
 }

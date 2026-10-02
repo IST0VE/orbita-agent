@@ -14,8 +14,8 @@ from agent import confluence, critic, evidence, jira
 ISSUE = {
     "key": "PWD-36",
     "url": "https://jira.example.com/browse/PWD-36",
-    "summary": "Смена алгоритма паролей в GSLB",
-    "description": "Пароли API перевести на SHA-512 в файле /app/etc/.htusers.",
+    "summary": "Смена алгоритма паролей в AUTHGW",
+    "description": "Пароли API перевести на SHA-512 в файле /app/etc/.apiusers.",
     "updated": "2026-09-20T10:00:00.000+0300",
     "comments": [],
     "comments_read": True,
@@ -29,16 +29,16 @@ def page(page_id: str, title: str, text: str, **extra) -> evidence.EvidenceItem:
 
 
 TICKET = evidence.for_issue(ISSUE, jira.format_issue(ISSUE))
-GSLB = page("900002", "GSLB: gslb-user-mgmt", "Пользователи API лежат в /app/etc/.htusers, хеш sha512.")
-OSLB = page("900003", "OSLB: синхронизация конфигурации",
-            "Изменения идут через sync config в oslb-proxy, пользователи в users_config.")
+AUTHGW = page("900002", "AUTHGW: authgw-user-mgmt", "Пользователи API лежат в /app/etc/.apiusers, хеш sha512.")
+SYNCGW = page("900003", "SYNCGW: синхронизация конфигурации",
+            "Изменения идут через sync config в syncgw-proxy, пользователи в users_config.")
 OWN = page(
     "900001",
     "PWD-36 подготовка",
     "Страница собрана автоматически конвейером подготовки задачи Orbita. Обновлено: x. "
     "Правки руками затрёт следующий прогон треда.\nСтатус: Done",
 )
-ITEMS = {item.id: item for item in (TICKET, GSLB, OSLB, OWN)}
+ITEMS = {item.id: item for item in (TICKET, AUTHGW, SYNCGW, OWN)}
 
 
 def check(document: str, **kwargs) -> critic.Report:
@@ -50,15 +50,15 @@ def kinds(report: critic.Report) -> list[str]:
 
 
 def test_a_quote_found_in_the_cited_source_is_confirmed_with_its_place():
-    report = check(f"- Хранилище — «/app/etc/.htusers» {GSLB.tag}.")
+    report = check(f"- Хранилище — «/app/etc/.apiusers» {AUTHGW.tag}.")
 
     assert kinds(report) == []
     assert (report.quotes, report.verified) == (1, 1)
-    assert report.places[0]["ref"] == GSLB.id
+    assert report.places[0]["ref"] == AUTHGW.id
 
 
 def test_quotes_ignore_case_dashes_and_line_breaks():
-    report = check(f"- «пользователи API ЛЕЖАТ в /app/etc/.htusers» {GSLB.tag}")
+    report = check(f"- «пользователи API ЛЕЖАТ в /app/etc/.apiusers» {AUTHGW.tag}")
 
     assert report.verified == 1
 
@@ -84,24 +84,24 @@ def test_an_invented_file_name_in_code_is_named():
 
 
 def test_a_quote_from_another_source_is_named_with_that_source():
-    """Цитата о OSLB, выданная за GSLB: слова есть, но не там, куда ссылка."""
-    report = check(f"- Изменения вносятся через «sync config в oslb-proxy» {GSLB.tag}.")
+    """Цитата о SYNCGW, выданная за AUTHGW: слова есть, но не там, куда ссылка."""
+    report = check(f"- Изменения вносятся через «sync config в syncgw-proxy» {AUTHGW.tag}.")
 
     assert kinds(report) == ["quote_elsewhere"]
-    assert report.findings[0].ref == OSLB.id
+    assert report.findings[0].ref == SYNCGW.id
 
 
 def test_a_fact_about_one_system_attributed_to_another_is_named():
-    """27 сентября: «В GSLB …» со ссылкой на страницу про OSLB, где GSLB нет вовсе."""
-    report = check(f"- В GSLB конфигурация синхронизируется через sync config {OSLB.tag}.")
+    """27 сентября: «В AUTHGW …» со ссылкой на страницу про SYNCGW, где AUTHGW нет вовсе."""
+    report = check(f"- В AUTHGW конфигурация синхронизируется через sync config {SYNCGW.tag}.")
 
     assert kinds(report) == ["foreign_subject"]
-    assert "gslb" in report.findings[0].detail
+    assert "authgw" in report.findings[0].detail
 
 
 def test_a_transfer_marked_as_inference_is_not_a_violation():
     report = check(
-        f"- Страница про OSLB, применимость к GSLB не подтверждена {OSLB.tag} [ВЫВОД]."
+        f"- Страница про SYNCGW, применимость к AUTHGW не подтверждена {SYNCGW.tag} [ВЫВОД]."
     )
 
     assert kinds(report) == []
@@ -164,7 +164,7 @@ def test_unrequested_comments_are_named_as_unrequested():
 
 
 def test_a_legacy_tag_resolves_to_the_read_source():
-    report = check("- Хранилище — «/app/etc/.htusers» [WIKI 900002].")
+    report = check("- Хранилище — «/app/etc/.apiusers» [WIKI 900002].")
 
     assert kinds(report) == []
     assert report.verified == 1
@@ -186,7 +186,7 @@ def test_words_of_the_operator_are_not_words_of_the_ticket():
 
 
 def test_headings_and_code_blocks_are_not_checked():
-    document = "## В GSLB «всё иначе» [EV-000000]\n```\n«несуществующее» [EV-000000]\n```"
+    document = "## В AUTHGW «всё иначе» [EV-000000]\n```\n«несуществующее» [EV-000000]\n```"
 
     assert kinds(check(document)) == []
 
@@ -200,7 +200,7 @@ def test_known_phrases_are_not_quotes():
 
 
 def test_the_render_counts_and_lists_findings():
-    good = check(f"- «/app/etc/.htusers» {GSLB.tag}").to_dict()
+    good = check(f"- «/app/etc/.apiusers» {AUTHGW.tag}").to_dict()
     bad = check(f"- Статус Done {OWN.tag}").to_dict()
     text = critic.render(
         {"intake": good, "draft": bad}, {"intake": "01. Разбор", "draft": "05. Документация"}

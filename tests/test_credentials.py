@@ -346,7 +346,7 @@ def test_rows_round_trip_through_real_postgres():
 def test_each_user_has_their_own_project_and_space(rows, monkeypatch):
     monkeypatch.setenv("JIRA_PROJECT_KEY", "TEAM")
     monkeypatch.setenv("CONFLUENCE_BASE_URL", "https://wiki.example.test")
-    monkeypatch.setenv("CONFLUENCE_SPACE_KEY", "USPA")
+    monkeypatch.setenv("CONFLUENCE_SPACE_KEY", "PLAT")
     monkeypatch.setenv("CONFLUENCE_PARENT_PAGE_ID", "111")
     credentials.save(ANNA.subject, {
         "JIRA_TOKEN": "a", "JIRA_PROJECT_KEY": "anna",
@@ -357,12 +357,12 @@ def test_each_user_has_their_own_project_and_space(rows, monkeypatch):
     assert as_user(ANNA, jira.default_project) == "ANNA"
     anna = as_user(ANNA, confluence.load_settings)
     # Своё пространство без своего родителя — корень своего пространства:
-    # страница 111 лежит в USPA, и публикация под неё упала бы.
+    # страница 111 лежит в PLAT, и публикация под неё упала бы.
     assert (anna.space_key, anna.parent_id) == ("~anna", None)
     # Без своих значений — общие из .env, как значение по умолчанию.
     assert as_user(TIM, jira.default_project) == "TEAM"
     tim = as_user(TIM, confluence.load_settings)
-    assert (tim.space_key, tim.parent_id) == ("USPA", "111")
+    assert (tim.space_key, tim.parent_id) == ("PLAT", "111")
 
 
 @responses.activate

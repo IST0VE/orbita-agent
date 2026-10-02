@@ -52,7 +52,7 @@ def proposed(*pairs: tuple[str, str]) -> list[dict]:
 def test_requirements_are_read_only_from_their_section():
     document = (
         "# План\n\n## Требования\n\n- R-1: Пароли в SHA-512 [EV-a1b2c3].\n"
-        "- **R-?** — Постепенная смена пользователей\n| R-3 | Файл .htusers | [EV-000001] |\n\n"
+        "- **R-?** — Постепенная смена пользователей\n| R-3 | Файл .apiusers | [EV-000001] |\n\n"
         "## Примерные задачи\n\n- R-9: не требование, а строка задачи\n"
     )
 
@@ -61,7 +61,7 @@ def test_requirements_are_read_only_from_their_section():
     assert [(item["asked"], item["text"]) for item in found] == [
         ("1", "Пароли в SHA-512 [EV-a1b2c3]."),
         ("?", "Постепенная смена пользователей"),
-        ("3", "Файл .htusers — [EV-000001]"),
+        ("3", "Файл .apiusers — [EV-000001]"),
     ]
     assert found[0]["evidence"] == ["EV-a1b2c3"]
 

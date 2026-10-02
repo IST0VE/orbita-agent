@@ -3,7 +3,7 @@
 
 27 сентября 2026 роль поиска конвейера подготовки задала Confluence тринадцать
 запросов. Все пять пустых были фразами в три–шесть слов, а однословный
-`htusers` нашёл ровно нужную страницу. Проверяется, что фраза теперь ищется и
+`apiusers` нашёл ровно нужную страницу. Проверяется, что фраза теперь ищется и
 по основам (`парол*` находит и «пароль», и «паролю»), а имя утилиты — как есть.
 """
 
@@ -29,7 +29,7 @@ def quote(value: str) -> str:
         ("интерфейс", "интерфейс*"),
         ("роли", "роли"),
         ("nginx", "nginx"),
-        ("gslb-user-mgmt", "gslb-user-mgmt"),
+        ("authgw-user-mgmt", "authgw-user-mgmt"),
     ],
 )
 def test_a_word_is_cut_to_its_stem(word: str, expected: str):
@@ -48,7 +48,7 @@ def test_a_phrase_is_searched_as_is_or_by_its_stems():
 
 def test_a_single_name_goes_as_is():
     """У имени утилиты окончаний нет: усечение превратило бы его в чужие совпадения."""
-    assert text_search.condition("htusers", quote) == 'text ~ "htusers"'
+    assert text_search.condition("apiusers", quote) == 'text ~ "apiusers"'
 
 
 def test_a_quote_cannot_break_out_of_the_condition():
