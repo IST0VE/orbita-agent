@@ -224,6 +224,13 @@ class Handler(smoke.Handler):
         return super().reply(value, status)
 
     def do_GET(self):
+        if self.path.startswith("/api/chats/") and self.path.endswith("/turns"):
+            return self.reply({
+                "thread_id": self.path.split("/")[3],
+                "head": "test",
+                "turns": [{"message_id": "998", "question": "Message 998", "version": 1,
+                           "versions": 1, "fork": "test"}],
+            })
         if self.path == "/api/me":
             ME_RELEASED.wait(timeout=30)
             return super().do_GET()
@@ -656,6 +663,10 @@ def regressions(call, js, until, click, shell):
         + str(js("document.activeElement.tagName + '.' + document.activeElement.className"))
     )
     key("ArrowDown", 40)
+    assert js(f"{item}.includes('Моя модель')"), (
+        "Arrow key did not move the real focus"
+    )
+    key("ArrowDown", 40)
     assert js(f"{item}.includes('Оформление')"), (
         "Arrow key did not move the real focus"
     )
@@ -679,6 +690,29 @@ def regressions(call, js, until, click, shell):
     assert js("document.querySelectorAll('.menu-item:not([tabindex=\"-1\"])').length") == 1
     key("Tab", 9, raw=True)
     until("document.querySelector('.menu-list') === null")
+
+    # Правка прежнего сообщения отправляет другой текст: черновик основного
+    # поля остаётся на месте и после подтверждения прогона сервером.
+    composer = ".task-composer textarea"
+    draft = "AUDIT DRAFT WHILE EDITING AN OLD MESSAGE"
+    until(f"!!document.querySelector({json.dumps(composer)})", seconds=30)
+    fill(composer, "Reject")
+    js("document.querySelector('.composer-submit').click()")
+    until("document.querySelector('.app-alerts .error')?.textContent.includes('Fixture validation failure')")
+    until("!document.querySelector('.composer-submit').disabled")
+    fill(composer, draft)
+    until("!!document.querySelector('.msg-edit-start')")
+    js("document.querySelector('.msg-edit-start').click()")
+    until("!!document.querySelector('.msg-edit textarea')")
+    fill(".msg-edit textarea", "AUDIT EDITED OLD MESSAGE")
+    js("document.querySelector('.msg-edit .btn-primary').click()")
+    until(f"document.querySelector({json.dumps(composer)}).disabled")
+    assert js(f"document.querySelector({json.dumps(composer)}).value") == draft
+    until(f"!document.querySelector({json.dumps(composer)}).disabled", seconds=15)
+    assert js(f"document.querySelector({json.dumps(composer)}).value") == draft
+    assert js("Object.keys(localStorage).filter(k => k.startsWith('orbita.draft.'))"
+              f".some(k => JSON.parse(localStorage.getItem(k)).text === {json.dumps(draft)})")
+    fill(composer, "")
 
     # Отказ запуска не уносит с собой неотправленный текст задачи: пока сервер
     # не принял ход, поле принадлежит оператору.
@@ -887,6 +921,7 @@ def regressions(call, js, until, click, shell):
         "parameter form does not start a run",
         "menu keyboard: Enter runs the focused item",
         "refused run keeps the unsent task",
+        "editing an old message keeps the new task draft",
         "active chat click keeps its files",
         "one chat list for all scenarios",
         "another scenario's chat opens with its scenario",

@@ -23,7 +23,7 @@
 
 import type { Assistant, ServerStatus } from "../api";
 import { currentUser, logout } from "../oidc";
-import { Bell, BrandMark, Bug, KeyRound, LogOut, Palette, Settings } from "../ui/icons";
+import { Bell, Brain, BrandMark, Bug, KeyRound, LogOut, Palette, Settings } from "../ui/icons";
 import { Menu, type MenuItem } from "../ui/Menu";
 import { StatusDot } from "../ui";
 import { ScenarioSwitcher } from "./ScenarioSwitcher";
@@ -151,6 +151,15 @@ export function GlobalHeader({
             hint: "Модель, подключения, интеграции, выполнение",
             onSelect: () => onOpenSettings("ai"),
           }] : []),
+          // Пункты, зависящие от роли, стоят первыми: их набор меняется,
+          // когда сервер называет роль, а постоянные пункты под ними — нет.
+          {
+            id: "my-model",
+            label: "Моя модель",
+            icon: Brain,
+            hint: "Какой моделью ORBITA отвечает вам",
+            onSelect: () => onOpenSettings("model"),
+          },
           {
             id: "appearance",
             label: "Оформление",

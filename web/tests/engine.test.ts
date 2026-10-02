@@ -122,7 +122,7 @@ test("model authentication failures retain actionable guidance and their error c
   state = runtimeReducer(state, { type: "event", event: factory.startRun() });
   state = runtimeReducer(state, { type: "event", event: factory.failed(error) });
   assert.equal(state.error?.code, "AuthenticationError");
-  assert.match(state.error!.message, /LLM_MODEL/);
+  assert.match(state.error!.message, /Моя модель/);
   assert.equal(runErrorMessage({ error: error.name, message: error.message }), state.error?.message);
   assert.equal(runErrorMessage(state.error), state.error?.message);
   assert.doesNotMatch(state.error!.message, /API_ADMIN_TOKEN|An internal error/);

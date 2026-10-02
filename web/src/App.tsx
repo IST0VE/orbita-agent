@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
-import type { Message } from "@langchain/langgraph-sdk";
+import { Client, type Checkpoint, type Message } from "@langchain/langgraph-sdk";
 
 import {
   API_URL,
@@ -14,19 +14,22 @@ import {
   loadChatFiles,
   loadLibrary,
   loadMe,
+  loadTurns,
   moveChat,
   readChatFile,
   renameChat,
   searchChats,
+  switchTurn,
   titleOf,
   uploadChatFile,
   type Assistant,
   type Chat,
   type ChatFiles,
+  type ChatTurns,
   type Me,
 } from "./api";
 import { authorizedFetch } from "./auth";
-import { currentUser } from "./oidc";
+import { currentUser, takeRelogin } from "./oidc";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
   cancelPause,
@@ -45,6 +48,8 @@ import { configurableOf } from "./engine/manifest/bindings";
 import { redactor } from "./engine/manifest/redaction";
 import type {
   ChatFilesContext,
+  ChatTurn,
+  ConversationContext,
   EngineCapabilities,
   SafeWidgetContext,
   UiManifest,
@@ -55,6 +60,8 @@ import { createRuntimeSnapshot, runtimeReducer } from "./engine/runtime/reducer"
 import { useColumns } from "./hooks/useColumns";
 import { useColumnWidth } from "./hooks/useColumnWidth";
 import { useServerStatus } from "./hooks/useServerStatus";
+import { useThreadState } from "./hooks/useThreadState";
+import { draftKey, pruneDrafts } from "./lib/drafts";
 import { InterruptSurface } from "./engine/surfaces/SurfaceRenderer";
 import type { OrbitaState } from "./lib/orbita";
 import { SettingsPage } from "./panels/settings/SettingsPage";
@@ -69,6 +76,7 @@ import { Inspector, type RightTab } from "./app/inspector/Inspector";
 import { graphInfo, rememberScenario, sortAssistants } from "./app/scenarios";
 import { hasResultContent } from "./app/result";
 import type { AppSection, SettingsGroupId, WorkspaceView } from "./app/sections";
+import { SelectionAsk } from "./app/SelectionAsk";
 import { TaskComposer } from "./app/TaskComposer";
 import { Workspace, type OpenDocument } from "./app/Workspace";
 
@@ -111,6 +119,17 @@ function savedThread(graphId: string): string | null {
     // Испорченная запись — то же, что новый чат.
   }
   return null;
+}
+
+/**
+ * Id сообщения оператора задаёт интерфейс, а не сервер.
+ *
+ * По нему сервер узнаёт версии запроса (`/turns`): во вводе прогона, где
+ * запрос сохраняется до того, как граф его обработает, id есть только тот,
+ * что пришёл от клиента. Без него старые версии узнавались бы только по тексту.
+ */
+function messageId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function pickAssistant(list: Assistant[], wanted: string): Assistant | undefined {
@@ -251,11 +270,20 @@ export function App() {
     [graphId],
   );
 
+  /*
+   * Клиент и состояние треда — свои, а не созданные внутри SDK: переключение
+   * версии запроса меняет голову того же треда, и перечитать её SDK сам не даёт
+   * (см. `useThreadState`). Запросы те же, что SDK делал бы сам.
+   */
+  const client = useMemo(() => new Client({ apiUrl, callerOptions: { fetch: authorizedFetch } }), []);
+  const streaming = useRef(false);
+  const threadState = useThreadState<StateType>(client, threadId, () => streaming.current);
+
   const stream = useStream<StateType>({
-    apiUrl,
-    callerOptions: { fetch: authorizedFetch },
+    client,
     assistantId,
     threadId,
+    thread: threadState,
     fetchStateHistory: false,
     throttle: 100,
     onThreadId: setKnownThread,
@@ -331,6 +359,8 @@ export function App() {
       if (factory) dispatch({ type: "event", event: factory.cancelled() });
     },
   });
+
+  streaming.current = stream.isLoading;
 
   // `stream.interrupt` объявлен как одна остановка, но SDK отдаёт под этим
   // именем массив, когда остановок несколько: тип врёт, и `?.id` на массиве
@@ -488,12 +518,39 @@ export function App() {
   useEffect(() => {
     if (threadId && !knownChats.current.some((chat) => chat.thread_id === threadId)) void refreshChats();
   }, [threadId, refreshChats]);
-  // Прогон закончился — у чата новое время и новый статус.
+  /*
+   * Запросы оператора в показанной ветке и их версии (`/api/chats/…/turns`).
+   * Перечитываются со сменой чата и после каждого прогона: правка заводит
+   * новую версию, а новый запрос — новую строку.
+   */
+  const [turns, setTurns] = useState<ChatTurns | null>(null);
+  const turnsRequest = useRef(0);
+  const refreshTurns = useCallback((thread: string | null) => {
+    const request = ++turnsRequest.current;
+    if (!thread) {
+      setTurns(null);
+      return Promise.resolve();
+    }
+    return loadTurns(thread)
+      .then((value) => { if (request === turnsRequest.current) setTurns(value); })
+      // Версий не видно — чат работает как раньше, без стрелок и правки.
+      .catch(() => { if (request === turnsRequest.current) setTurns(null); });
+  }, []);
+  useEffect(() => {
+    if (online !== "ok") return;
+    void refreshTurns(threadId);
+  }, [online, threadId, refreshTurns]);
+
+  // Прогон закончился — у чата новое время и новый статус, а у запроса,
+  // возможно, новая версия.
   const wasRunning = useRef(false);
   useEffect(() => {
-    if (wasRunning.current && !stream.isLoading) void refreshChats();
+    if (wasRunning.current && !stream.isLoading) {
+      void refreshChats();
+      void refreshTurns(threadRef.current);
+    }
     wasRunning.current = stream.isLoading;
-  }, [stream.isLoading, refreshChats]);
+  }, [stream.isLoading, refreshChats, refreshTurns]);
 
   useEffect(() => {
     if (!bundle || bundle.assistant.assistant_id !== assistantId) return;
@@ -576,6 +633,11 @@ export function App() {
         typeof payload === "object" && payload
           ? String((payload as { value?: unknown }).value ?? "")
           : String(payload ?? "");
+      // Правка отправленного запроса: прогон с чекпоинта, на котором тот
+      // вошёл в чат, — сервер заведёт от него новую ветку.
+      const fork = typeof payload === "object" && payload
+        ? (payload as { checkpoint?: unknown }).checkpoint
+        : undefined;
       // Двойное нажатие и отправка во время прогона — не ошибка, а гонка: её
       // здесь и гасили молчанием.
       if (stream.isLoading) return;
@@ -611,10 +673,15 @@ export function App() {
         renameChat(thread, title).then(() => refreshChats()).catch(() => undefined);
       }
       return stream.submit(
-        { messages: [{ type: "human", content: question.trim() }] },
+        { messages: [{ type: "human", content: question.trim(), id: messageId() }] },
         {
           config: { configurable: configurableOf(manifest, inputs) },
           metadata: thread ? undefined : { graph_id: graphId, title },
+          // Только id: сервер кладёт присланное в configurable как есть, и
+          // `checkpoint_map: null` оттуда сбил бы вложенным графам их чекпоинты.
+          ...(typeof fork === "string" && fork
+            ? { checkpoint: { checkpoint_id: fork } as unknown as Omit<Checkpoint, "thread_id"> }
+            : {}),
           streamMode: ["values", "updates", "tasks"],
         },
       );
@@ -803,6 +870,109 @@ export function App() {
     [dispatcher],
   );
 
+  /*
+   * Показать другую версию запроса.
+   *
+   * Сервер копирует голову выбранной ветки в конец треда; здесь тред
+   * перечитывается, а значения последнего прогона, которые SDK держит поверх
+   * состояния треда, снимаются (`switchThread` туда и обратно — единственный
+   * способ, который SDK для этого даёт; тред при этом не меняется). Карточки
+   * узлов и события относились к прогону другой ветки — экран сбрасывается,
+   * как при открытии чата.
+   */
+  const switchVersion = useCallback(async (message: string, version: number) => {
+    const thread = threadRef.current;
+    if (!thread || stream.isLoading || actionPending.current) return;
+    actionPending.current = true;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const next = await switchTurn(thread, message, version);
+      if (threadRef.current !== thread) return;
+      await threadState.mutate(thread);
+      if (threadRef.current !== thread) return;
+      setTurns(next);
+      stream.switchThread(null);
+      stream.switchThread(thread);
+      setOpenDoc(null);
+      setSelectedNode(null);
+      setView("graph");
+      runStarted.current = false;
+      runFailed.current = false;
+      runCancelled.current = false;
+      wasLoading.current = false;
+      eventFactory.current = null;
+      dispatch({
+        type: "reset",
+        assistantId,
+        graphId,
+        manifestVersion: manifest.manifest_version,
+        topologyHash: bundle?.topologyHash,
+      });
+      dispatch({ type: "thread", threadId: thread });
+    } catch (error) {
+      setActionError(`Версия не переключилась: ${(error as Error).message}`);
+    } finally {
+      actionPending.current = false;
+      setBusy(false);
+    }
+  }, [assistantId, bundle?.topologyHash, graphId, manifest.manifest_version, stream, threadState]);
+
+  /** Запросы показанной ветки по id сообщения — только этого чата. */
+  const turnsByMessage = useMemo<Record<string, ChatTurn>>(
+    // Ответ проверяется по форме: старый сервер без `/turns` или прокси со
+    // своей страницей не должны ронять разговор — тогда просто нет правки.
+    () => (turns && turns.thread_id === threadId && Array.isArray(turns.turns)
+      ? Object.fromEntries(
+        turns.turns
+          .filter((turn) => typeof turn?.message_id === "string" && typeof turn.fork === "string")
+          .map((turn) => [turn.message_id, turn]),
+      )
+      : {}),
+    [turns, threadId],
+  );
+
+  const editTurn = useCallback((message: string, text: string) => {
+    const turn = turnsByMessage[message];
+    if (!turn) return;
+    handleAction({ kind: "run.start", payload: { value: text, checkpoint: turn.fork } });
+  }, [handleAction, turnsByMessage]);
+
+  /** Цитата из ответа для поля задачи: «Спросить об этом». */
+  const [quote, setQuote] = useState<{ text: string; nonce: number } | null>(null);
+  const askAbout = useCallback((text: string) => {
+    setQuote((previous) => ({ text, nonce: (previous?.nonce ?? 0) + 1 }));
+    setSection("workspace");
+  }, []);
+
+  const conversation = useMemo<ConversationContext>(
+    () => ({
+      draftKey: draftKey(owner(), graphId, threadId),
+      quote,
+      turns: turnsByMessage,
+      locked: stream.isLoading || busy,
+      edit: editTurn,
+      switchVersion: (message, version) => { void switchVersion(message, version); },
+    }),
+    [busy, editTurn, graphId, quote, stream.isLoading, switchVersion, threadId, turnsByMessage],
+  );
+
+  /*
+   * Сессия истекала посреди работы, и вход прошёл заново (`oidc.ts`). Сказать
+   * об этом надо: человек видел страницу входа и должен знать, что набранное
+   * не пропало, а запрос, если он его отправлял, ещё не ушёл.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    pruneDrafts();
+    if (takeRelogin()) {
+      setNotice(
+        "Сессия истекала, вы вошли снова. Набранный текст на месте — если запрос "
+        + "не успел уйти, отправьте его ещё раз.",
+      );
+    }
+  }, []);
+
   const resourceAdapter = useCallback(
     (resourceId: string, operation: string, params?: Record<string, string>) =>
       loadResource(apiUrl, resourceId, operation, params),
@@ -863,8 +1033,9 @@ export function App() {
       resource: resourceAdapter,
       mutateResource: resourceMutationAdapter,
       chat: chatContext,
+      conversation,
     }),
-    [chatContext, graphId, inputs, resourceAdapter, resourceMutationAdapter, runtime, updateInput],
+    [chatContext, conversation, graphId, inputs, resourceAdapter, resourceMutationAdapter, runtime, updateInput],
   );
 
   /*
@@ -1131,6 +1302,12 @@ export function App() {
       }
       alerts={
         <div className="app-alerts">
+          {notice ? (
+            <div className="app-notice" role="status">
+              <span>{notice}</span>
+              <button className="btn-ghost btn-sm" onClick={() => setNotice(null)}>Понятно</button>
+            </div>
+          ) : null}
           {bundle?.fallback ? (
             <div className="engine-warning" role="status">
               Упрощённый интерфейс: {bundle.warning}
@@ -1243,6 +1420,7 @@ export function App() {
         admin={me?.admin ?? false}
         service={me?.service ?? false}
       />
+      <SelectionAsk onAsk={askAbout} disabled={section !== "workspace"} />
       <JournalPage
         open={section === "journal"}
         onClose={() => setSection("workspace")}

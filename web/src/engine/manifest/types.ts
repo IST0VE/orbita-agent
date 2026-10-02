@@ -224,6 +224,39 @@ export type SafeWidgetContext = {
    * спрашивать сервер и трижды расходиться после загрузки.
    */
   chat?: ChatFilesContext;
+  /**
+   * Разговор открытого чата: черновик поля задачи, вопрос по выделенному,
+   * правка отправленного запроса и его версии. Нет — интерфейс собран без
+   * чатов (тесты движка), и виджеты работают как раньше.
+   */
+  conversation?: ConversationContext;
+};
+
+/** Запрос оператора в показанной ветке чата (`/api/chats/{thread}/turns`). */
+export type ChatTurn = {
+  message_id: string;
+  /** Текст для правки: вопрос без того, что дописала к нему нода контекста. */
+  question: string;
+  /** Какая версия показана, с единицы. */
+  version: number;
+  versions: number;
+  /** Чекпоинт, с которого прогон пойдёт заново при правке. */
+  fork: string;
+};
+
+export type ConversationContext = {
+  /** Ключ черновика поля задачи в `localStorage` (`lib/drafts.ts`). */
+  draftKey: string;
+  /** Цитата для поля задачи; `nonce` растёт с каждой новой. */
+  quote: { text: string; nonce: number } | null;
+  /** Запросы оператора по id сообщения: версии и место для правки. */
+  turns: Record<string, ChatTurn>;
+  /** Править и переключать нельзя: идёт прогон или запрос уже ушёл. */
+  locked: boolean;
+  /** Отправить исправленный запрос: прогон пойдёт заново с этого места новой веткой. */
+  edit: (messageId: string, text: string) => void;
+  /** Показать другую версию запроса. */
+  switchVersion: (messageId: string, version: number) => void;
 };
 
 export type ChatFileEntry = {

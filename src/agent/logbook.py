@@ -349,7 +349,7 @@ def server_info() -> dict[str, str]:
     разбора ошибки.
     """
     try:
-        provider, model = cfg.llm_provider(), cfg.model_name()
+        provider, model = cfg.default_llm_provider(), cfg.default_model_name()
     except Exception as exc:  # неверная конфигурация — тоже сведение для отчёта
         provider, model = "", f"не прочитана: {exc}"
     return {

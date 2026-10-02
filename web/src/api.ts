@@ -6,8 +6,9 @@
  * Переопределяется через VITE_API_URL, если фронт отдаётся отдельно.
  */
 
-export const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
-import { authorizedFetch } from "./auth";
+// `?.`: вне Vite (тесты под node) `import.meta.env` нет вовсе.
+export const API_URL = (import.meta.env?.VITE_API_URL as string | undefined) ?? "";
+import { authorizedFetch } from "./auth.ts";
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -90,6 +91,54 @@ export const forgetConnection = (system: string) =>
   json<ConnectionsDoc>(`/api/me/connections/${encodeURIComponent(system)}`, { method: "DELETE" });
 
 /* ------------------------------------------------------------------ */
+/* Моя модель                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Подключение к модели, как его видит пользователь: название и модели.
+ * Адреса и ключа здесь нет и не будет — их видит только администратор.
+ */
+export type ModelEndpoint = {
+  id: string;
+  title: string;
+  provider: string;
+  default_model: string;
+  models: string[];
+  /** `list` — объявил администратор, `gateway` — ответил шлюз, `default` — шлюз списка не дал. */
+  source: "list" | "gateway" | "default";
+  /** Почему шлюз не дал список. */
+  error: string | null;
+};
+
+export type ModelPick = { endpoint: string; model: string };
+
+export type ModelDoc = {
+  /** Почему выбирать нельзя (нет базы); null — можно. */
+  unavailable: string | null;
+  endpoints: ModelEndpoint[];
+  /** Свой выбор; null — работаю на модели сервера. */
+  choice: ModelPick | null;
+  /** Модель сервера по умолчанию. */
+  default: ModelPick;
+  /** Чем отвечает ORBITA сейчас. */
+  current: ModelPick;
+  /** Что сломано в выборе или в подключениях: показывается как есть. */
+  problems: string[];
+  saved?: boolean;
+};
+
+export type ModelCheck = { ok: boolean; detail: string; seconds: number };
+
+export const loadModel = (refresh = false) => json<ModelDoc>(`/api/me/model${refresh ? "?refresh=1" : ""}`);
+
+/** `endpoint: null` — вернуться к модели сервера. */
+export const saveModel = (pick: ModelPick | { endpoint: null }) =>
+  json<ModelDoc>("/api/me/model", { method: "PUT", body: JSON.stringify(pick) });
+
+export const checkModel = (pick: ModelPick) =>
+  json<{ check: ModelCheck }>("/api/me/model/check", { method: "POST", body: JSON.stringify(pick) });
+
+/* ------------------------------------------------------------------ */
 /* Настройки                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -155,6 +204,8 @@ export type SaveResult = {
   saved: string[];
   path: string;
   restart_required: string[];
+  /** Уже действует: модель, подключения и тарифы применяются без перезапуска. */
+  applied?: string[];
   apply?: string;
 };
 
@@ -519,6 +570,27 @@ export const attachToChat = (
   });
 
 export const loadLibrary = () => json<Library>("/api/library");
+
+/* ------------------------------------------------------------------ */
+/* Запросы чата и их версии                                            */
+/* ------------------------------------------------------------------ */
+
+export type ChatTurns = {
+  thread_id: string;
+  /** Чекпоинт, который сейчас показан. */
+  head: string;
+  turns: Array<{ message_id: string; question: string; version: number; versions: number; fork: string }>;
+};
+
+/** Запросы оператора в показанной ветке чата: версии и откуда переписывать каждый. */
+export const loadTurns = (threadId: string) => json<ChatTurns>(`/api/chats/${encodeURIComponent(threadId)}/turns`);
+
+/** Показать другую версию запроса: сервер копирует голову её ветки в конец треда. */
+export const switchTurn = (threadId: string, messageId: string, version: number) =>
+  json<ChatTurns>(`/api/chats/${encodeURIComponent(threadId)}/turns/switch`, {
+    method: "POST",
+    body: JSON.stringify({ message_id: messageId, version }),
+  });
 
 /* ------------------------------------------------------------------ */
 /* Оценка результата чата                                              */

@@ -57,16 +57,18 @@ from agent.tools import FILE_TOOLS as TOOLS
 
 logger = logging.getLogger(__name__)
 
-# Провайдер, модель, ключ (LLM_API_KEY), адрес API (LLM_API_BASE — прокси,
-# self-hosted шлюз, совместимый эндпоинт), temperature, число ретраев, лимит
-# выхода и таймаут приезжают из окружения. Провайдера, модель и temperature
-# можно настроить на сервере; на тред переопределяются только провайдер
-# и temperature — см. Options. Модель всегда берётся из LLM_MODEL.
-# Ключ кеша — провайдер, модель, temperature И набор инструментов: конвейеры
-# отличаются источником данных, а привязка инструментов меняет форму запроса.
-# Без набора в ключе граф подготовки получил бы клиента, собранного для графа
-# аналитики, и ходил бы в Jira инструментами, которых у него нет.
-_BOUND: dict[tuple[str, str, float, tuple[str, ...]], Any] = {}
+# Подключение (адрес, ключ) и модель — те, что выбрал себе владелец прогона на
+# странице «Моя модель» (`llm_choice.py`), а без выбора — основное подключение
+# и LLM_MODEL. Temperature, число ретраев, лимит выхода и таймаут общие, из
+# окружения. На тред переопределяются только провайдер и temperature — см.
+# Options; модель из конфигурации треда не берётся.
+# Ключ кеша — провайдер, модель, temperature, отпечаток подключения И набор
+# инструментов: конвейеры отличаются источником данных, а привязка
+# инструментов меняет форму запроса. Без набора в ключе граф подготовки получил
+# бы клиента, собранного для графа аналитики, и ходил бы в Jira инструментами,
+# которых у него нет. Без подключения — ушёл бы на прежний шлюз после того,
+# как пользователь выбрал другой.
+_BOUND: dict[tuple[str, str, float, str, tuple[str, ...]], Any] = {}
 
 
 def model_for(config: RunnableConfig | None = None, tools: list | None = None) -> Any:
@@ -75,8 +77,9 @@ def model_for(config: RunnableConfig | None = None, tools: list | None = None) -
 
     Собирается лениво: на импорте модуля ключа может не быть вообще — тесты
     и линтер импортируют `agent.graph`, но ни одного хода не делают. И
-    кешируется по ключу (провайдер, модель, temperature, набор инструментов):
-    клиент создаётся один раз на комбинацию, но выбирается в момент вызова ноды.
+    кешируется по ключу (провайдер, модель, temperature, подключение, набор
+    инструментов): клиент создаётся один раз на комбинацию, но выбирается в
+    момент вызова ноды — поэтому смена модели в настройках действует сразу.
 
     tools — набор конвейера. Не передан — файловые: так вызывали до того, как
     наборов стало больше одного. Пустой набор означает «не привязывать
@@ -90,12 +93,15 @@ def model_for(config: RunnableConfig | None = None, tools: list | None = None) -
         *providers.resolve_key(
             provider=chosen.get("provider"), temperature=chosen.get("temperature")
         ),
+        providers.connection_key(),
         tuple(item.name for item in tools),
     )
     bound = _BOUND.get(key)
     if bound is None:
         model = providers.build_llm(*key[:3])
         bound = model.bind_tools(tools) if tools else model
+        if len(_BOUND) >= providers._MAX_CLIENTS:
+            _BOUND.clear()
         _BOUND[key] = bound
     return bound
 

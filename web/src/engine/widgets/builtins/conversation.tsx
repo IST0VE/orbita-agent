@@ -7,11 +7,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { messageText, text } from "./shared";
-import type { JsonSchema, JsonValue, WidgetProps } from "../../manifest/types";
+import type { ConversationContext, JsonSchema, JsonValue, WidgetProps } from "../../manifest/types";
 import { schemaDefaults, validateForm } from "../formValidation";
 import { JsonWidget } from "./primitives";
-import { ChevronDown, MessageSquare, Play } from "../../../ui/icons";
+import { ChevronDown, ChevronLeft, ChevronRight, MessageSquare, Pencil, Play } from "../../../ui/icons";
 import { useStickyScroll } from "../../../hooks/useStickyScroll";
+import { loadDraft, quoteBlock, saveDraft } from "../../../lib/drafts";
 
 /** Кто сказал. Ключ приходит из SDK, подпись — отсюда. */
 const ROLES: Record<string, string> = {
@@ -40,22 +41,141 @@ const CLAMP_CHARS = 1200;
 /** Ответ инструмента — сырьё для роли, а не текст для человека: хватает начала. */
 const CLAMP_TOOL_CHARS = 400;
 
-export const MessageRow = memo(function MessageRow({ message }: { message: Message }) {
+/**
+ * Правка отправленного запроса: поле на месте сообщения.
+ *
+ * Отправка не переписывает историю, а заводит ветку: прогон пойдёт заново с
+ * того места, где этот запрос вошёл в чат, а прежний ответ и всё, что было
+ * после него, останутся прежней версией — к ней можно вернуться стрелками.
+ */
+function TurnEditor({ initial, version, versions, onSend, onCancel }: {
+  initial: string;
+  version: number;
+  versions: number;
+  onSend: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const field = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const element = field.current;
+    if (!element) return;
+    element.focus();
+    element.setSelectionRange(element.value.length, element.value.length);
+  }, []);
+  const send = () => {
+    const value = draft.trim();
+    if (value) onSend(value);
+  };
+  return <div className="msg-edit">
+    <textarea
+      ref={field}
+      value={draft}
+      rows={Math.min(10, Math.max(3, draft.split("\n").length))}
+      aria-label="Исправленный запрос"
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); onCancel(); }
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          send();
+        }
+      }}
+    />
+    <p className="hint">
+      Запрос уйдёт заново с этого места. Прежний ответ и всё после него останутся
+      версией {version} из {versions + 1} — к ней можно вернуться стрелками.
+      Ctrl + Enter — отправить, Esc — отменить.
+    </p>
+    <div className="msg-edit-actions">
+      <button type="button" className="btn-ghost btn-sm" onClick={onCancel}>Отмена</button>
+      <button type="button" className="btn-primary btn-sm" disabled={!draft.trim() || draft.trim() === initial.trim()} onClick={send}>
+        <Play size={14} aria-hidden="true" />Отправить
+      </button>
+    </div>
+  </div>;
+}
+
+export const MessageRow = memo(function MessageRow({ message, conversation }: {
+  message: Message;
+  conversation?: ConversationContext;
+}) {
   const [full, setFull] = useState(false);
+  const [editing, setEditing] = useState(false);
   const role = message.type ?? "message";
   const calls = toolCalls(message);
   const body = messageText(message);
+  const turn = role === "human" && message.id ? conversation?.turns[message.id] : undefined;
+  const locked = conversation?.locked ?? true;
+  // Идёт прогон — поле правки закрывается: отправить его всё равно нельзя.
+  useEffect(() => { if (locked) setEditing(false); }, [locked]);
   if (!body && !calls.length) return null;
   const limit = role === "tool" ? CLAMP_TOOL_CHARS : CLAMP_CHARS;
   const long = body.length > limit;
-  return <article className={`msg msg-${role}`}>
+  return <article className={`msg msg-${role}`} data-editing={editing ? "true" : undefined}>
     <b className="msg-role">{ROLES[role] ?? role}</b>
     <div>
-      {body ? <div className="msg-text">{long && !full ? `${body.slice(0, limit).trimEnd()}…` : body}</div> : null}
-      {long ? (
+      {editing && turn && conversation ? (
+        <TurnEditor
+          initial={turn.question}
+          version={turn.version}
+          versions={turn.versions}
+          onCancel={() => setEditing(false)}
+          onSend={(value) => { setEditing(false); conversation.edit(turn.message_id, value); }}
+        />
+      ) : body ? (
+        <div
+          className="msg-text"
+          // Ответ агента можно спросить по кусочку: выделить и нажать
+          // «Спросить об этом» (SelectionAsk). Свой запрос и сырьё
+          // инструментов — нет: спрашивать о них незачем.
+          data-askable={role === "ai" ? "ответ агента" : undefined}
+        >
+          {long && !full ? `${body.slice(0, limit).trimEnd()}…` : body}
+        </div>
+      ) : null}
+      {long && !editing ? (
         <button type="button" className="btn-ghost btn-sm msg-more" aria-expanded={full} onClick={() => setFull((value) => !value)}>
           {full ? "Свернуть" : `Показать полностью · ${body.length.toLocaleString("ru-RU")} зн.`}
         </button>
+      ) : null}
+      {turn && conversation && !editing ? (
+        <div className="msg-turn">
+          {turn.versions > 1 ? (
+            <span className="msg-versions" role="group" aria-label="Версии запроса">
+              <button
+                type="button"
+                className="btn-ghost btn-icon btn-sm"
+                aria-label="Предыдущая версия запроса"
+                title="Предыдущая версия запроса"
+                disabled={locked || turn.version <= 1}
+                onClick={() => conversation.switchVersion(turn.message_id, turn.version - 1)}
+              >
+                <ChevronLeft size={14} aria-hidden="true" />
+              </button>
+              <span className="msg-versions-count">{turn.version} / {turn.versions}</span>
+              <button
+                type="button"
+                className="btn-ghost btn-icon btn-sm"
+                aria-label="Следующая версия запроса"
+                title="Следующая версия запроса"
+                disabled={locked || turn.version >= turn.versions}
+                onClick={() => conversation.switchVersion(turn.message_id, turn.version + 1)}
+              >
+                <ChevronRight size={14} aria-hidden="true" />
+              </button>
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="btn-ghost btn-sm msg-edit-start"
+            disabled={locked}
+            title={locked ? "Дождитесь конца прогона" : "Исправить запрос и запустить заново с этого места"}
+            onClick={() => setEditing(true)}
+          >
+            <Pencil size={13} aria-hidden="true" />Изменить
+          </button>
+        </div>
       ) : null}
       {calls.map((call, position) => <div className="tool-call" key={position}>
         <b>{text(call.name)}</b>
@@ -74,8 +194,9 @@ export const MessageRow = memo(function MessageRow({ message }: { message: Messa
  * пятьдесят — остальные по кнопке: тысяча сообщений в разметке стоит дороже,
  * чем любое из них.
  */
-export const MessagesWidget = memo(function MessagesWidget({ value }: WidgetProps) {
+export const MessagesWidget = memo(function MessagesWidget({ value, context }: WidgetProps) {
   const [limit, setLimit] = useState(50);
+  const conversation = context.conversation;
   const list = useStickyScroll<HTMLDivElement>();
   const messages = Array.isArray(value) ? (value as Message[]) : [];
   // Пусто — одна строка, а не большая заставка со значком: место под ней
@@ -95,9 +216,11 @@ export const MessagesWidget = memo(function MessagesWidget({ value }: WidgetProp
         Показать предыдущие · ещё {start}
       </button>
     ) : null}
-    {messages.slice(start).map((message, index) => <MessageRow message={message} key={message.id ?? start + index} />)}
+    {messages.slice(start).map((message, index) => (
+      <MessageRow message={message} conversation={conversation} key={message.id ?? start + index} />
+    ))}
   </div>;
-}, (previous, next) => previous.value === next.value);
+}, (previous, next) => previous.value === next.value && previous.context.conversation === next.context.conversation);
 
 
 /**
@@ -108,12 +231,66 @@ export const MessagesWidget = memo(function MessagesWidget({ value }: WidgetProp
  * а вторая половина теряет абзац, узнав про него случайно.
  */
 export function ChatInputWidget({ binding, readonly, context, onAction }: WidgetProps) {
-  const [draft, setDraft] = useState("");
+  const conversation = context.conversation;
+  const key = conversation?.draftKey ?? "";
+  const [draft, setDraft] = useState(() => (key ? loadDraft(key) : ""));
   /** Отправленный текст, пока сервер не подтвердил, что ход принят. */
   const submitted = useRef<string | null>(null);
+  /** Под каким ключом лежит отправленный текст: у нового чата ключ сменится с тредом. */
+  const submittedKey = useRef("");
+  /** Блокировка может прийти от правки старого сообщения, а не от этого поля. */
+  const sending = useRef(false);
+  // Preflight мог отказать до блокировки поля: такая попытка не должна
+  // заставить следующую правку старого сообщения очистить черновик.
+  useEffect(() => {
+    if (conversation && !conversation.locked) sending.current = false;
+  }, [conversation?.locked]);
   /** Зеркало черновика: эффект блокировки не должен ходить за каждой буквой. */
   const latest = useRef("");
   latest.current = draft;
+  const field = useRef<HTMLTextAreaElement>(null);
+  /*
+   * Черновик живёт в `localStorage`, свой у каждого чата (`lib/drafts.ts`):
+   * перезагрузка, уход на вход после истёкшей сессии и переход в соседний чат
+   * больше не стирают набранное. Отправленный текст хранится, пока сервер не
+   * принял ход, — иначе обрыв посреди отправки унёс бы и его.
+   */
+  const shownKey = useRef(key);
+  /** Черновик нового ключа ещё не прочитан: в этом кадре в поле текст прежнего чата. */
+  const switching = useRef(false);
+  useEffect(() => {
+    if (shownKey.current === key) return;
+    shownKey.current = key;
+    switching.current = true;
+    // Другой чат — его черновик. Отправленный текст при этом не трогаем:
+    // у нового чата ключ меняется ровно тогда, когда ход уходит на сервер.
+    setDraft(key ? loadDraft(key) : "");
+  }, [key]);
+  useEffect(() => {
+    // Кадр смены чата: в `draft` ещё текст прежнего, и записать его под ключ
+    // нового значило бы затереть черновик, который там лежит.
+    if (switching.current) { switching.current = false; return; }
+    if (key) saveDraft(key, draft || (submittedKey.current === key ? submitted.current ?? "" : ""));
+  }, [key, draft]);
+  // Цитата из ответа: «Спросить об этом». Дописывается к набранному, а не
+  // заменяет его, и курсор встаёт после неё — писать вопрос.
+  const quoteNonce = conversation?.quote?.nonce ?? 0;
+  const seenQuote = useRef(quoteNonce);
+  useEffect(() => {
+    const quote = conversation?.quote;
+    if (!quote || quote.nonce === seenQuote.current) return;
+    seenQuote.current = quote.nonce;
+    setDraft((current) => `${current.trim() ? `${current.trimEnd()}\n\n` : ""}${quoteBlock(quote.text)}\n\n`);
+    requestAnimationFrame(() => {
+      const element = field.current;
+      if (!element || element.disabled) return;
+      element.focus();
+      element.setSelectionRange(element.value.length, element.value.length);
+      element.scrollTop = element.scrollHeight;
+    });
+    // Цитата приходит одна на nonce; сам объект контекста меняется чаще.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quoteNonce]);
   // Заголовок поля рисуется здесь, а не поверхностью: «Задача» над полем с
   // подписью «Опишите задачу для ORBITA» — это одно и то же слово дважды.
   // Но у НТ в заголовке лежит инструкция (какие именно данные назвать), и её
@@ -133,32 +310,47 @@ export function ChatInputWidget({ binding, readonly, context, onAction }: Widget
    * различены они здесь.
    */
   useEffect(() => {
-    if (!readonly) return;
-    if (latest.current) submitted.current = latest.current;
+    if (!readonly || !sending.current) return;
+    sending.current = false;
+    if (latest.current) {
+      submitted.current = latest.current;
+      submittedKey.current = shownKey.current;
+    }
     setDraft("");
   }, [readonly]);
   useEffect(() => {
+    if (status === "failed" || status === "cancelled" || status === "completed") sending.current = false;
     const saved = submitted.current;
     if (saved === null) return;
-    // Ход приняли — возвращать нечего.
-    if (accepted) { submitted.current = null; return; }
-    if (status === "failed") {
+    const forget = () => {
       submitted.current = null;
+      // Ключ отправки мог смениться (новый чат получил тред): его черновик
+      // тоже стираем, иначе текст всплыл бы в следующем новом чате.
+      if (submittedKey.current && submittedKey.current !== shownKey.current) saveDraft(submittedKey.current, "");
+      if (shownKey.current) saveDraft(shownKey.current, latest.current);
+      submittedKey.current = "";
+    };
+    // Ход приняли — возвращать нечего.
+    if (accepted) { forget(); return; }
+    if (status === "failed") {
+      forget();
       // Набранное после отказа главнее сохранённого: возвращаем только в
       // пустое поле.
       setDraft((current) => current || saved);
       return;
     }
-    if (status === "cancelled" || status === "completed") submitted.current = null;
+    if (status === "cancelled" || status === "completed") forget();
   }, [accepted, status]);
   const send = () => {
     const value = draft.trim();
-    if (!value || readonly) return;
-    onAction?.({ kind: "run.start", payload: { value } });
+    if (!value || readonly || !onAction) return;
+    sending.current = true;
+    onAction({ kind: "run.start", payload: { value } });
   };
   return <div className="engine-chat-input">
     {caption ? <p className="composer-caption">{caption}</p> : null}
     <textarea
+      ref={field}
       value={draft}
       disabled={readonly}
       rows={2}

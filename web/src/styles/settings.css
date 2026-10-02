@@ -187,6 +187,21 @@
   margin: 0 0 var(--space-4);
 }
 
+/* Запасное подключение: свёрнуто, пока в нём ничего не задано. */
+.set-spare > summary {
+  cursor: pointer;
+  margin-bottom: var(--space-2);
+}
+
+.set-spare > summary > h3 {
+  display: inline;
+  font-size: var(--type-heading);
+}
+
+.set-spare[open] > summary {
+  margin-bottom: var(--space-3);
+}
+
 .set-row {
   padding: var(--space-4) 0;
   border-top: 1px solid var(--border-subtle);
@@ -264,6 +279,19 @@
 .set-connection {
   font-size: var(--type-body);
   color: var(--text-primary);
+  /* Длинный ответ шлюза переносится рядом с точкой, а не уезжает под неё. */
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.set-connection > .dot {
+  flex: none;
+  margin-top: 0.5em;
+}
+
+.set-connection > span:not(.dot) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .swatch {

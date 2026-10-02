@@ -108,7 +108,7 @@ export function Workspace({
         </div>
 
         {view === "result" ? (
-          <div className="workspace-pane result-view">
+          <div className="workspace-pane result-view" data-askable="итог">
             {results.length ? (
               results.map((item) => <Fragment key={item.key}>{item.node as ReactNode}</Fragment>)
             ) : (
@@ -124,7 +124,8 @@ export function Workspace({
         {view === "document" && document ? (
           <div className="workspace-pane document-view">
             <h2 className="document-title">{document.title}</h2>
-            <div className="engine-document">
+            {/* Выделенный кусок документа можно задать вопросом: SelectionAsk. */}
+            <div className="engine-document" data-askable={document.title}>
               <SafeMarkdown value={document.text} />
             </div>
           </div>

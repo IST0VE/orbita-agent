@@ -23,8 +23,8 @@ from agent.security import SERVICE_SUBJECT
 
 # Снимок окружения для совместимости с graph.MODEL / graph.PROVIDER и демо.
 # Рабочие вызовы модели и подписи документов используют cfg.model_name().
-PROVIDER = cfg.llm_provider()
-MODEL = cfg.model_name()
+PROVIDER = cfg.default_llm_provider()
+MODEL = cfg.default_model_name()
 
 
 def options(config: RunnableConfig | None = None) -> dict:

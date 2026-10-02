@@ -10,7 +10,7 @@ from agent.config.env import (  # noqa: F401
     env_opt,
     env_str,
 )
-from agent.config.llm import llm_provider, model_name
+from agent.config.llm import MAIN_ENDPOINT, default_model_name, llm_choice
 from costmeter import prices
 
 
@@ -46,7 +46,12 @@ def price_info():
     денежные ворота, состояние треда, интерфейс. `price_per_mtok()` отвечает
     только числами и на вопрос «а известны ли они» ответить не может.
     """
-    return prices.for_model(llm_provider(), model_name())
+    choice = llm_choice()
+    # PRICE_* пишут под модель сервера по умолчанию: «сверились с прайсом своей
+    # модели, вписали». Модели, которые пользователи выбрали себе, по ним не
+    # считаются — иначе чужой тариф молча переоценил бы каждый их вызов.
+    own = choice.endpoint.id == MAIN_ENDPOINT and choice.model == default_model_name()
+    return prices.for_model(choice.endpoint.provider, choice.model, use_env=own)
 
 
 #: block — без тарифа денежный лимит не пропускает вызов; allow — лимит явно

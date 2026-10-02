@@ -125,11 +125,19 @@ async def manage_assistants(ctx: Auth.types.AuthContext, value: dict) -> bool:
 # нужны: их закрывает запрет по умолчанию выше.
 
 
-def _service_client():
-    """Внутрипроцессный клиент сервера LangGraph с правами админ-токена."""
+def service_client():
+    """
+    Внутрипроцессный клиент сервера LangGraph с правами админ-токена.
+
+    Владельца треда он не проверяет: это обязан сделать тот, кто его зовёт
+    (`owns_thread`), до того как читать или менять тред.
+    """
     return get_client(
         url=None, api_key=None, headers={"Authorization": f"Bearer {cfg.api_admin_token()}"}
     )
+
+
+_service_client = service_client
 
 
 async def _thread(thread_id: str) -> dict | None:

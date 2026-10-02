@@ -592,7 +592,7 @@ class _Snapshot(Collector):
                 continue
             yield GaugeMetricFamily(name, text, value=value)
         try:
-            provider, model = cfg.llm_provider(), cfg.model_name()
+            provider, model = cfg.default_llm_provider(), cfg.default_model_name()
         except cfg.ConfigError:
             provider = model = ""
         try:

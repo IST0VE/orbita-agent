@@ -121,6 +121,16 @@ def virtual_request_clock(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def forget_price_warnings():
+    """Предупреждение о модели без тарифа — одно на процесс; тесту нужно своё."""
+    from costmeter import prices
+
+    prices._WARNED.clear()
+    yield
+    prices._WARNED.clear()
+
+
+@pytest.fixture(autouse=True)
 def forget_instance_quirks():
     """
     Память о том, чего нет на инстансе, живёт процесс целиком.

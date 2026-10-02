@@ -136,3 +136,16 @@ def test_cost_accepts_a_plain_dict():
     """Состояние графа хранит счётчики словарём, а не датаклассом."""
     prices = Prices(input=10, output=100)
     assert prices.cost({"cache_miss": MILLION}) == pytest.approx(10.0)
+
+
+def test_a_model_without_a_price_is_named_once_not_on_every_call():
+    """Под сервером LangGraph фильтр `warnings` не гасит повторы: строка была на каждый вызов."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(5):
+            for_model("openai", "модель-без-тарифа")
+        for_model("openai", "другая-модель-без-тарифа")
+
+    assert len(caught) == 2

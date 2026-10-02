@@ -296,6 +296,22 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         CREATE INDEX run_outcomes_created ON run_outcomes (created_at);
         """,
     ),
+    (
+        7,
+        "личные настройки",
+        # Не секреты, а выбор человека: какой моделью он работает
+        # (`llm_choice.py`). Значение — JSON, одна строка на настройку: подключение
+        # и модель меняются вместе и читаются вместе.
+        """
+        CREATE TABLE user_preferences (
+            subject     text        NOT NULL,
+            name        text        NOT NULL,
+            value       text        NOT NULL,
+            updated_at  timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (subject, name)
+        );
+        """,
+    ),
 )
 
 #: Роль Grafana: читает метрики и ничего больше (`grant_reader`).

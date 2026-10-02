@@ -48,15 +48,17 @@ from agent import (
     flow_sync,
     inputs,
     jira_writer,
+    llm_choice,
     logbook,
     metrics,
     outcomes,
     pause,
     publishers,
     settings_io,
+    turns,
 )
 from agent import config as cfg
-from agent.auth import delete_thread, owns_thread, thread_exists, thread_record
+from agent.auth import delete_thread, owns_thread, service_client, thread_exists, thread_record
 from agent.security import ApiSecurityMiddleware, admin_error, auth_error, principal_of
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
@@ -221,10 +223,10 @@ async def put_settings(request: Request) -> JSONResponse:
         result = await asyncio.to_thread(settings_io.save, updates, notes)
     except (OSError, ValueError) as exc:
         return _error(f"настройки не сохранены: {exc}", 500)
-    # `.env` загружается в окружение процесса один раз. Все изменения требуют
-    # перезапуска; прежний ответ только про LLM_/PRICE_ обещал live-reload,
-    # которого на самом деле в процессе нет.
-    result["restart_required"] = sorted(updates)
+    # `.env` загружается в окружение процесса один раз. Модель, подключения и
+    # тарифы `save` переносит в процесс сам (`settings_io.applies_live`) — они
+    # действуют со следующего вызова модели. Остальное ждёт перезапуска.
+    result["restart_required"] = sorted(set(updates) - set(result.get("applied", ())))
     return JSONResponse(result)
 
 
@@ -356,6 +358,90 @@ async def check_connection(request: Request) -> JSONResponse:
     except credentials.CredentialsError as exc:
         return _error(str(exc), 503, error_code="connections_unavailable")
     return await _connections(subject, check=result)
+
+
+# ---------------------------------------------------------------------------
+# Моя модель: подключение и модель, которыми работает пользователь (llm_choice.py)
+# ---------------------------------------------------------------------------
+def _model_subject(request: Request) -> str | JSONResponse:
+    """Выбор модели есть у всех, включая админ-токен: у него он один на всех входящих."""
+    if denied := _auth_error(request):
+        return denied
+    return principal_of(request.scope).subject
+
+
+async def _model_doc(subject: str, *, refresh: bool = False, **extra) -> JSONResponse:
+    described = await asyncio.to_thread(llm_choice.describe, subject, refresh=refresh)
+    return JSONResponse({**described, **extra})
+
+
+async def get_model(request: Request) -> JSONResponse:
+    """
+    Подключения, их модели, свой выбор и то, что действует сейчас.
+
+    Адресов и ключей в ответе нет: их видит только администратор в настройках
+    сервера. `?refresh=1` — спросить список моделей у шлюзов заново.
+    ---
+    """
+    subject = _model_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    return await _model_doc(subject, refresh=request.query_params.get("refresh") == "1")
+
+
+async def put_model(request: Request) -> JSONResponse:
+    """
+    Выбрать модель: `{"endpoint": "main", "model": "…"}`; `{"endpoint": null}` — модель сервера.
+
+    Действует со следующего обращения к модели, без перезапуска.
+    ---
+    """
+    subject = _model_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc))
+    endpoint, model = body.get("endpoint"), body.get("model")
+    if endpoint is not None and not isinstance(endpoint, str):
+        return _error("`endpoint` — строка или null")
+    if model is not None and not isinstance(model, str):
+        return _error("`model` — строка")
+    try:
+        await asyncio.to_thread(llm_choice.save, subject, endpoint or None, model)
+    except llm_choice.ChoiceError as exc:
+        return _error(str(exc), error_code="model_invalid")
+    except llm_choice.ChoiceUnavailable as exc:
+        return _error(str(exc), 503, error_code="model_unavailable")
+    return await _model_doc(subject, saved=True)
+
+
+async def check_model(request: Request) -> JSONResponse:
+    """
+    Проверить модель одним коротким запросом: `{"endpoint": "…", "model": "…"}`.
+
+    Отказ шлюза — не ошибка запроса, а ответ проверки: он приходит в `check`.
+    ---
+    """
+    subject = _model_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        result = await asyncio.to_thread(
+            llm_choice.check, str(body.get("endpoint") or ""), str(body.get("model") or "")
+        )
+    except llm_choice.ChoiceError as exc:
+        return _error(str(exc), error_code="model_invalid")
+    return JSONResponse({"check": result})
 
 
 def _inputs_snapshot() -> dict:
@@ -636,6 +722,48 @@ async def delete_chat(request: Request) -> JSONResponse:
         # Тред уже удалён; папку без треда подберёт уборка (`sweep_chats`).
         return _storage_error(thread_id, "чат удалён, но его файлы остались на сервере", exc)
     return JSONResponse({"deleted": thread_id, "files_removed": removed})
+
+
+async def get_turns(request: Request) -> JSONResponse:
+    """
+    Запросы оператора в открытой ветке чата: версии каждого и откуда его переписывать.
+
+    Правку интерфейс отправляет обычным прогоном с `checkpoint` = `fork`:
+    сервер LangGraph заводит от него новую ветку, прежняя остаётся в истории.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    return JSONResponse(await turns.describe(service_client(), thread_id))
+
+
+async def switch_turn(request: Request) -> JSONResponse:
+    """
+    Показать другую версию запроса: `{"message_id": "…", "version": 2}`.
+
+    Голова ветки этой версии копируется в конец треда, и тред открывается на ней.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc))
+    message_id, version = body.get("message_id"), body.get("version")
+    if not isinstance(message_id, str) or not message_id:
+        return _error("нужен `message_id` запроса", error_code="turn_invalid")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return _error("`version` — номер версии, с единицы", error_code="turn_invalid")
+    try:
+        described = await turns.switch(service_client(), thread_id, message_id, version)
+    except turns.TurnError as exc:
+        return _error(str(exc), 409, error_code="turn_conflict")
+    return JSONResponse(described)
 
 
 async def get_library(request: Request) -> JSONResponse:
@@ -1375,6 +1503,9 @@ routes = [
     Route("/api/me/connections", put_connections, methods=["PUT"]),
     Route("/api/me/connections/{system}", delete_connection, methods=["DELETE"]),
     Route("/api/me/connections/{system}/check", check_connection, methods=["POST"]),
+    Route("/api/me/model", get_model, methods=["GET"]),
+    Route("/api/me/model", put_model, methods=["PUT"]),
+    Route("/api/me/model/check", check_model, methods=["POST"]),
     Route("/api/settings", get_settings, methods=["GET"]),
     Route("/api/settings", put_settings, methods=["PUT"]),
     Route("/api/inputs", get_inputs, methods=["GET"]),
@@ -1386,6 +1517,8 @@ routes = [
     Route("/api/chats/{thread_id}/files", delete_chat_file, methods=["DELETE"]),
     Route("/api/chats/{thread_id}/files/content", get_chat_file, methods=["GET"]),
     Route("/api/chats/{thread_id}/attach", attach_chat_file, methods=["POST"]),
+    Route("/api/chats/{thread_id}/turns", get_turns, methods=["GET"]),
+    Route("/api/chats/{thread_id}/turns/switch", switch_turn, methods=["POST"]),
     Route("/api/library", get_library, methods=["GET"]),
     Route("/api/changes", get_changes, methods=["GET"]),
     Route("/api/changes/{change_id}", get_change, methods=["GET"]),

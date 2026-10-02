@@ -15,9 +15,27 @@
  * (web/build/csp.ts), а Keycloak живёт на своём домене и задаётся на сервере:
  * прямой запрос браузера политика заблокировала бы уже после ввода пароля.
  * Переходы на вход и выход — навигация, их `connect-src` не касается.
+ *
+ * Сессия держится сама, пока открыта вкладка. Access-токен живёт минуты, и
+ * раньше он обновлялся только тогда, когда его просил запрос: человек уходил
+ * в другую вкладку, возвращался, отправлял запрос — а обновлять было уже
+ * нечем, и страница уходила на вход вместе с набранным текстом. Теперь токен
+ * обновляется заранее, по таймеру, и сразу, как только вкладка снова видна.
+ * Каждое обновление продлевает и сессию Keycloak, так что открытая вкладка
+ * не выходит из системы, пока сессия не упрётся в свой предельный срок.
+ *
+ * Сбой обновления — не всегда конец сессии. Keycloak ответил `invalid_grant`
+ * — сессии больше нет, нужен вход. Не ответил вовсе (сеть, перезапуск) — токены
+ * остаются, обновление повторится через `RETRY_MS`. Раньше любой сбой стирал
+ * токены, и мигнувшая сеть выкидывала на страницу входа.
+ *
+ * Если вход всё-таки нужен, страница уходит в Keycloak, только когда её видно:
+ * спрятанная вкладка дождётся возвращения человека. Набранный текст не
+ * теряется — черновики поля задачи лежат в `localStorage` (`lib/drafts.ts`), а
+ * после возвращения шапка говорит, что сессия истекала и текст на месте.
  */
-import { API_URL } from "./api";
-import { setUserTokens } from "./auth";
+import { API_URL } from "./api.ts";
+import { setUserTokens } from "./auth.ts";
 
 type Config = {
   enabled: true;
@@ -42,15 +60,33 @@ export type User = { name: string; username: string; subject: string };
 
 const TOKENS_KEY = "orbita.oidc.tokens";
 const FLOW_KEY = "orbita.oidc.flow";
+/** Вход повторный: сессия кончилась посреди работы. Читает его шапка после возвращения. */
+const RELOGIN_KEY = "orbita.oidc.relogin";
 // Обновлять заранее: запрос, ушедший за секунду до истечения, дойдёт до
 // сервера уже с просроченным токеном.
-const REFRESH_MARGIN_MS = 30_000;
+const REFRESH_MARGIN_MS = 60_000;
+// Keycloak не ответил на обновление: повторить через столько.
+const RETRY_MS = 15_000;
 // Сервер отверг токен, полученный только что. Новый вход дал бы такой же, и
 // страница уходила бы в Keycloak и обратно без конца.
 const FRESH_LOGIN_MS = 15_000;
 
 let config: Config | null = null;
 let refreshing: Promise<Tokens | null> | null = null;
+let timer: ReturnType<typeof setTimeout> | undefined;
+/** Вход нужен, но вкладка спрятана: уйдём в Keycloak, когда её откроют. */
+let loginWhenVisible = false;
+let leaving = false;
+
+/** Keycloak отказал в токене. `rejected` — отказ по существу: сессии больше нет. */
+class TokenError extends Error {
+  readonly rejected: boolean;
+
+  constructor(message: string, rejected: boolean) {
+    super(message);
+    this.rejected = rejected;
+  }
+}
 
 function base64url(bytes: Uint8Array): string {
   let text = "";
@@ -90,7 +126,12 @@ async function tokenRequest(body: Record<string, string>): Promise<Tokens> {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || typeof payload.access_token !== "string") {
-    throw new Error(payload.error_description ?? payload.error ?? `вход не завершён: сервер ответил ${response.status}`);
+    // 400 и 401 от token endpoint — это ответ Keycloak: код или refresh-токен
+    // больше не годятся. 5xx и обрыв — сбой по дороге, о сессии он не говорит.
+    throw new TokenError(
+      payload.error_description ?? payload.error ?? `вход не завершён: сервер ответил ${response.status}`,
+      response.status === 400 || response.status === 401,
+    );
   }
   const now = Date.now();
   return {
@@ -102,8 +143,13 @@ async function tokenRequest(body: Record<string, string>): Promise<Tokens> {
   };
 }
 
-async function login(): Promise<never> {
+async function login(reason: "start" | "expired" = "start"): Promise<never> {
   const active = config as Config;
+  // Второй вызов, пока страница уже уходит, начал бы второй вход с другим state.
+  if (leaving) return new Promise<never>(() => {});
+  leaving = true;
+  clearTimeout(timer);
+  if (reason === "expired") sessionStorage.setItem(RELOGIN_KEY, String(Date.now()));
   const verifier = randomString();
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
   const state = randomString();
@@ -147,22 +193,93 @@ async function currentTokens(): Promise<Tokens | null> {
   const tokens = read<Tokens>(TOKENS_KEY);
   if (!tokens) return null;
   if (tokens.expires_at - REFRESH_MARGIN_MS > Date.now()) return tokens;
-  if (!tokens.refresh_token) return null;
+  if (!tokens.refresh_token) return tokens.expires_at > Date.now() ? tokens : null;
   // Одно обновление на все запросы, которые заметили истечение одновременно.
   refreshing ??= tokenRequest({ grant_type: "refresh_token", refresh_token: tokens.refresh_token })
     .then(
       (fresh) => {
-        const next = { ...fresh, id_token: fresh.id_token ?? tokens.id_token };
+        const next = {
+          ...fresh,
+          // Keycloak может не прислать новый refresh-токен — старый тогда жив.
+          refresh_token: fresh.refresh_token ?? tokens.refresh_token,
+          id_token: fresh.id_token ?? tokens.id_token,
+        };
         save(next);
         return next;
       },
-      () => {
-        save(null);
-        return null;
+      (error: unknown) => {
+        if (error instanceof TokenError && error.rejected) {
+          save(null);
+          return null;
+        }
+        // Keycloak не ответил: сессия, скорее всего, жива. Отдаём что есть —
+        // ещё не истёкший токен сервер примет, — и пробуем снова чуть позже.
+        return tokens;
       },
     )
     .finally(() => { refreshing = null; });
   return refreshing;
+}
+
+/** Обновить токен заранее и назначить следующее обновление. */
+async function keepAlive(): Promise<void> {
+  if (!config || leaving) return;
+  const before = read<Tokens>(TOKENS_KEY);
+  const tokens = await currentTokens();
+  if (!tokens) {
+    // Сессия была и кончилась — нужен вход. Без токенов с самого начала сюда
+    // не попадают: такой вход начинает `initAuth`.
+    if (before) sessionLost();
+    return;
+  }
+  schedule(tokens);
+}
+
+function schedule(tokens: Tokens): void {
+  clearTimeout(timer);
+  if (!tokens.refresh_token) return;
+  const due = tokens.expires_at - REFRESH_MARGIN_MS - Date.now();
+  // Неудачное обновление оставило старый срок — повтор не чаще RETRY_MS.
+  timer = setTimeout(() => { void keepAlive(); }, Math.max(RETRY_MS, due));
+}
+
+/** Сессии нет. Уходим на вход сразу, если вкладку видно, иначе — когда откроют. */
+function sessionLost(): void {
+  clearTimeout(timer);
+  if (document.visibilityState === "hidden") {
+    loginWhenVisible = true;
+    return;
+  }
+  void login("expired");
+}
+
+function watchSession(): void {
+  // Вкладка снова видна, окно в фокусе, сеть вернулась — самое время проверить
+  // токен: таймеры спрятанной вкладки браузер замедляет, а сон ноутбука их
+  // останавливает вовсе.
+  const wake = () => {
+    if (document.visibilityState === "hidden") return;
+    if (loginWhenVisible) {
+      loginWhenVisible = false;
+      void login("expired");
+      return;
+    }
+    void keepAlive();
+  };
+  document.addEventListener("visibilitychange", wake);
+  window.addEventListener("focus", wake);
+  window.addEventListener("online", wake);
+}
+
+/**
+ * Вход был повторным: сессия истекла посреди работы. Читается один раз —
+ * шапка говорит об этом и больше не повторяет.
+ */
+export function takeRelogin(): boolean {
+  const marked = sessionStorage.getItem(RELOGIN_KEY);
+  if (marked === null) return false;
+  sessionStorage.removeItem(RELOGIN_KEY);
+  return Date.now() - Number(marked) < 10 * 60_000;
 }
 
 /**
@@ -187,15 +304,20 @@ export async function initAuth(): Promise<void> {
       const tokens = read<Tokens>(TOKENS_KEY);
       if (tokens && Date.now() - tokens.obtained_at < FRESH_LOGIN_MS) return;
       save(null);
-      void login();
+      sessionLost();
     },
   });
+  watchSession();
   const params = new URLSearchParams(window.location.search);
   if (params.has("state") && (params.has("code") || params.has("error")) && sessionStorage.getItem(FLOW_KEY)) {
     await finishLogin(params);
+    const fresh = read<Tokens>(TOKENS_KEY);
+    if (fresh) schedule(fresh);
     return;
   }
-  if (!(await currentTokens())) await login();
+  const tokens = await currentTokens();
+  if (!tokens) await login();
+  else schedule(tokens);
 }
 
 /** Кто вошёл — из access-токена. Подпись проверяет сервер; здесь только подпись в шапке. */
@@ -217,6 +339,8 @@ export function logout(): void {
   const active = config;
   if (!active) return;
   const idToken = read<Tokens>(TOKENS_KEY)?.id_token;
+  clearTimeout(timer);
+  leaving = true;
   save(null);
   const url = new URL(active.end_session_endpoint);
   url.search = new URLSearchParams({

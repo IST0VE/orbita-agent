@@ -756,3 +756,99 @@ dialog.chat-library > p {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* --------------------------------------------------------------------- */
+/* Правка запроса и его версии                                            */
+/* --------------------------------------------------------------------- */
+.msg-turn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  /* Действия над своим запросом не спорят с текстом: видны, но тихо. */
+  opacity: 0.7;
+  transition: opacity var(--duration-fast, 120ms) ease;
+}
+
+.msg:hover .msg-turn,
+.msg-turn:focus-within {
+  opacity: 1;
+}
+
+.msg-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.msg-versions-count {
+  font-size: var(--type-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.msg-edit-start {
+  font-size: var(--type-label);
+}
+
+.msg-edit {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.msg-edit textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  font: inherit;
+  line-height: var(--leading-relaxed);
+}
+
+.msg-edit .hint {
+  margin: 0;
+  font-size: var(--type-label);
+}
+
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* «Спросить об этом» — над выделением в ответе. */
+.selection-ask {
+  position: fixed;
+  z-index: var(--z-toast);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--type-dense);
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+}
+
+.selection-ask:hover {
+  border-color: var(--accent-orange-border);
+}
+
+/* Сообщение, а не ошибка: сессия истекала, вход восстановлен. */
+.app-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--type-dense);
+  background: var(--accent-teal-soft);
+  border: 1px solid var(--accent-teal-border);
+  border-radius: var(--radius-sm);
+}
+
+.app-notice > span {
+  flex: 1;
+}

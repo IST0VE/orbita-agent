@@ -20,6 +20,7 @@ import type { Setting } from "../../api";
 import type { SettingsGroupId } from "../../app/sections";
 import {
   Blocks,
+  Brain,
   Cpu,
   KeyRound,
   Palette,
@@ -42,6 +43,7 @@ export type SettingsGroup = {
 };
 
 export const SETTINGS_GROUPS: SettingsGroup[] = [
+  { id: "model", title: "Моя модель", hint: "Подключение и модель, которыми ORBITA отвечает вам", icon: Brain },
   { id: "personal", title: "Мои подключения", hint: "Ваши токены Jira и Confluence: агент работает с вашими правами", icon: KeyRound },
   { id: "ai", title: "Модель", hint: "Провайдер, модель и подключение к ней", icon: Cpu, server: true },
   { id: "connections", title: "Подключения", hint: "Служебный API, хранилище и источники метрик", icon: Server, server: true },
@@ -74,14 +76,30 @@ export function groupOf(name: string): SettingsGroupId {
  */
 const LABELS: Record<string, string> = {
   LLM_PROVIDER: "Провайдер",
-  LLM_MODEL: "Модель",
+  LLM_MODEL: "Модель по умолчанию",
+  LLM_MODELS: "Модели на выбор",
   LLM_API_BASE: "Адрес API",
   LLM_API_KEY: "Ключ API",
+  ...Object.fromEntries(
+    [1, 2, 3].flatMap((slot) => [
+      [`LLM_ALT${slot}_TITLE`, "Название"],
+      [`LLM_ALT${slot}_PROVIDER`, "Провайдер"],
+      [`LLM_ALT${slot}_API_BASE`, "Адрес API"],
+      [`LLM_ALT${slot}_API_KEY`, "Ключ API"],
+      [`LLM_ALT${slot}_MODELS`, "Модели на выбор"],
+      [`LLM_ALT${slot}_EXTRA_BODY`, "Дополнительные параметры"],
+    ]),
+  ),
 };
 
 /** Ключевые поля раздела «Модель» — в том порядке, в каком их заполняют. */
-export const AI_PROVIDER_FIELDS = ["LLM_PROVIDER", "LLM_MODEL"];
+export const AI_PROVIDER_FIELDS = ["LLM_PROVIDER", "LLM_MODEL", "LLM_MODELS"];
 export const AI_CONNECTION_FIELDS = ["LLM_API_BASE", "LLM_API_KEY"];
+/** Запасные подключения: слот за слотом, поля в порядке заполнения. */
+export const AI_SPARE_SLOTS = [1, 2, 3].map((slot) => ({
+  slot,
+  fields: ["TITLE", "PROVIDER", "API_BASE", "API_KEY", "MODELS", "EXTRA_BODY"].map((name) => `LLM_ALT${slot}_${name}`),
+}));
 
 /** Первая мысль описания: до точки, точки с запятой или тире-пояснения. */
 function firstSentence(value: string): string {

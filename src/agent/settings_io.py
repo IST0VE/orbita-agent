@@ -114,6 +114,9 @@ _RESERVED_NAMES = frozenset(
 #: не показываясь никому, — и страница настроек стала бы способом его увести.
 _SECRET_DESTINATIONS: dict[str, tuple[str, ...]] = {
     "LLM_API_BASE": ("LLM_API_KEY",),
+    "LLM_ALT1_API_BASE": ("LLM_ALT1_API_KEY",),
+    "LLM_ALT2_API_BASE": ("LLM_ALT2_API_KEY",),
+    "LLM_ALT3_API_BASE": ("LLM_ALT3_API_KEY",),
     "NT_PROMETHEUS_URL": ("NT_PROMETHEUS_TOKEN",),
     "NT_INFLUX_URL": ("NT_INFLUX_TOKEN",),
     "NT_KUBERNETES_URL": ("NT_KUBERNETES_TOKEN",),
@@ -121,6 +124,11 @@ _SECRET_DESTINATIONS: dict[str, tuple[str, ...]] = {
 }
 #: Почему поле из `_RESERVED_*` закрыто — строкой для интерфейса.
 RESERVED_REASON = "правится только в .env на сервере"
+#: Что применяется к процессу сразу после сохранения: модель, подключения к ней
+#: и тарифы. Их читают в момент вызова (`config`, `costmeter`), а клиенты модели
+#: пересобираются по отпечатку подключения (`providers.connection_key`).
+#: Остальное читают при старте модули и библиотеки — ему нужен перезапуск.
+_LIVE_PREFIXES = ("LLM_", "PRICE_")
 _NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _COMMENT_MAX = 2000
 #: Раздел для переменных, которых нет в `.env.example`.
@@ -229,6 +237,11 @@ def fixed_names() -> frozenset[str]:
     """
     listed = os.environ.get("SETTINGS_FIXED", "")
     return frozenset(name.strip() for name in listed.split(",") if name.strip())
+
+
+def applies_live(name: str) -> bool:
+    """Сохранённое значение действует сразу, без перезапуска."""
+    return name.startswith(_LIVE_PREFIXES) and name not in fixed_names()
 
 
 def apply_hint() -> str:
@@ -455,8 +468,9 @@ def applied() -> dict:
         "applied": rows,
         "restart_required": any(row["restart_required"] for row in rows),
         "note": (
-            "Файл читается при старте процесса. Значения из окружения сильнее файла "
-            "и правкой файла не меняются."
+            "Модель, подключения к ней и тарифы (LLM_*, PRICE_*) действуют сразу после "
+            "сохранения; остальное файл даёт при старте процесса. Значения из окружения "
+            "сильнее файла и правкой файла не меняются."
         ),
     }
 
@@ -555,7 +569,8 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
 
     path = env_path()
     with _SAVE_LOCK:
-        if orphaned := _orphaned_secrets(updates, _read_env_file()):
+        before = _read_env_file()
+        if orphaned := _orphaned_secrets(updates, before):
             raise ValueError(
                 "адрес сменён, а секрет, который на него уйдёт, — нет. Введите заново: "
                 + ", ".join(orphaned)
@@ -618,7 +633,54 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
                 out.append(f"{name}={_encode_env_value(value)}")
 
         _write(path, eol.join(out) + eol)
-    return {"saved": sorted({*updates, *texts}), "path": path.name, "apply": apply_hint()}
+        live = _apply_live(updates, before)
+    return {
+        "saved": sorted({*updates, *texts}),
+        "path": path.name,
+        "apply": apply_hint(),
+        # Уже действует: перезапуск ради этих не нужен.
+        "applied": live,
+    }
+
+
+def _apply_live(updates: dict[str, str], before: dict[str, str]) -> list[str]:
+    """
+    Перенести в окружение процесса то, что действует без перезапуска.
+
+    Только если значение процесса пришло из файла: совпадает с тем, что лежало
+    в файле до правки, или его нет вовсе. Значение, заданное окружением
+    (systemd, терминал, `environment:` Compose), сильнее файла и после
+    перезапуска — и здесь его правка файла тоже не трогает. Пустое значение
+    снимает переменную, как `VAR=` в `.env` при старте (`config.env`).
+    """
+    eligible = set()
+    for name in updates:
+        if not applies_live(name):
+            continue
+        process = os.environ.get(name)
+        if process is not None and process.strip() != (before.get(name) or "").strip():
+            continue
+        eligible.add(name)
+    # Адрес и его секреты применяются вместе. Иначе ключ из окружения,
+    # который нельзя заменить правкой файла, уехал бы на новый адрес.
+    for destination, secrets in _SECRET_DESTINATIONS.items():
+        if destination not in updates or updates[destination] == os.environ.get(destination, ""):
+            continue
+        if destination not in eligible or any(
+            secret not in eligible and (secret in updates or os.environ.get(secret))
+            for secret in secrets
+        ):
+            eligible.difference_update((destination, *secrets))
+    applied = []
+    for name, value in updates.items():
+        if name not in eligible:
+            continue
+        if value:
+            os.environ[name] = value
+        else:
+            os.environ.pop(name, None)
+        applied.append(name)
+    return sorted(applied)
 
 
 def _orphaned_secrets(updates: dict[str, str], current: dict[str, str]) -> list[str]:

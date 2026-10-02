@@ -118,7 +118,16 @@ def _env_float(name: str) -> float | None:
     return value
 
 
+#: О каких моделях уже предупредили. Своё множество, а не фильтр `warnings`:
+#: сервер LangGraph перехватывает предупреждения в журнал, и без него одна
+#: модель без тарифа давала строку на каждый вызов — их в прогоне сотни.
+_WARNED: set[tuple[str, str]] = set()
+
+
 def _warn_once(provider: str, model: str) -> None:
+    if (provider, model) in _WARNED:
+        return
+    _WARNED.add((provider, model))
     warnings.warn(
         f"тариф для {provider}/{model} не найден в prices.toml — стоимость "
         f"будет считаться нулевой. Допишите блок в таблицу или задайте "

@@ -6,7 +6,7 @@ export function runErrorMessage(error: unknown): string {
     ? error as { name?: unknown; error?: unknown; code?: unknown; message?: unknown } : {};
   const name = String(source.name ?? source.error ?? source.code ?? "");
   if (name === "AuthenticationError" || name === "PermissionDeniedError") {
-    return "API модели отказал в доступе. Проверьте ключ провайдера и доступ к выбранной модели (LLM_MODEL).";
+    return "API модели отказал в доступе. Проверьте модель в «Настройки → Моя модель»: у ключа может не быть к ней доступа.";
   }
   if (name === "RateLimitError") return "API модели ограничил запросы или квоту. Проверьте лимиты и повторите позже.";
   if (name === "APIConnectionError" || name === "APITimeoutError") {

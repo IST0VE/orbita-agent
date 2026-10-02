@@ -169,7 +169,7 @@ def invoke(model_for, messages: list, config, tools, *, allow_tools: bool) -> AI
         *providers.resolve_key(
             provider=chosen.get("provider"), temperature=chosen.get("temperature")
         ),
-        cfg.env_str("LLM_API_BASE"),
+        providers.connection_key(),
     )
     if mode == "native" or (mode == "auto" and key not in _PROMPT_ENDPOINTS):
         try:

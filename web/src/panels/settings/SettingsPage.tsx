@@ -26,6 +26,7 @@ import { ChevronDown, ChevronRight, Search, TriangleAlert, X } from "../../ui/ic
 import { AiSettings } from "./AiSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { groupOf, SETTINGS_GROUPS, sectionTitle, settingLabel } from "./groups";
+import { MyModel } from "./MyModel";
 import { PersonalConnections } from "./PersonalConnections";
 import { SettingsField } from "./SettingsField";
 
@@ -146,8 +147,10 @@ export function SettingsPage({
       setDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key, value]) => drafts[key] !== value)));
       setNotes((current) => Object.fromEntries(Object.entries(current).filter(([key, value]) => notes[key] !== value)));
       const restart = result.restart_required;
+      const live = result.applied ?? [];
       setStatus(
         `записано ${result.saved.length} в ${result.path}` +
+          (live.length ? ` · уже действует: ${live.join(", ")}` : "") +
           (restart.length
             ? ` · чтобы применить ${restart.join(", ")}, ${result.apply ?? "перезапустите сервер агента"}`
             : ""),
@@ -316,6 +319,8 @@ export function SettingsPage({
               onAdvanced={(next, value) => { setGroup(next); setFilter(value); }}
             />
           ) : null}
+
+          {!needle && group === "model" ? <MyModel /> : null}
 
           {!needle && group === "personal" ? <PersonalConnections service={service} /> : null}
 

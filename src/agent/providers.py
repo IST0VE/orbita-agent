@@ -31,10 +31,18 @@ PRICE_CACHE_WRITE_PER_MTOK. У Anthropic она дороже обычного в
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from langchain_core.language_models import BaseChatModel
 
 from agent import config as cfg
 from agent import llm_pacing, metrics
+
+# Импорт ради побочного действия: `llm_choice` ставит в `config` выбор
+# пользователя, и `cfg.llm_choice()` начинает отвечать «модель этого человека»,
+# а не только LLM_MODEL.
+from agent import llm_choice  # noqa: F401, E402  isort: skip
 
 # Ритм обращений к модели: один обработчик на процесс, потому что минутное окно
 # шлюз считает по ключу, а не по клиенту. Клиентов ниже несколько — по одному на
@@ -84,13 +92,19 @@ _FACTORIES = {
     "anthropic": _anthropic,
 }
 
-# Клиенты по ключу (провайдер, модель, temperature). Кеш, а не одиночка:
-# клиент дорогой и создаётся один раз на комбинацию, но сама комбинация
-# выбирается в момент вызова ноды, а не при импорте модуля.
+# Клиенты по ключу (провайдер, модель, temperature, подключение). Кеш, а не
+# одиночка: клиент дорогой и создаётся один раз на комбинацию, но сама
+# комбинация выбирается в момент вызова ноды, а не при импорте модуля.
 #
-# Если серверная LLM_MODEL изменится, новый ключ создаст нового клиента.
-# Старый клиент из кеша не должен сохранять прежнюю модель после смены настройки.
-_CLIENTS: dict[tuple[str, str, float], BaseChatModel] = {}
+# Подключение входит в ключ отпечатком всего, что уходит в конструктор: адреса,
+# ключа, extra_body, таймаута. Пользователь выбрал другое подключение или
+# администратор сменил ключ из интерфейса — со следующего вызова работает новый
+# клиент, без перезапуска сервера. Старый клиент из кеша не должен сохранять
+# прежний адрес или ключ после смены настройки.
+_CLIENTS: dict[tuple[str, str, float, str], BaseChatModel] = {}
+#: Больше комбинаций не держим: каждая смена ключа или адреса — новая запись, и
+#: без потолка кеш рос бы вместе с числом правок настроек.
+_MAX_CLIENTS = 64
 
 
 def resolve_key(
@@ -101,8 +115,9 @@ def resolve_key(
     """
     Нормализовать тройку «провайдер, модель, temperature».
 
-    Пустое значение означает «взять из окружения» — так переопределение
-    одного параметра не требует передавать остальные два.
+    Пустое значение означает «взять у текущего пользователя»: его подключение
+    и его модель, а без выбора — основное подключение и LLM_MODEL. Так
+    переопределение одного параметра не требует передавать остальные два.
     """
     name = (provider or cfg.llm_provider()).lower()
     if name not in _FACTORIES:
@@ -116,16 +131,31 @@ def resolve_key(
     )
 
 
+def connection_key(endpoint: cfg.Endpoint | None = None) -> str:
+    """
+    Отпечаток подключения: id плюс всё, что уходит в конструктор клиента.
+
+    Ключ API в отпечаток входит хешем — сам он в ключе словаря не нужен.
+    """
+    endpoint = endpoint or cfg.llm_choice().endpoint
+    kwargs = cfg.llm_kwargs(endpoint)
+    if "api_key" in kwargs:
+        kwargs["api_key"] = hashlib.sha256(str(kwargs["api_key"]).encode()).hexdigest()
+    payload = json.dumps([endpoint.id, endpoint.provider, kwargs], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
 def build_llm(
     provider: str | None = None,
     model: str | None = None,
     temperature: float | None = None,
 ) -> BaseChatModel:
-    """Чат-модель по ключу; без аргументов — целиком по текущему окружению."""
-    key = resolve_key(provider, model, temperature)
+    """Чат-модель по ключу; без аргументов — целиком по выбору текущего пользователя."""
+    endpoint = cfg.llm_choice().endpoint
+    key = (*resolve_key(provider, model, temperature), connection_key(endpoint))
     client = _CLIENTS.get(key)
     if client is None:
-        name, model_name, temp = key
+        name, model_name, temp, _ = key
         # callbacks — не наблюдение, а управление: `Pacer` придерживает запрос
         # до отправки, пока в минутном окне шлюза не освободится место. Вешается
         # он здесь, на клиента, а не на вызовы: звать модель в проекте умеют
@@ -134,8 +164,23 @@ def build_llm(
         # and can exceed TPM/RPM; application calls use llm_retry.invoke.
         # Метрики — после ритма: время ответа не должно включать очередь шлюза.
         kwargs = dict(
-            cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer, metrics.LLM], max_retries=0
+            cfg.llm_kwargs(endpoint), temperature=temp, callbacks=[_pacer, metrics.LLM], max_retries=0
         )
         client = _FACTORIES[name](model_name, kwargs)
+        if len(_CLIENTS) >= _MAX_CLIENTS:
+            _CLIENTS.clear()
         _CLIENTS[key] = client
     return client
+
+
+def build_probe(endpoint: cfg.Endpoint, model: str, *, timeout: float) -> BaseChatModel:
+    """
+    Клиент для проверки модели со страницы настроек: не из кеша и без повторов.
+
+    Через `Pacer` проверка идёт так же, как прогон: минутное окно шлюза у них
+    общее, и проверка не должна выбивать прогону 429.
+    """
+    kwargs = dict(
+        cfg.llm_kwargs(endpoint), timeout=timeout, max_retries=0, max_tokens=64, callbacks=[_pacer]
+    )
+    return _FACTORIES[endpoint.provider](model, kwargs)

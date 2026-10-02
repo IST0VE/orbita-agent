@@ -25,3 +25,13 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(os.environ):
         if name.startswith(_PREFIXES):
             monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def forget_warnings():
+    """Предупреждение о модели без тарифа — одно на процесс; тесту нужно своё."""
+    from costmeter import prices
+
+    prices._WARNED.clear()
+    yield
+    prices._WARNED.clear()
