@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 import requests
 
 from agent import config as cfg
-from agent import request_pacing
+from agent import credentials, request_pacing, text_search
 
 REQUIRED_VARS = cfg.JIRA_REQUIRED_VARS
 
@@ -82,9 +82,22 @@ class Settings:
     max_chars: int = 12000
 
 
+def _value(name: str) -> str:
+    """Токен и e-mail — того, кто работает (`credentials`); остальное — из `.env`."""
+    try:
+        return credentials.value(name)
+    except credentials.CredentialsError as exc:
+        raise JiraError(str(exc)) from exc
+
+
+def default_project() -> str:
+    """Проект по умолчанию того, кто работает: свой или общий JIRA_PROJECT_KEY."""
+    return _value("JIRA_PROJECT_KEY").upper()
+
+
 def missing_vars() -> list[str]:
     """Каких обязательных переменных не хватает для чтения Jira."""
-    return [name for name in cfg.jira_required_vars() if not cfg.env_str(name)]
+    return [name for name in cfg.jira_required_vars() if not _value(name)]
 
 
 def is_configured() -> bool:
@@ -99,7 +112,7 @@ def load_settings() -> Settings:
     """
     absent = missing_vars()
     if absent:
-        raise JiraError("не заданы переменные окружения: " + ", ".join(absent))
+        raise JiraError(credentials.missing_message(absent))
     base_url = cfg.jira_base_url()
     parsed = urlsplit(base_url)
     local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
@@ -114,8 +127,8 @@ def load_settings() -> Settings:
         )
     return Settings(
         base_url=base_url,
-        token=cfg.jira_token(),
-        email=cfg.jira_email(),
+        token=_value("JIRA_TOKEN"),
+        email=_value("JIRA_EMAIL") or None,
         api_path=cfg.jira_api_path(),
         search_path=cfg.jira_search_path(),
         timeout_s=cfg.jira_timeout_s(),
@@ -186,7 +199,7 @@ def call(method: str, path: str, s: Settings, **kwargs) -> dict:
     try:
         response = request_pacing.send(
             method, url, headers=headers, auth=auth, timeout=s.timeout_s,
-            interval=s.interval_s, **kwargs
+            interval=s.interval_s, system="jira", **kwargs
         )
     except requests.RequestException as exc:
         # Разорванное соединение — та же блокировка, только до HTTP-ответа.
@@ -248,7 +261,17 @@ def adf_to_text(node: object) -> str:
 
     kind = node.get("type")
     if kind == "text":
-        return str(node.get("text") or "")
+        text = str(node.get("text") or "")
+        for mark in node.get("marks") or []:
+            if not isinstance(mark, dict) or mark.get("type") != "link":
+                continue
+            href = (mark.get("attrs") or {}).get("href")
+            if isinstance(href, str) and href.strip():
+                # У ссылки с подписью URL лежит в mark, а не в text. Он нужен
+                # и читателю, и предварительному чтению страниц Confluence.
+                href = href.strip()
+                return text if text.strip() == href else f"{text} ({href})"
+        return text
     if kind == "hardBreak":
         return "\n"
     # У упоминаний и карточек текста в `content` нет: он лежит в атрибутах.
@@ -348,8 +371,27 @@ def foreign_hosts(text: str) -> list[str]:
 _FIELDS = (
     "summary,description,status,issuetype,priority,labels,components,"
     "assignee,reporter,parent,subtasks,issuelinks,fixVersions,duedate,"
-    "created,updated,resolution"
+    "created,updated,resolution,attachment"
 )
+
+
+def _attachments(values: object) -> list[dict]:
+    """
+    Вложения задачи: имя и размер, без содержимого.
+
+    Содержимое не читается — это картинки, выгрузки и документы Word. Но
+    знать, что они есть, роли обязаны: 27 сентября 2026 разбор записал
+    «вложения не просматривались» у задачи, про вложения которой не знал ничего,
+    и вопрос о них уехал автору, хотя на него отвечал сам тикет.
+    """
+    found = []
+    for item in values or []:
+        if isinstance(item, dict) and item.get("filename"):
+            size = item.get("size")
+            found.append(
+                {"name": str(item["filename"]), "size": size if isinstance(size, int) else None}
+            )
+    return found
 
 
 def fetch_issue(key: str, settings: Settings | None = None) -> dict:
@@ -408,9 +450,14 @@ def fetch_issue(key: str, settings: Settings | None = None) -> dict:
             if isinstance(item, dict)
         ],
         "links": links,
+        "attachments": _attachments(fields.get("attachment")),
         "due": str(fields.get("duedate") or ""),
         "updated": str(fields.get("updated") or ""),
         "comments": comments(key, s),
+        # Пустой список значит «комментариев нет», только если их спрашивали.
+        # При JIRA_COMMENTS_LIMIT=0 он пуст всегда, и `format_issue` обязан
+        # сказать «не запрашивались», а не «нет».
+        "comments_read": s.comments_limit > 0,
     }
 
 
@@ -441,8 +488,11 @@ def comments(key: str, settings: Settings | None = None) -> list[dict]:
         if isinstance(item, dict)
     ]
     # `-created` отдаёт новые первыми, а читать удобнее в порядке разговора.
+    # Комментарий без извлечённого текста остаётся: у скриншота в ADF текста
+    # нет, но комментарий есть, и «у задачи ни одного комментария» было бы
+    # неправдой (см. `format_issue`).
     found.reverse()
-    return [item for item in found if item["text"]]
+    return found
 
 
 def _escape(value: str) -> str:
@@ -502,7 +552,40 @@ def find_link(blocker: str, blocked: str, settings: Settings | None = None) -> b
     return False
 
 
-def search(query: str, settings: Settings | None = None) -> list[dict]:
+#: Ключ проекта Jira: заглавная латиница, цифры и подчёркивание.
+PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,29}")
+
+#: Больше проектов в одном поиске — это уже не сужение, а перечисление трекера.
+MAX_PROJECTS = 10
+
+
+def project_keys(value: str | list[str] | tuple[str, ...]) -> list[str]:
+    """
+    Ключи проектов из строки через запятую или списка.
+
+    Неверный ключ — отказ, а не пропуск: молча выброшенный проект расширил бы
+    поиск до всего трекера, и роль приняла бы чужие задачи за найденные там,
+    где просила.
+    """
+    items = value.split(",") if isinstance(value, str) else list(value or ())
+    keys = list(dict.fromkeys(str(item).strip().upper() for item in items if str(item).strip()))
+    wrong = [key for key in keys if not PROJECT_KEY.fullmatch(key)]
+    if wrong:
+        raise JiraError(
+            "не похоже на ключ проекта Jira: " + ", ".join(wrong) + " (пример: ORB)"
+        )
+    if len(keys) > MAX_PROJECTS:
+        raise JiraError(f"проектов в одном поиске больше {MAX_PROJECTS}")
+    return keys
+
+
+def search(
+    query: str,
+    settings: Settings | None = None,
+    *,
+    broad: bool = False,
+    projects: str | list[str] | tuple[str, ...] = (),
+) -> list[dict]:
     """
     Поиск задач по тексту.
 
@@ -511,12 +594,21 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
     безобиден, а выгрузить одним `created >= -100d` всё, до чего дотягивается
     токен, — уже нет. Поиск по тексту закрывает задачу агента целиком и не
     отдаёт наружу того, чего не просили.
+
+    broad — искать ещё и по основам слов (`text_search.condition`), projects —
+    только в этих проектах. Оба нужны роли поиска: без проекта запрос «смена
+    пароля» 27 сентября 2026 вернул задачи десятка чужих команд, а нужная
+    лежала в соседнем проекте той же системы.
     """
     s = settings or load_settings()
     text = (query or "").strip()
     if not text:
         return []
-    jql = f'text ~ "{_escape(text)}" ORDER BY updated DESC'
+    keys = project_keys(projects)
+    clause = text_search.condition(text, _escape) if broad else f'text ~ "{_escape(text)}"'
+    if keys:
+        clause = "project in (" + ", ".join(f'"{key}"' for key in keys) + f") AND {clause}"
+    jql = f"{clause} ORDER BY updated DESC"
     data = call(
         "GET",
         f"{s.api_path}{s.search_path}",
@@ -545,7 +637,17 @@ def search(query: str, settings: Settings | None = None) -> list[dict]:
 # Формат для модели
 # --------------------------------------------------------------------------
 def format_issue(issue: dict) -> str:
-    """Задача плоским текстом: подписанные поля, пустые опущены."""
+    """
+    Задача плоским текстом: подписанные поля, пустые опущены.
+
+    Кроме описания и комментариев: их отсутствие — само по себе находка, а
+    пропущенный раздел модель читает как «не загрузили», а не как «пусто».
+    27 сентября 2026 конвейер подготовки прошёл по этой развилке целиком:
+    разбор записал, что комментарии «не приведены», следующий этап сделал из
+    этого пробел, роль поиска потратила ход на повторное чтение тикета, а план
+    и документация вынесли «комментарии не прочитаны» в открытые вопросы — у
+    задачи, в которой их просто не было.
+    """
     lines = [f"{issue['key']}: {issue['summary']}", f"Ссылка: {issue['url']}"]
 
     fields = (
@@ -577,11 +679,26 @@ def format_issue(issue: dict) -> str:
             f"- {item['relation']} {item['key']}: {item['summary']}" for item in issue["links"]
         ]
 
+    if issue.get("attachments"):
+        lines.append("\nВложения (содержимое не читается — только имена):")
+        lines += [
+            f"- {item['name']}" + (f" ({item['size']} байт)" if item.get("size") else "")
+            for item in issue["attachments"]
+        ]
+    elif "attachments" in issue:
+        lines.append("\nВложений нет.")
+
     if issue.get("comments"):
         lines.append("\nКомментарии (от старых к новым):")
         lines += [
-            f"- {item['created']} {item['author']}: {item['text']}" for item in issue["comments"]
+            f"- {item['created']} {item['author']}: "
+            + (item["text"] or "(текста нет — вложение или изображение, их содержимое не читается)")
+            for item in issue["comments"]
         ]
+    elif issue.get("comments_read", True):
+        lines.append("\nКомментарии: нет — у задачи ни одного комментария.")
+    else:
+        lines.append("\nКомментарии: не запрашивались (JIRA_COMMENTS_LIMIT=0).")
 
     return "\n".join(lines)
 

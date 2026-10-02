@@ -500,21 +500,6 @@
   background: var(--surface-muted);
 }
 
-.console-toggle {
-  position: relative;
-  gap: var(--space-2);
-}
-
-.console-toggle-count {
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-
-.console-toggle[aria-pressed="true"] {
-  color: var(--text-primary);
-  background: var(--surface-muted);
-}
-
 /* --------------------------------------------------------------------- */
 /* Полоса предупреждений                                                   */
 /* --------------------------------------------------------------------- */
@@ -533,9 +518,19 @@
 /* Три колонки                                                            */
 /* --------------------------------------------------------------------- */
 .app-body {
+  /*
+   * Ширина колонки — пожелание: ручка сохраняет её для того окна, в котором
+   * тянули. В окне уже этого первыми ужимаются колонки, а не схема: ей
+   * остаётся не меньше 380 пикселей (MAIN_MIN в useColumnWidth), колонкам —
+   * не меньше минимумов той же ручки. Без этого две колонки по 640, растянутые
+   * при ширине 1920, после уменьшения окна до 1440 оставляли схеме 112.
+   */
+  --track-left: minmax(180px, var(--col-left));
+  --track-main: minmax(380px, 1fr);
+  --track-right: minmax(240px, var(--col-right));
   position: relative;
   display: grid;
-  grid-template-columns: var(--col-left) minmax(0, 1fr) var(--col-right);
+  grid-template-columns: var(--track-left) var(--track-main) var(--track-right);
   gap: var(--space-4);
   flex: 1 1 0;
   /* Схеме гарантирован рост: ниже этого она перестаёт быть схемой. */
@@ -548,11 +543,11 @@
 }
 
 .app[data-sidebar="closed"] .app-body {
-  grid-template-columns: minmax(0, 1fr) var(--col-right);
+  grid-template-columns: var(--track-main) var(--track-right);
 }
 
 .app[data-inspector="closed"] .app-body {
-  grid-template-columns: var(--col-left) minmax(0, 1fr);
+  grid-template-columns: var(--track-left) var(--track-main);
 }
 
 .app[data-sidebar="closed"][data-inspector="closed"] .app-body {
@@ -650,14 +645,23 @@
   background: var(--border-strong);
 }
 
+/* У правой колонки ручка на левой кромке — в зазоре между ней и схемой. */
+.inspector > .col-resizer {
+  right: auto;
+  left: calc(var(--space-4) / -2 - 3px);
+}
+
 /* --------------------------------------------------------------------- */
 /* Правая колонка                                                         */
 /* --------------------------------------------------------------------- */
 .inspector {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  /* Не hidden: ручка ширины стоит в зазоре, за кромкой колонки. Прокрутку
+     держат вложенные области, как в левой колонке. */
+  overflow: visible;
 }
 
 .inspector-head {
@@ -824,12 +828,48 @@
 /* Композер задачи                                                         */
 /* --------------------------------------------------------------------- */
 .task-composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: none;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+}
+
+/* Ручка высоты: в зазоре между схемой и композером, как у колонок. */
+.composer-resizer {
+  position: absolute;
+  top: calc(var(--space-3) / -2 - 4px);
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: var(--z-sticky);
+}
+
+.composer-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 3px var(--space-8);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background var(--transition-base);
+}
+
+.composer-resizer:hover::after {
+  background: var(--border-strong);
+}
+
+/* Высоту задаёт ручка сверху; уголок поля ей бы только мешал. */
+.task-composer .engine-chat-input textarea {
+  resize: none;
+}
+
+.task-composer[data-sized] .engine-chat-input textarea {
+  height: var(--composer-height);
+  max-height: none;
 }
 
 .composer-context {
@@ -855,113 +895,6 @@
 
 .composer-context svg {
   color: var(--text-muted);
-}
-
-/* --------------------------------------------------------------------- */
-/* Консоль выполнения                                                      */
-/* --------------------------------------------------------------------- */
-.console {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: none;
-  height: var(--console-height);
-  min-height: 160px;
-  max-height: 60vh;
-  margin: 0 var(--space-4) var(--space-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-.console-resizer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 7px;
-  cursor: row-resize;
-  touch-action: none;
-  z-index: var(--z-sticky);
-}
-
-.console-resizer::after {
-  content: "";
-  position: absolute;
-  inset: 3px var(--space-8);
-  border-radius: var(--radius-pill);
-  background: transparent;
-  transition: background var(--transition-base);
-}
-
-.console-resizer:hover::after {
-  background: var(--border-strong);
-}
-
-.console-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  flex: none;
-  min-height: 38px;
-  padding: 0 var(--space-3) 0 var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.console-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--type-panel);
-  font-weight: var(--weight-semibold);
-  white-space: nowrap;
-}
-
-.console-title svg {
-  color: var(--text-secondary);
-}
-
-.console-count {
-  margin-left: var(--space-2);
-  font-size: var(--type-label);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-
-.console-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-  min-width: 0;
-}
-
-.console-tools select {
-  min-height: 28px;
-  font-size: var(--type-dense);
-  max-width: 180px;
-}
-
-.console-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: var(--space-3) var(--space-4) var(--space-4);
-}
-
-.console-empty {
-  margin: 0;
-  padding: var(--space-5) 0;
-  font-size: var(--type-dense);
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.console-stream > .engine-widget {
-  padding: 0;
-  border: 0;
-  background: transparent;
 }
 
 /* --------------------------------------------------------------------- */
@@ -1020,7 +953,8 @@
 /* --------------------------------------------------------------------- */
 @media (max-width: 1280px) {
   :root {
-    --col-right: 296px;
+    --col-left: 260px;
+    --col-right: 320px;
   }
 }
 
@@ -1095,11 +1029,6 @@
     padding: var(--space-3) var(--space-3) 0;
   }
 
-  .console {
-    margin: 0 var(--space-3) var(--space-3);
-    max-height: 42vh;
-  }
-
   /* Подсказка о жестах полотна на телефоне закрывает собой само полотно. */
   .canvas-help {
     display: none;
@@ -1113,4 +1042,12 @@
     right: var(--space-3);
     width: auto;
   }
+}
+
+/* Вход через OIDC не удался: приложения ещё нет, есть только причина. */
+.auth-failed {
+  max-width: 560px;
+  margin: 15vh auto 0;
+  padding: 0 16px;
+  color: var(--text-primary);
 }

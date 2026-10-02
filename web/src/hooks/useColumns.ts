@@ -1,8 +1,10 @@
 /**
  * Какие боковые колонки открыты и как они показаны.
  *
- * Умолчание задаёт ширина окна: на 1440 помещаются обе колонки и схема, на
- * ноутбуке — колонка материалов и схема, на планшете — только схема. Дальше
+ * Умолчание задаёт ширина окна: от 1280 помещаются обе колонки и схема, на
+ * маленьком ноутбуке — схема и открытый чат, на планшете — только схема.
+ * Из двух колонок первой остаётся правая: в ней идёт разговор и видно, что
+ * делает прогон, а список чатов нужен, только чтобы перейти в другой. Дальше
  * решает оператор, и его решение живёт до следующей смены ширины:
  * медиазапрос, который прячет колонку сам, стирал бы это решение при каждом
  * изменении размера окна — в том числе при открытии панели разработчика.
@@ -15,8 +17,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 /** Обе колонки и схема рядом. */
-const WIDE = "(min-width: 1440px)";
-/** Колонка материалов и схема. */
+const WIDE = "(min-width: 1280px)";
+/** Открытый чат и схема. */
 const MEDIUM = "(min-width: 1024px)";
 
 const matches = (query: string) =>
@@ -25,8 +27,8 @@ const matches = (query: string) =>
     : window.matchMedia(query).matches;
 
 export function useColumns() {
-  const [sidebar, setSidebar] = useState(() => matches(MEDIUM));
-  const [inspector, setInspector] = useState(() => matches(WIDE));
+  const [sidebar, setSidebar] = useState(() => matches(WIDE));
+  const [inspector, setInspector] = useState(() => matches(MEDIUM));
   /** Колонки показаны поверх рабочей области, а не рядом с ней. */
   const [narrow, setNarrow] = useState(() => !matches(MEDIUM));
 
@@ -35,8 +37,8 @@ export function useColumns() {
     const wide = window.matchMedia(WIDE);
     const medium = window.matchMedia(MEDIUM);
     const apply = () => {
-      setSidebar(medium.matches);
-      setInspector(wide.matches);
+      setSidebar(wide.matches);
+      setInspector(medium.matches);
       setNarrow(!medium.matches);
     };
     wide.addEventListener("change", apply);

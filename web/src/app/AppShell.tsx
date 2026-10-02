@@ -1,5 +1,5 @@
 /**
- * Каркас приложения: шапка, строка контекста, рабочая область, консоль.
+ * Каркас приложения: шапка, строка контекста, рабочая область и две колонки.
  *
  * Только раскладка и ничего больше — содержимое приезжает готовыми частями.
  * Раньше эту роль исполнял `App.tsx`: он же держал состояние прогона, он же
@@ -22,6 +22,7 @@ export function AppShell({
   narrow,
   animated,
   leftWidth,
+  rightWidth,
   header,
   context,
   alerts,
@@ -29,7 +30,6 @@ export function AppShell({
   main,
   inspector,
   composer,
-  console: bottom,
   onDismissDrawer,
   children,
 }: {
@@ -40,6 +40,7 @@ export function AppShell({
   narrow: boolean;
   animated: boolean;
   leftWidth: number;
+  rightWidth: number;
   header: ReactNode;
   context?: ReactNode;
   alerts?: ReactNode;
@@ -47,12 +48,16 @@ export function AppShell({
   main?: ReactNode;
   inspector?: ReactNode;
   composer?: ReactNode;
-  console?: ReactNode;
   onDismissDrawer: () => void;
   /** Слои поверх всего: настройки, окно подтверждения. Смонтированы всегда. */
   children?: ReactNode;
 }) {
   const workspace = section === "workspace";
+  // Ноль — ширину не трогали, её решает вёрстка (и медиазапросы в ней).
+  const widths = {
+    ...(leftWidth ? { "--col-left": `${leftWidth}px` } : {}),
+    ...(rightWidth ? { "--col-right": `${rightWidth}px` } : {}),
+  } as React.CSSProperties;
   return (
     <div
       className="app"
@@ -61,7 +66,7 @@ export function AppShell({
       data-inspector={inspectorOpen ? "open" : "closed"}
       data-narrow={narrow ? "true" : "false"}
       data-animated={animated ? "true" : "false"}
-      style={leftWidth ? ({ "--col-left": `${leftWidth}px` } as React.CSSProperties) : undefined}
+      style={widths}
     >
       {header}
       {workspace ? context : null}
@@ -84,7 +89,6 @@ export function AppShell({
         ) : null}
       </div>
 
-      {workspace ? bottom : null}
 
       {children}
     </div>

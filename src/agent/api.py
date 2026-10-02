@@ -5,8 +5,9 @@
 а не поднимается вторым сервером: второй процесс — это второй порт, второй
 CORS, вторая точка отказа и лишняя память ради трёх обработчиков.
 
-Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы задач
-и журнал сервера для интерфейса.
+Здесь ровно то, чего нет в API LangGraph: настройки из `.env`, файлы чатов,
+библиотека примеров, журнал сервера для интерфейса, оценки результатов чатов
+и метрики потока досок Jira.
 Всё, что касается графа, тредов и прогонов, остаётся у самого сервера —
 дублировать его роуты незачем.
 
@@ -23,6 +24,7 @@ CORS, вторая точка отказа и лишняя память ради
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -34,9 +36,28 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from agent import actions as external_actions
+from agent import (
+    changes,
+    chat_files,
+    confluence,
+    credentials,
+    db,
+    flow_jira,
+    flow_store,
+    flow_sync,
+    inputs,
+    jira_writer,
+    logbook,
+    metrics,
+    outcomes,
+    pause,
+    publishers,
+    settings_io,
+)
 from agent import config as cfg
-from agent import inputs, jira_writer, logbook, pause, publishers, settings_io
-from agent.security import ApiSecurityMiddleware, auth_error
+from agent.auth import delete_thread, owns_thread, thread_exists, thread_record
+from agent.security import ApiSecurityMiddleware, admin_error, auth_error, principal_of
 from agent.ui_engine.capabilities import capabilities
 from agent.ui_engine.events import events
 from agent.ui_engine.forms import FormValidationError, validate_value
@@ -71,7 +92,11 @@ def _error(
 
 
 def _auth_error(request: Request) -> JSONResponse | None:
-    return auth_error(request.headers)
+    return auth_error(request.headers, request.scope)
+
+
+def _admin_error(request: Request) -> JSONResponse | None:
+    return _auth_error(request) or admin_error(request.scope)
 
 
 async def _json_body(request: Request) -> dict:
@@ -109,9 +134,16 @@ async def _json_body(request: Request) -> dict:
 # операции цикл событий подвешивает вместе с настройками ещё и чужие ходы.
 # Поэтому вся работа с диском уезжает в поток.
 async def get_settings(request: Request) -> JSONResponse:
-    if denied := _auth_error(request):
+    # Настройки сервера — одни на всех, и значения в них не только секреты:
+    # адрес Jira, куда уйдёт токен, правит администратор, а не любой вошедший.
+    if denied := _admin_error(request):
         return denied
-    return JSONResponse(await asyncio.to_thread(settings_io.describe))
+    try:
+        return JSONResponse(await asyncio.to_thread(settings_io.describe))
+    except PermissionError as exc:
+        # В Compose файл принадлежит хосту: на Linux `up.sh` ставит ему 600, и
+        # пользователь контейнера его не читает. Пустая страница молчала бы об этом.
+        return _error(f"нет доступа к файлу настроек {exc.filename}: см. docs/DEPLOYMENT.md", 503)
 
 
 def _env_name_error(name: object) -> str | None:
@@ -145,7 +177,7 @@ async def put_settings(request: Request) -> JSONResponse:
     похожее на неё, отбивается здесь.
     ---
     """
-    if denied := _auth_error(request):
+    if denied := _admin_error(request):
         return denied
     try:
         body = await _json_body(request)
@@ -181,7 +213,9 @@ async def put_settings(request: Request) -> JSONResponse:
         notes[name] = "" if text is None else str(text)
 
     if not updates and not notes:
-        return JSONResponse({"saved": [], "path": ".env", "restart_required": []})
+        return JSONResponse(
+            {"saved": [], "path": ".env", "restart_required": [], "apply": settings_io.apply_hint()}
+        )
 
     try:
         result = await asyncio.to_thread(settings_io.save, updates, notes)
@@ -192,6 +226,136 @@ async def put_settings(request: Request) -> JSONResponse:
     # которого на самом деле в процессе нет.
     result["restart_required"] = sorted(updates)
     return JSONResponse(result)
+
+
+async def get_me(request: Request) -> JSONResponse:
+    """
+    Кто вошёл и что ему можно: интерфейс прячет то, что сервер всё равно не отдаст.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    principal = principal_of(request.scope)
+    return JSONResponse(
+        {
+            "subject": principal.subject,
+            "name": principal.name,
+            "admin": principal.admin,
+            "service": principal.service,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Мои подключения: личные токены Jira и Confluence (credentials.py)
+# ---------------------------------------------------------------------------
+_NO_PERSONAL = (
+    "админ-токен работает общими токенами Jira и Confluence из .env — "
+    "личные подключения есть у пользователей, вошедших через Keycloak"
+)
+
+
+def _personal_subject(request: Request) -> str | JSONResponse:
+    if denied := _auth_error(request):
+        return denied
+    principal = principal_of(request.scope)
+    if principal.service:
+        return _error(_NO_PERSONAL, 400, error_code="connections_service")
+    return principal.subject
+
+
+async def _connections(subject: str, **extra) -> JSONResponse:
+    try:
+        described = await asyncio.to_thread(credentials.describe, subject)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return JSONResponse({**described, **extra})
+
+
+async def get_connections(request: Request) -> JSONResponse:
+    """
+    Мои подключения: задан ли токен, e-mail, куда уйдёт токен и последняя проверка.
+
+    Сам токен не отдаётся никогда — ни маской, ни началом.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    return await _connections(subject)
+
+
+async def put_connections(request: Request) -> JSONResponse:
+    """
+    Записать личные значения: `{"values": {"JIRA_TOKEN": "...", "JIRA_EMAIL": ""}}`.
+
+    Как у настроек: приходит только тронутое, пустая строка стирает значение.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc))
+    values = body.get("values")
+    if not isinstance(values, dict):
+        return _error("ожидается объект `values` вида {ПЕРЕМЕННАЯ: значение}")
+    try:
+        saved = await asyncio.to_thread(credentials.save, subject, values)
+    except ValueError as exc:
+        return _error(str(exc))
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject, saved=saved)
+
+
+def _system(request: Request) -> str | JSONResponse:
+    system = request.path_params["system"]
+    if system not in credentials.SYSTEMS:
+        return _error(f"{system!r}: подключения бывают " + ", ".join(credentials.SYSTEMS), 404)
+    return system
+
+
+async def delete_connection(request: Request) -> JSONResponse:
+    """
+    Отключить систему: стереть и токен, и e-mail, и прошлую проверку.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    system = _system(request)
+    if isinstance(system, JSONResponse):
+        return system
+    try:
+        await asyncio.to_thread(credentials.forget, subject, system)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject)
+
+
+async def check_connection(request: Request) -> JSONResponse:
+    """
+    Проверить подключение запросом «кто я» (`/myself`, `/user/current`) с личным токеном.
+
+    Отказ самой Jira — не ошибка запроса: он и есть ответ, и приходит в `check`.
+    ---
+    """
+    subject = _personal_subject(request)
+    if isinstance(subject, JSONResponse):
+        return subject
+    system = _system(request)
+    if isinstance(system, JSONResponse):
+        return system
+    try:
+        result = await asyncio.to_thread(credentials.check, subject, system)
+    except credentials.CredentialsError as exc:
+        return _error(str(exc), 503, error_code="connections_unavailable")
+    return await _connections(subject, check=result)
 
 
 def _inputs_snapshot() -> dict:
@@ -205,7 +369,9 @@ async def get_inputs(request: Request) -> JSONResponse:
 
 
 async def post_inputs(request: Request) -> JSONResponse:
-    if denied := _auth_error(request):
+    # Папки задач — общая библиотека примеров: заводит их администратор.
+    # Пользователь кладёт файлы в свой чат (`/api/chats/{id}/files`).
+    if denied := _admin_error(request):
         return denied
     try:
         body = await _json_body(request)
@@ -231,6 +397,10 @@ async def get_input_file(request: Request) -> JSONResponse:
     name = request.query_params.get("name", "")
     if not name:
         return _error("не указан параметр `name`")
+    if inputs.is_chat(task):
+        # Файлы чата открываются только своим роутом, где сверяется владелец:
+        # здесь имя `@chat/<тред>` открыло бы чужой чат по id треда.
+        return _error("файлы чата читаются через /api/chats/{thread_id}/files", 404)
     try:
         # `preview`, а не `read`: оператору показывается и схема .drawio,
         # которую роль получает разобранной и потому не читает как текст.
@@ -240,9 +410,22 @@ async def get_input_file(request: Request) -> JSONResponse:
     return JSONResponse({"task": task, "name": name, "text": text})
 
 
+def _publish_target() -> str:
+    """
+    Цель публикации для списка, или `unknown`.
+
+    При `auto` цель зависит от личных настроек Confluence, а они лежат в базе.
+    База недоступна — не повод прятать файлы, которые уже лежат на диске.
+    """
+    try:
+        return publishers.resolve()
+    except confluence.ConfluenceError:
+        return "unknown"
+
+
 def _published_snapshot() -> dict:
     return {
-        "target": publishers.resolve(),
+        "target": _publish_target(),
         # Через прямые слэши: путь уезжает в интерфейс как текст, и разбирать
         # его там по разделителю, который зависит от системы сервера, незачем.
         "dir": publishers.directory().as_posix(),
@@ -284,6 +467,534 @@ async def get_published_file(request: Request) -> JSONResponse:
     return JSONResponse({"name": name, "text": text})
 
 
+# --------------------------------------------------------------------------
+# Файлы чата
+#
+# Чат — это тред LangGraph, файлы чата — папка этого треда (`chat_files.py`).
+# Роуты свои, и правила `auth.py` к ним сервер не применяет, поэтому владелец
+# треда сверяется в каждом. Чужой тред отвечает тем же 404, что и
+# несуществующий: по ответу нельзя узнать, что тред с таким id есть.
+# --------------------------------------------------------------------------
+async def _own_chat(request: Request) -> str | JSONResponse:
+    """Id треда из пути, если тред есть и принадлежит спросившему."""
+    if denied := _auth_error(request):
+        return denied
+    thread_id = request.path_params["thread_id"]
+    try:
+        thread_id = inputs.thread_id_of(thread_id)
+    except inputs.InputError:
+        return _error("чат не найден", 404, error_code="chat_not_found")
+    principal = principal_of(request.scope)
+    if principal is None or not await owns_thread(principal, thread_id, must_exist=True):
+        return _error("чат не найден", 404, error_code="chat_not_found")
+    return thread_id
+
+
+def _storage_error(thread_id: str, action: str, exc: OSError) -> JSONResponse:
+    """
+    Отказ диска при работе с файлами чата — словами, а не голым 500.
+
+    Чаще всего это права: том `data`, заведённый ещё тогда, когда контейнер
+    работал от root, принадлежит root, и процесс `orbita` не может создать
+    в нём `/data/chats`. Пользователь это не починит, а администратору нужно
+    знать, какая папка и что с ней делать.
+    """
+    _LOG.error("chat files: %s failed", action, extra={"ui_thread_id": thread_id}, exc_info=True)
+    if isinstance(exc, PermissionError):
+        where = exc.filename or cfg.chat_files_dir()
+        return _error(
+            f"{action}: у сервера нет прав на запись в {where}. Это настройка сервера, "
+            "а не файла: администратору — раздел «Права доступа» в docs/DEPLOYMENT.md",
+            503,
+            error_code="chat_storage_forbidden",
+        )
+    return _error(f"{action}: {exc}", 503, error_code="chat_file_unavailable")
+
+
+async def get_chat_files(request: Request) -> JSONResponse:
+    """
+    Файлы чата и ограничения на загрузку.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    return JSONResponse(await asyncio.to_thread(chat_files.listing, thread_id))
+
+
+async def put_chat_file(request: Request) -> JSONResponse:
+    """
+    Загрузить файл в чат: тело запроса — содержимое, имя — параметр `name`.
+
+    Не multipart: одному файлу на запрос он ничего не добавляет, а разбор
+    multipart — это ещё одна зависимость и ещё один разборщик на пути
+    непроверенных байтов. Потолок тела — CHAT_FILE_MAX_BYTES, его держит
+    `security.ApiSecurityMiddleware` ещё до этого обработчика.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    body = await request.body()
+    try:
+        saved = await asyncio.to_thread(chat_files.save, thread_id, name, body)
+    except (chat_files.ChatFileError, inputs.InputError) as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не сохранён", exc)
+    return JSONResponse({"file": saved, **await asyncio.to_thread(chat_files.listing, thread_id)})
+
+
+async def get_chat_file(request: Request) -> JSONResponse:
+    """
+    Содержимое файла чата — для предпросмотра.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    try:
+        text = await asyncio.to_thread(chat_files.preview, thread_id, name)
+    except chat_files.ChatFileError as exc:
+        return _error(str(exc), 404, error_code="chat_file_not_found")
+    return JSONResponse({"name": name, "text": text})
+
+
+async def delete_chat_file(request: Request) -> JSONResponse:
+    """
+    Удалить файл из чата.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    name = request.query_params.get("name", "")
+    if not name:
+        return _error("не указан параметр `name`", error_code="chat_file_invalid")
+    try:
+        await asyncio.to_thread(chat_files.remove, thread_id, name)
+    except chat_files.ChatFileError as exc:
+        return _error(str(exc), 404, error_code="chat_file_not_found")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не удалён", exc)
+    return JSONResponse(await asyncio.to_thread(chat_files.listing, thread_id))
+
+
+async def attach_chat_file(request: Request) -> JSONResponse:
+    """
+    Скопировать в чат пример из общей библиотеки или свой опубликованный документ.
+
+    Тело: `{"source": "examples" | "published", "name": ..., "example": ...}`.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    try:
+        body = await _json_body(request)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    try:
+        saved = await asyncio.to_thread(
+            chat_files.attach,
+            thread_id,
+            str(body.get("source", "")),
+            str(body.get("name", "")),
+            str(body.get("example", "")),
+        )
+    except (chat_files.ChatFileError, inputs.InputError) as exc:
+        return _error(str(exc), error_code="chat_file_invalid")
+    except OSError as exc:
+        return _storage_error(thread_id, "файл не скопирован в чат", exc)
+    return JSONResponse({"file": saved, **await asyncio.to_thread(chat_files.listing, thread_id)})
+
+
+async def delete_chat(request: Request) -> JSONResponse:
+    """
+    Удалить чат: тред вместе с его файлами.
+
+    Удалять тред мимо этого роута можно (SDK, Studio), но тогда папка файлов
+    остаётся до уборки (`_sweep_chats`). Интерфейс удаляет здесь, и файлы
+    уходят сразу.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    await delete_thread(thread_id)
+    try:
+        removed = await asyncio.to_thread(chat_files.drop, thread_id)
+    except OSError as exc:
+        # Тред уже удалён; папку без треда подберёт уборка (`sweep_chats`).
+        return _storage_error(thread_id, "чат удалён, но его файлы остались на сервере", exc)
+    return JSONResponse({"deleted": thread_id, "files_removed": removed})
+
+
+async def get_library(request: Request) -> JSONResponse:
+    """
+    Что можно добавить в чат: общие примеры и свои опубликованные документы.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    try:
+        return JSONResponse(await asyncio.to_thread(chat_files.library))
+    except OSError as exc:
+        return _error(f"библиотека не прочитана: {exc}", 500)
+
+
+# ---------------------------------------------------------------------------
+# Изменения: требования с устойчивыми номерами и прочитанное (changes.py)
+#
+# Только чтение и только свои: изменение пересказывает источники, прочитанные
+# личным токеном, и чужое по id не отдаётся — ответ тот же 404, что и на
+# несуществующее, чтобы перебором нельзя было узнать, что оно есть.
+# ---------------------------------------------------------------------------
+async def get_changes(request: Request) -> JSONResponse:
+    """
+    Мои изменения: задача, число требований, тредов и прочитанных источников.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    try:
+        found = await asyncio.to_thread(changes.listing, owner)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="changes_unavailable")
+    return JSONResponse({"changes": found})
+
+
+async def get_change(request: Request) -> JSONResponse:
+    """
+    Изменение целиком: требования, их история, Evidence без текста и треды.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    change_id = request.path_params["change_id"]
+    try:
+        found = await asyncio.to_thread(changes.one, owner, change_id)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="changes_unavailable")
+    if found is None:
+        return _error("изменение не найдено", 404, error_code="change_not_found")
+    return JSONResponse(found)
+
+
+# ---------------------------------------------------------------------------
+# Внешние действия: предложения, согласия, журнал операций (actions.py)
+#
+# Аудит записей наружу: что предложено, кто и на какой отпечаток согласился,
+# что уехало и чем кончилась сверка. Только чтение и только свои — по той же
+# причине, что у изменений: заголовки задач и страниц пересказывают
+# прочитанное личным токеном.
+# ---------------------------------------------------------------------------
+#: Сколько действий отдаёт список. Больше на странице не читают, а журнал
+#: одного активного треда за неделю укладывается с запасом.
+ACTIONS_LIMIT = 100
+
+
+async def get_actions(request: Request) -> JSONResponse:
+    """
+    Мои действия, свежие первыми; `?thread=` — только одного чата.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    thread = str(request.query_params.get("thread") or "")
+    try:
+        found = await asyncio.to_thread(
+            lambda: external_actions.store().list(owner, thread=thread, limit=ACTIONS_LIMIT)
+        )
+    except external_actions.JournalUnavailable as exc:
+        return _error(str(exc), 503, error_code="actions_unavailable")
+    return JSONResponse({"actions": found})
+
+
+async def get_action(request: Request) -> JSONResponse:
+    """
+    Действие целиком: предложенные операции, согласия с отпечатками, журнал и сверка.
+    ---
+    """
+    if denied := _auth_error(request):
+        return denied
+    owner = principal_of(request.scope).subject
+    action_id = request.path_params["action_id"]
+    try:
+        found = await asyncio.to_thread(lambda: external_actions.store().get(owner, action_id))
+    except external_actions.JournalUnavailable as exc:
+        return _error(str(exc), 503, error_code="actions_unavailable")
+    if found is None:
+        return _error("действие не найдено", 404, error_code="action_not_found")
+    return JSONResponse(found)
+
+
+# ---------------------------------------------------------------------------
+# Оценка результата прогона (outcomes.py)
+#
+# Своя и только своя: оценку ставит владелец треда, и чужой тред отвечает тем
+# же 404, что и несуществующий. Снимок треда — ходы, стоимость, проверка
+# ссылок — берётся на сервере из состояния треда, а не из тела запроса:
+# браузер мог бы прислать любые числа.
+# ---------------------------------------------------------------------------
+async def get_outcome(request: Request) -> JSONResponse:
+    """
+    Моя оценка результата этого чата и список вердиктов.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    owner = principal_of(request.scope).subject
+    try:
+        outcomes.available()
+        found = await asyncio.to_thread(outcomes.store.get, owner, thread_id)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    return JSONResponse({"outcome": found, "verdicts": outcomes.VERDICTS})
+
+
+async def put_outcome(request: Request) -> JSONResponse:
+    """
+    Оценить результат чата: `{"verdict": ..., "minutes": ..., "reason": ...}`.
+    ---
+    """
+    thread_id = await _own_chat(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    try:
+        body = await _json_body(request)
+        answer = outcomes.parse(body)
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="outcome_invalid")
+    owner = principal_of(request.scope).subject
+    thread = await thread_record(thread_id) or {}
+    seen = outcomes.snapshot(thread, thread.get("values") if isinstance(thread.get("values"), dict) else {})
+    try:
+        outcomes.available()
+        saved = await asyncio.to_thread(outcomes.store.save, owner, thread_id, answer, seen)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    except outcomes.OutcomeError as exc:
+        return _error(str(exc), 409, error_code="outcome_conflict")
+    return JSONResponse({"outcome": saved, "verdicts": outcomes.VERDICTS})
+
+
+def _days(request: Request, default: int) -> int:
+    raw = request.query_params.get("days", str(default))
+    if not raw.isdigit() or not 1 <= int(raw) <= 730:
+        raise ValueError("days — целое число от 1 до 730")
+    return int(raw)
+
+
+async def get_outcomes_summary(request: Request) -> JSONResponse:
+    """
+    Оценки всех за `days` дней по сценариям и вердиктам — для пилота. Только администратору.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        days = _days(request, 30)
+        outcomes.available()
+        found = await asyncio.to_thread(outcomes.store.summary, days)
+    except ValueError as exc:
+        return _error(str(exc), error_code="outcomes_invalid_query")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="outcomes_unavailable")
+    return JSONResponse({"days": days, "rows": found, "verdicts": outcomes.VERDICTS})
+
+
+# ---------------------------------------------------------------------------
+# Метрики потока задач (flow_sync.py)
+#
+# Только администратору: доска собирается токеном того, кто попросил, а
+# показатели видны всем, кто смотрит сводку, — открыть её каждому значило бы
+# показывать доску людям, у которых в Jira к ней доступа нет. Пользователь
+# получает те же показатели графом `metrics`, своим токеном.
+# ---------------------------------------------------------------------------
+#: Идущие сборы: ссылка держит задачу, иначе её соберёт сборщик мусора.
+_FLOW_TASKS: set[asyncio.Task] = set()
+
+
+def _board_id(request: Request) -> int:
+    raw = request.path_params["board_id"]
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError("номер доски — целое положительное число")
+    return int(raw)
+
+
+async def get_flow_boards(request: Request) -> JSONResponse:
+    """
+    Собранные доски: когда и чем кончился последний сбор, сколько задач.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        flow_store.available()
+        found = await asyncio.to_thread(flow_store.store.boards)
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    for board in found:
+        board.pop("jql", None)
+    return JSONResponse({"boards": flow_sync.jsonable(found), "scheduled": list(cfg.flow_boards())})
+
+
+async def post_flow_sync(request: Request) -> JSONResponse:
+    """
+    Собрать доску сейчас: `{"full": true}` — перечитать окно целиком, `days` — его глубина.
+
+    Сбор идёт минутами (пауза перед каждым запросом к Jira), поэтому ответ —
+    202 сразу, а итог виден в `GET /api/flow/boards`.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        board_id = _board_id(request)
+        body = await _json_body(request) if request.headers.get("content-length") not in (None, "0") else {}
+        days = body.get("days")
+        if days is not None and (not isinstance(days, int) or not 1 <= days <= 730):
+            raise ValueError("days — целое число от 1 до 730")
+        flow_store.available()
+    except RequestBodyTooLarge as exc:
+        return _error(str(exc), 413)
+    except ValueError as exc:
+        return _error(str(exc), error_code="flow_invalid")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    who = principal_of(request.scope).subject
+
+    def run() -> None:
+        try:
+            flow_sync.sync(board_id, who=who, days=days, full=bool(body.get("full")))
+        except Exception:
+            _LOG.exception("flow: сбор доски %s не удался", board_id)
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    _FLOW_TASKS.add(task)
+    task.add_done_callback(_FLOW_TASKS.discard)
+    return JSONResponse({"board_id": board_id, "state": flow_store.RUNNING}, status_code=202)
+
+
+async def get_flow_summary(request: Request) -> JSONResponse:
+    """
+    Показатели собранной доски за `days` дней и за столько же до них. Без нового сбора.
+    ---
+    """
+    if denied := _admin_error(request):
+        return denied
+    try:
+        board_id = _board_id(request)
+        days = _days(request, 90)
+        flow_store.available()
+        measured = await asyncio.to_thread(
+            flow_sync.measure, board_id, days, refresh=False
+        )
+    except ValueError as exc:
+        return _error(str(exc), error_code="flow_invalid")
+    except db.DatabaseUnavailable as exc:
+        return _error(str(exc), 503, error_code="flow_unavailable")
+    except flow_jira.FlowJiraError as exc:
+        return _error(str(exc), 404, error_code="flow_board_not_found")
+    return JSONResponse(flow_sync.jsonable({
+        "board": measured.board, "current": measured.current,
+        "previous": measured.previous, "notes": measured.notes,
+    }))
+
+
+#: Первый фоновый сбор — не на старте: сервер ещё поднимает треды, а Jira
+#: не должна получать пачку запросов от каждого перезапуска контейнера.
+_FLOW_FIRST_S = 600
+
+
+async def _flow_forever() -> None:
+    await asyncio.sleep(_FLOW_FIRST_S)
+    while True:
+        if not flow_sync.due():
+            return
+        try:
+            await asyncio.to_thread(flow_sync.sync_all)
+        except Exception:
+            _LOG.exception("flow: фоновый сбор не удался")
+        await asyncio.sleep(cfg.flow_sync_interval_h() * 3600)
+
+
+#: Первая уборка — не на старте: сервер ещё поднимает треды из хранилища.
+_SWEEP_FIRST_S = 300
+_SWEEP_EVERY_S = 6 * 3600
+#: Папку моложе часа не трогаем: тред мог появиться только что.
+_SWEEP_GRACE_S = 3600
+
+
+async def sweep_chats() -> int:
+    """
+    Удалить папки файлов тех чатов, тредов которых больше нет. Сколько удалено.
+
+    Тред удаляют и мимо `/api/chats/{id}` — через SDK или сбросом хранилища
+    `langgraph dev`, — и его файлы остаются на диске без владельца. Удаляется
+    только папка, про которую сервер ответил «треда нет»: сбой запроса — не
+    повод стирать чужие файлы.
+    """
+    removed = 0
+    for thread_id in await asyncio.to_thread(chat_files.folders, _SWEEP_GRACE_S):
+        try:
+            if await thread_exists(thread_id):
+                continue
+        except Exception:
+            _LOG.warning("chat sweep: thread lookup failed", extra={"ui_thread_id": thread_id})
+            continue
+        if await asyncio.to_thread(chat_files.drop, thread_id):
+            removed += 1
+            _LOG.info("chat sweep: files of a deleted thread removed", extra={"ui_thread_id": thread_id})
+    return removed
+
+
+async def _sweep_forever() -> None:
+    await asyncio.sleep(_SWEEP_FIRST_S)
+    while True:
+        try:
+            await sweep_chats()
+        except Exception:
+            _LOG.exception("chat sweep failed")
+        await asyncio.sleep(_SWEEP_EVERY_S)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: Starlette):
+    """
+    Фоновые задачи: уборка папок удалённых чатов и сбор FLOW_BOARDS.
+
+    LangGraph сливает этот lifespan со своим. Сбор досок заводится, только
+    если он включён: пустой цикл, спящий сутки, никому не нужен.
+    """
+    tasks = [asyncio.create_task(_sweep_forever())]
+    if flow_sync.due():
+        tasks.append(asyncio.create_task(_flow_forever()))
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
 async def get_logs(request: Request) -> JSONResponse:
     """
     Журнал сервера: последние записи `logging` и сведения о процессе.
@@ -295,9 +1006,12 @@ async def get_logs(request: Request) -> JSONResponse:
     `after` — последний `next`, который клиент уже получил: опрос забирает
     только новое. `level` — нижняя граница важности, `thread_id` — записи
     одного треда. Секреты вычищены ещё при записи (`logbook.scrub`).
+
+    Только администратору: в журнале трассировки всех прогонов, а значит и
+    куски чужих задач.
     ---
     """
-    if denied := _auth_error(request):
+    if denied := _admin_error(request):
         return denied
     params = request.query_params
     try:
@@ -415,6 +1129,8 @@ async def get_ui_resource(request: Request) -> JSONResponse:
         name = request.query_params.get("name", "")
         if not task or not name:
             return _error("task and name are required", error_code="ui_resource_invalid")
+        if inputs.is_chat(task):
+            return _error("chat files are served by /api/chats", 404, error_code="ui_resource_not_found")
         try:
             text = await asyncio.to_thread(inputs.preview, task, name)
         except inputs.InputError as exc:
@@ -423,6 +1139,8 @@ async def get_ui_resource(request: Request) -> JSONResponse:
     if resource_id == "orbita.tasks" and operation == "create":
         if request.method != "POST":
             return _error("resource operation requires POST", 405, error_code="ui_resource_method")
+        if denied := admin_error(request.scope):
+            return denied
         try:
             body = await _json_body(request)
         except RequestBodyTooLarge as exc:
@@ -471,12 +1189,15 @@ async def get_ui_resource(request: Request) -> JSONResponse:
         # Ненастроенная Jira — не ошибка запроса: интерфейс показывает поле
         # ключа проекта и подсказку, а не красный экран. Ошибкой отвечает
         # только сам трекер, и тогда её видно как есть.
-        absent = await asyncio.to_thread(jira_writer.missing_vars)
+        try:
+            absent = await asyncio.to_thread(jira_writer.missing_vars)
+        except jira_writer.JiraError as exc:
+            return _error(str(exc), 503, error_code="ui_resource_unavailable")
         if absent:
             return JSONResponse(
                 {
                     "projects": [],
-                    "reason": "не заданы " + ", ".join(absent),
+                    "reason": credentials.missing_message(absent),
                     "default": "",
                 }
             )
@@ -484,9 +1205,11 @@ async def get_ui_resource(request: Request) -> JSONResponse:
             found = await asyncio.to_thread(jira_writer.projects)
         except jira_writer.JiraError as exc:
             return _error(str(exc), 502, error_code="ui_resource_unavailable")
-        return JSONResponse(
-            {"projects": found, "default": await asyncio.to_thread(cfg.jira_project_key)}
-        )
+        try:
+            default = await asyncio.to_thread(jira_writer.jira.default_project)
+        except jira_writer.JiraError as exc:
+            return _error(str(exc), 503, error_code="ui_resource_unavailable")
+        return JSONResponse({"projects": found, "default": default})
     return _error("resource operation not implemented", 501, error_code="ui_resource_unavailable")
 
 
@@ -612,6 +1335,10 @@ async def ui_pause(request: Request) -> JSONResponse:
             400,
             error_code="ui_pause_context_missing",
         )
+    # Роут свой, и фильтры LangGraph его не касаются: без этой сверки пауза
+    # останавливала бы и чужой прогон, стоило узнать id треда.
+    if not await owns_thread(principal_of(request.scope), thread_id):
+        return _error("тред не найден", 404, error_code="ui_pause_not_found")
     if request.method == "GET":
         return JSONResponse(pause.board.status(thread_id))
     if request.method == "DELETE":
@@ -625,8 +1352,12 @@ async def ui_pause(request: Request) -> JSONResponse:
 
 
 async def get_ui_events(request: Request) -> JSONResponse:
-    """Bounded replay window for events emitted through the optional adapter."""
-    if denied := _auth_error(request):
+    """Bounded replay window for events emitted through the optional adapter.
+
+    События адресуются прогоном, а не тредом, и владельца у них не проверить:
+    поэтому окно открыто только администратору.
+    """
+    if denied := _admin_error(request):
         return denied
     run_id = request.path_params["run_id"]
     try:
@@ -638,23 +1369,53 @@ async def get_ui_events(request: Request) -> JSONResponse:
     return JSONResponse({"events": result, "next_sequence": result[-1]["sequence"] if result else after})
 
 
+routes = [
+    Route("/api/me", get_me, methods=["GET"]),
+    Route("/api/me/connections", get_connections, methods=["GET"]),
+    Route("/api/me/connections", put_connections, methods=["PUT"]),
+    Route("/api/me/connections/{system}", delete_connection, methods=["DELETE"]),
+    Route("/api/me/connections/{system}/check", check_connection, methods=["POST"]),
+    Route("/api/settings", get_settings, methods=["GET"]),
+    Route("/api/settings", put_settings, methods=["PUT"]),
+    Route("/api/inputs", get_inputs, methods=["GET"]),
+    Route("/api/inputs", post_inputs, methods=["POST"]),
+    Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
+    Route("/api/chats/{thread_id}", delete_chat, methods=["DELETE"]),
+    Route("/api/chats/{thread_id}/files", get_chat_files, methods=["GET"]),
+    Route("/api/chats/{thread_id}/files", put_chat_file, methods=["PUT"]),
+    Route("/api/chats/{thread_id}/files", delete_chat_file, methods=["DELETE"]),
+    Route("/api/chats/{thread_id}/files/content", get_chat_file, methods=["GET"]),
+    Route("/api/chats/{thread_id}/attach", attach_chat_file, methods=["POST"]),
+    Route("/api/library", get_library, methods=["GET"]),
+    Route("/api/changes", get_changes, methods=["GET"]),
+    Route("/api/changes/{change_id}", get_change, methods=["GET"]),
+    Route("/api/actions", get_actions, methods=["GET"]),
+    Route("/api/actions/{action_id}", get_action, methods=["GET"]),
+    Route("/api/outcomes", get_outcomes_summary, methods=["GET"]),
+    Route("/api/outcomes/{thread_id}", get_outcome, methods=["GET"]),
+    Route("/api/outcomes/{thread_id}", put_outcome, methods=["PUT"]),
+    Route("/api/flow/boards", get_flow_boards, methods=["GET"]),
+    Route("/api/flow/boards/{board_id}/sync", post_flow_sync, methods=["POST"]),
+    Route("/api/flow/boards/{board_id}/summary", get_flow_summary, methods=["GET"]),
+    Route("/api/published", get_published, methods=["GET"]),
+    Route("/api/published/file", get_published_file, methods=["GET"]),
+    Route("/api/logs", get_logs, methods=["GET"]),
+    Route("/api/ui/capabilities", get_ui_capabilities, methods=["GET"]),
+    Route("/api/ui/graphs/{graph_id}/manifest", get_ui_manifest, methods=["GET"]),
+    Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),
+    Route("/api/ui/resources/{resource_id}", get_ui_resource, methods=["GET", "POST"]),
+    Route("/api/ui/actions/validate", validate_ui_action, methods=["POST"]),
+    Route("/api/ui/pause", ui_pause, methods=["GET", "POST", "DELETE"]),
+    Route("/api/ui/runs/{run_id}/events", get_ui_events, methods=["GET"]),
+]
+
+# Middleware отсюда LangGraph ставит на весь сервер, первым — внешний. Метрики
+# снаружи проверки входа: отказы 401 и 403 тоже запросы, и их всплеск важен.
 app = Starlette(
-    middleware=[Middleware(ApiSecurityMiddleware)],
-    routes=[
-        Route("/api/settings", get_settings, methods=["GET"]),
-        Route("/api/settings", put_settings, methods=["PUT"]),
-        Route("/api/inputs", get_inputs, methods=["GET"]),
-        Route("/api/inputs", post_inputs, methods=["POST"]),
-        Route("/api/inputs/{task}/file", get_input_file, methods=["GET"]),
-        Route("/api/published", get_published, methods=["GET"]),
-        Route("/api/published/file", get_published_file, methods=["GET"]),
-        Route("/api/logs", get_logs, methods=["GET"]),
-        Route("/api/ui/capabilities", get_ui_capabilities, methods=["GET"]),
-        Route("/api/ui/graphs/{graph_id}/manifest", get_ui_manifest, methods=["GET"]),
-        Route("/api/ui/assistants/{assistant_id}/bundle", get_ui_bundle, methods=["GET"]),
-        Route("/api/ui/resources/{resource_id}", get_ui_resource, methods=["GET", "POST"]),
-        Route("/api/ui/actions/validate", validate_ui_action, methods=["POST"]),
-        Route("/api/ui/pause", ui_pause, methods=["GET", "POST", "DELETE"]),
-        Route("/api/ui/runs/{run_id}/events", get_ui_events, methods=["GET"]),
-    ]
+    middleware=[
+        Middleware(metrics.HttpMetricsMiddleware, routes=routes),
+        Middleware(ApiSecurityMiddleware),
+    ],
+    routes=routes,
+    lifespan=lifespan,
 )

@@ -1,0 +1,50 @@
+{
+  "realm": "orbita",
+  "displayName": "ORBITA",
+  "enabled": true,
+  "sslRequired": "external",
+  "bruteForceProtected": true,
+  "failureFactor": 10,
+  "eventsEnabled": true,
+  "eventsExpiration": 7776000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": false,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginTheme": "orbita",
+  "internationalizationEnabled": true,
+  "supportedLocales": ["ru"],
+  "defaultLocale": "ru",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "orbita-user",
+        "description": "Вход в Orbita (OIDC_REQUIRED_ROLE)"
+      },
+      {
+        "name": "orbita-admin",
+        "description": "Настройки сервера и журнал (OIDC_ADMIN_ROLE)"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "orbita-web",
+      "name": "Orbita",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["${ORBITA_PUBLIC_URL}/*"],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    }
+  ]
+}

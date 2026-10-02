@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -63,6 +64,16 @@ TEXT_SUFFIXES = frozenset(
 OUTPUT_TASK = "@published"
 OUTPUT_TITLE = "готовые документы"
 
+#: Имя виртуальной папки «файлы этого чата».
+#:
+#: Интерфейс присылает его без треда — `@chat`, — а `runtime.options()`
+#: дописывает тред прогона: `@chat/<thread_id>`. Чей это тред, решает сервер
+#: LangGraph, когда пускает прогон (`auth.py`), поэтому чужой чат по этому
+#: имени не открыть. Прислать `@chat/<чужой тред>` пользователь может, но
+#: `options()` переписывает папку сам и такое имя до графа не доезжает.
+CHAT_TASK = "@chat"
+CHAT_TITLE = "файлы чата"
+
 
 class InputError(ValueError):
     """Папка или файл задачи недоступны."""
@@ -73,8 +84,44 @@ def is_output(task: str) -> bool:
     return task == OUTPUT_TASK or task.startswith(OUTPUT_TASK + "/")
 
 
+def is_chat(task: str) -> bool:
+    """Выбраны файлы чата, а не папка задачи."""
+    return task == CHAT_TASK or task.startswith(CHAT_TASK + "/")
+
+
+def chat_task(thread_id: str) -> str:
+    """Имя папки файлов этого треда."""
+    return f"{CHAT_TASK}/{thread_id}"
+
+
+def chat_root() -> Path:
+    """Корень папок чатов. Нет — будет создан при первой загрузке."""
+    path = Path(cfg.chat_files_dir()).expanduser()
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def thread_id_of(value: str) -> str:
+    """
+    Id треда в каноническом виде — или отказ. Диска не касается.
+
+    Id проверяется как UUID, а не чистится: сервер LangGraph других не
+    выдаёт, и всё прочее здесь — либо ошибка, либо попытка выйти за корень.
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except ValueError as exc:
+        raise InputError(f"{value!r}: это не id треда") from exc
+
+
+def chat_folder(thread_id: str) -> Path:
+    """Папка файлов треда — единственное место, где id треда становится путём."""
+    return chat_root().resolve() / thread_id_of(thread_id)
+
+
 def title_for(task: str) -> str:
     """Как папка называется для человека и для промпта."""
+    if is_chat(task):
+        return CHAT_TITLE
     if not is_output(task):
         return task
     rest = task[len(OUTPUT_TASK) :].lstrip("/")
@@ -211,7 +258,12 @@ def _output_tasks() -> list[dict]:
             }
         )
 
+    users = publishers.users_root().resolve()
     for folder in sorted(p for p in base.iterdir() if p.is_dir() and not p.is_symlink()):
+        # Личные папки публикации — документы пользователей, а не комплект
+        # документации корня. Под общим именем они открыли бы все сразу.
+        if folder.resolve() == users:
+            continue
         files = sorted(p for p in folder.rglob("*") if p.is_file() and not p.is_symlink())
         if not files:
             continue
@@ -243,11 +295,18 @@ def folder(task: str) -> Path:
     путём. Проверка на выход за корень стоит после `resolve()`, то есть после
     раскрытия `..` и симлинков: сравнивать строки до нормализации бессмысленно.
 
-    Корней два: `input/` для задач оператора и папка публикации для виртуальной
-    задачи «готовые документы». Граница считается от того корня, которому имя
-    принадлежит, поэтому `@published/../..` отбивается ровно так же, как `..`
-    в имени обычной задачи.
+    Корней три: `input/` для задач оператора, папка публикации для виртуальной
+    задачи «готовые документы» и папка треда для файлов чата. Граница
+    считается от того корня, которому имя принадлежит, поэтому
+    `@published/../..` отбивается ровно так же, как `..` в имени обычной задачи.
     """
+    if is_chat(task):
+        thread = task[len(CHAT_TASK) :].lstrip("/")
+        if not thread:
+            # `@chat` без треда: прогон идёт вне треда (скрипт, тест), и файлов
+            # чата у него нет. Это не «корень всех чатов».
+            raise InputError("файлы чата доступны только внутри треда")
+        return chat_folder(thread)
     base = (output_root() if is_output(task) else root()).resolve()
     # Имя виртуальной папки — это её корень, а не сегмент пути внутри него.
     rest = task[len(OUTPUT_TASK) :].lstrip("/") if is_output(task) else task
@@ -382,9 +441,26 @@ def _files(task: str) -> list[Path]:
         base = folder(task)
         if not base.is_dir():
             return []
-        return sorted(p for p in base.rglob("*") if p.is_file() and not p.is_symlink())
+        # Безымянная задача — только файлы корня, как в `list_tasks()` и в
+        # `resolve()`: иначе её список показал бы все папки задач разом.
+        found = base.iterdir() if task == "." else base.rglob("*")
+        return sorted(p for p in found if p.is_file() and not p.is_symlink())
     except (InputError, OSError):
         return []
+
+
+def files_of(task: str) -> list[dict]:
+    """
+    Файлы одной папки с размерами — для инструмента роли и списка в чате.
+
+    Раньше инструмент искал папку в `list_tasks()`, то есть в общем списке
+    задач. Файлов чата там нет и быть не должно: список общий, а чат — нет.
+    """
+    files = _files(task)
+    if not files:
+        return []
+    base = folder(task)
+    return [_describe_file(path, base) for path in files]
 
 
 def readable_files(task: str) -> list[str]:

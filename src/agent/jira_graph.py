@@ -66,18 +66,24 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 from langgraph.types import interrupt
 
-from agent import config as cfg
 from agent import (
+    actions,
     confluence,
+    credentials,
     drafts,
     inputs,
+    jira,
     jira_journal,
     jira_plan,
     jira_roles,
     jira_writer,
+    metrics,
+    proposals,
     sources,
 )
+from agent import config as cfg
 from agent import graph as common_graph
+from agent.runtime import nested
 
 PIPELINE = jira_roles.PIPELINE
 
@@ -143,10 +149,10 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
         return (
             f"{'Выбраны файлы' if many else 'Выбран файл'} "
             + ", ".join(lost)
-            + f", но в папке задачи {'их' if many else 'его'} нет или "
+            + f", но в файлах чата {'их' if many else 'его'} нет или "
             + ("они не читаются" if many else "он не читается")
             + ". Выберите другой файл или снимите выбор, чтобы конвейер прочитал "
-            "папку целиком. Прогон остановлен до первого вызова модели — деньги "
+            "все файлы чата. Прогон остановлен до первого вызова модели — деньги "
             "не потрачены."
         )
 
@@ -156,9 +162,9 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
         if not absent:
             return ""
         return (
-            "В запросе есть ссылка на страницу Confluence, но читать её нечем: не "
-            "заданы " + ", ".join(absent) + ". Заполните переменные в .env и "
-            "перезапустите сервер — или приложите документ файлом в папку задачи. "
+            "В запросе есть ссылка на страницу Confluence, но читать её нечем: "
+            + credentials.missing_message(absent)
+            + ". Или загрузите документ файлом в чат. "
             "Прогон остановлен до первого вызова модели — деньги не потрачены."
         )
 
@@ -171,9 +177,9 @@ def missing_analysis(state: State, config: RunnableConfig) -> str:
 
     return (
         f"Раскладывать нечего: в сообщении {len(question)} символов, ссылки на "
-        "страницу Confluence в нём нет, и в папке задачи нет ни одного текстового "
+        "страницу Confluence в нём нет, и в файлах чата нет ни одного текстового "
         "файла. Этот конвейер разбирает готовую аналитику, а не пишет её: дайте "
-        "ссылку на страницу, положите документ файлом в папку задачи или вставьте "
+        "ссылку на страницу, загрузите документ файлом в чат или вставьте "
         "его в сообщение. Прогон остановлен до первого вызова модели — деньги "
         "не потрачены."
     )
@@ -201,7 +207,7 @@ def source_block(picked: dict) -> str:
     if picked["kind"] == "confluence":
         parts.append(f"Источник: страница Confluence «{picked['title']}» — {picked['url']}")
     else:
-        parts.append("Источник: файлы папки задачи — " + ", ".join(picked["names"]))
+        parts.append("Источник: файлы чата — " + ", ".join(picked["names"]))
         if picked.get("chosen"):
             parts.append(
                 "Эти файлы выбраны оператором в интерфейсе как единственный источник. "
@@ -307,7 +313,7 @@ def _source_note(picked: dict) -> str:
     where = (
         f"страница Confluence «{picked['title']}» {picked['url']}"
         if picked["kind"] == "confluence"
-        else "файлы папки задачи: " + ", ".join(picked["names"])
+        else "файлы чата: " + ", ".join(picked["names"])
     )
     tail = " (текст обрезан по потолку чтения)" if picked.get("truncated") else ""
     return f"Прочитан источник: {where} — {len(picked['text'])} символов{tail}."
@@ -324,13 +330,111 @@ def _source_note(picked: dict) -> str:
 # Поэтому здесь стоит остановка, и по умолчанию она включена — в отличие от
 # подтверждения публикации. Ею же спрашивается единственное, чего конвейер не
 # может вывести из аналитики: проект. Ответ оператора приезжает объектом
-# `{"decision": "approved", "project": "ORB"}` — решение и проект одним ходом,
-# чтобы не спрашивать дважды об одном и том же.
+# `{"decision": "approved", "project": "ORB", "digest": "…"}` — решение и
+# проект одним ходом, чтобы не спрашивать дважды об одном и том же.
+#
+# Узел идёт общим порядком внешних действий (`actions.py`):
+#
+#   предложение  карточки плана с судьбой каждой из журнала области «тред и
+#                проект»: завести, поправить заведённую, не трогать;
+#   правила      рубильник, реквизиты, разбор плана, проект, «отправлять нечего»;
+#   согласие     остановка с отпечатком предложения; после ответа предложение
+#                собирается заново, и другое содержимое спрашивается ещё раз;
+#   выполнение   `jira_writer.create_issues` через журнал операций;
+#   сверка       `jira_writer.verify_issues`: что трекер хранит под ключами.
 # --------------------------------------------------------------------------
+#: Сколько раз остановка переспрашивает, если предложение меняется между
+#: показом и ответом. Больше — значит, журнал меняет кто-то ещё, и разумнее
+#: остановиться, чем гоняться за ним.
+ASK_LIMIT = 3
+
+
+def _thread(config: RunnableConfig) -> str:
+    return str((config.get("configurable") or {}).get("thread_id") or "no-thread")
+
+
+def _scope(thread: str, project: str) -> str:
+    """
+    Область журнала: тред и проект, без отпечатка плана.
+
+    С отпечатком каждая правка плана открывала новую область, и следующий ход
+    заводил все карточки заново, включая неизменённые. Теперь область одна на
+    тред и проект, и карточку узнают по её локальному ключу.
+    """
+    return jira_journal.run_key(thread, project)
+
+
+def _base_url() -> str:
+    try:
+        return jira.load_settings().base_url
+    except jira.JiraError:
+        return ""
+
+
+def _proposal(plan: jira_plan.Plan, project: str, thread: str, source: str,
+              journal: Any) -> dict:
+    """
+    Предложение хода: цель и судьба каждой карточки.
+
+    Без проекта журнал не спрашивается — области ещё нет, и все карточки
+    показываются новыми; когда оператор назовёт проект, предложение соберётся
+    заново уже с журналом (`_ask`).
+    """
+    scope = _scope(thread, project) if project else ""
+    if project and journal is not None and hasattr(journal, "import_legacy"):
+        # Старый журнал жил по ключу «тред + проект + состав плана». При
+        # обновлении кода тот же план должен найти уже созданные задачи.
+        journal.import_legacy(
+            scope, actions.legacy_rows(thread, project, plan.fingerprint()),
+            {item.local: item.digest(source) for item in plan.items},
+        )
+    operations = jira_writer.operations(
+        plan, run=scope, journal=journal if project else None, source=source
+    )
+    return actions.seal(
+        "jira",
+        graph=PIPELINE.key,
+        target={"system": "jira", "project": project, "base_url": _base_url()},
+        operations=operations,
+        thread=thread,
+        owner=actions.actor(),
+        scope=scope,
+    )
+
+
+def _migrate_legacy_history(messages: list, project: str, thread: str, source: str,
+                            journal: Any) -> None:
+    """Найти старые области по планам этого треда, даже если нынешний план изменён."""
+    if not project or not hasattr(journal, "import_legacy"):
+        return
+    scope = _scope(thread, project)
+    seen: set[str] = set()
+    # Самый свежий план первым: прежний код заводил отдельные задачи для
+    # каждой редакции, а новый журнал должен узнавать последнюю из них.
+    for message in reversed(messages):
+        if getattr(message, "type", "") != "ai":
+            continue
+        content = getattr(message, "content", "")
+        if not isinstance(content, str) or '"issues"' not in content:
+            continue
+        try:
+            previous = jira_plan.parse(content)
+        except jira_plan.PlanError:
+            continue
+        fingerprint = previous.fingerprint()
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        journal.import_legacy(
+            scope, actions.legacy_rows(thread, project, fingerprint),
+            {item.local: item.digest(source) for item in previous.items},
+        )
+
+
 def _project(config: RunnableConfig) -> str:
-    """Проект хода: выбранный в интерфейсе, иначе — из настроек."""
+    """Проект хода: выбранный в интерфейсе, иначе — проект по умолчанию пользователя."""
     chosen = str(common_graph.options(config).get("jira_project") or "").strip()
-    return (chosen or cfg.jira_project_key()).upper()
+    return chosen.upper() or jira.default_project()
 
 
 def _known_projects() -> list[dict]:
@@ -346,43 +450,132 @@ def _known_projects() -> list[dict]:
         return []
 
 
-def _ask(plan: jira_plan.Plan, project: str, source: str = "") -> dict:
-    """Остановка перед заведением: показать черновики, спросить решение и проект."""
-    cards, warnings = drafts.issues(plan, project, source=source)
-    answer = interrupt(
-        {
-            "action": "jira",
-            "project": project,
-            # Справочник спрашивается только тогда, когда выбирать и правда
-            # надо: при известном проекте это лишний поход в сеть на каждом
-            # прогоне ради списка, который никто не откроет.
-            "projects": _known_projects() if not project else [],
-            "count": len(plan.items),
-            "summary": plan.summary(),
-            "title": f"Завести в Jira: {plan.summary()}",
-            "format": "markdown",
-            # Черновик каждой карточки: заголовок, тип из схемы проекта и
-            # описание ровно в том виде, в каком оно уедет в запросе. Список
-            # строк рядом остаётся сводкой на один взгляд (см. drafts.py).
-            "drafts": cards,
-            # Отброшенное разбором и подменённые типы: то, чего в карточках
-            # уже не видно, потому что их там нет.
-            "warnings": warnings + plan.warnings,
-            "document": plan.table(),
-            "hint": (
-                'ответьте {"decision": "approved", "project": "ABC"}, чтобы завести '
-                "задачи в проекте ABC, или {\"decision\": \"rejected\", \"reason\": ...}"
-            ),
-        }
-    )
-    decision = common_graph.approval_of(answer)
-    if isinstance(answer, dict) and answer.get("decision") == "drafts":
-        decision["decision"] = "drafts"
-    if isinstance(answer, dict):
-        picked = str(answer.get("project") or "").strip()
+def _title(plan: jira_plan.Plan, operations: list[dict]) -> str:
+    """Заголовок остановки: что уедет, а не сколько карточек в плане."""
+    counts = {kind: sum(op.get("action") == kind for op in operations)
+              for kind in (jira_writer.UPDATE, jira_writer.UNCHANGED)}
+    if not any(counts.values()):
+        return f"Завести в Jira: {plan.summary()}"
+    fresh = len(operations) - sum(counts.values())
+    parts = [f"новых {fresh}"] if fresh else []
+    if counts[jira_writer.UPDATE]:
+        parts.append(f"правок {counts[jira_writer.UPDATE]}")
+    if counts[jira_writer.UNCHANGED]:
+        parts.append(f"без изменений {counts[jira_writer.UNCHANGED]}")
+    return "Jira: " + ", ".join(parts)
+
+
+def _prompt(plan: jira_plan.Plan, proposal: dict, source: str = "", note: str = "") -> dict:
+    """Что оператор видит перед заведением: черновики, проект и сводку."""
+    project = str(proposal["target"].get("project") or "")
+    operations = proposal["operations"]
+    cards, warnings = drafts.issues(plan, project, source=source, operations=operations)
+    payload = {
+        "action": "jira",
+        "project": project,
+        # Справочник спрашивается только тогда, когда выбирать и правда
+        # надо: при известном проекте это лишний поход в сеть на каждом
+        # прогоне ради списка, который никто не откроет.
+        "projects": _known_projects() if not project else [],
+        "count": len(actions.pending(proposal)),
+        "summary": plan.summary(),
+        "title": _title(plan, operations),
+        "format": "markdown",
+        # Черновик каждой карточки: заголовок, тип из схемы проекта и
+        # описание ровно в том виде, в каком оно уедет в запросе. Список
+        # строк рядом остаётся сводкой на один взгляд (см. drafts.py).
+        "drafts": cards,
+        # Отброшенное разбором и подменённые типы: то, чего в карточках
+        # уже не видно, потому что их там нет.
+        "warnings": ([note] if note else []) + warnings + plan.warnings,
+        "document": plan.table(),
+        "hint": (
+            'ответьте {"decision": "approved", "project": "ABC"}, чтобы завести '
+            "задачи в проекте ABC, или {\"decision\": \"rejected\", \"reason\": ...}"
+        ),
+    }
+    return actions.shown(payload, proposal)
+
+
+def _continues(shown: list[dict], actual: dict, journal: Any) -> bool:
+    """
+    Отличается ли пересобранное предложение от показанного только уже сделанным.
+
+    Показано «завести», а теперь карточка «без изменений» или «найти по метке»
+    — и запись о ней в журнале сделало одобренное действие этого же треда.
+    Так выглядит продолжение после падения посреди пачки и проект, в котором
+    те же карточки завёл прошлый одобренный ход. Правка (`update`) продолжением
+    не бывает никогда: на неё согласия не спрашивали.
+    """
+    before = {op["key"]: op for op in shown}
+    if set(before) != {op["key"] for op in actual["operations"]}:
+        return False
+    for op in actual["operations"]:
+        was = before[op["key"]]
+        if was == op:
+            continue
+        if was.get("action") != jira_writer.CREATE or op.get("action") not in (
+            jira_writer.UNCHANGED, jira_writer.RECOVER
+        ):
+            return False
+        record = journal.record(actual["scope"], "issue", op["key"]) or {}
+        if not journal.approved_action(record.get("action_id", "")):
+            return False
+    return True
+
+
+def _ask(plan: jira_plan.Plan, proposal: dict, source: str, journal: Any,
+         history: list | None = None) -> tuple[dict, dict]:
+    """
+    Остановка перед заведением: решение, проект и предложение, к которому оно относится.
+
+    После ответа предложение собирается заново — уже с проектом, который
+    назвал оператор, и с журналом на этот момент. Совпали операции —
+    согласие относится к нему. Не совпали (проект оказался тем, где часть
+    карточек уже заведена, или журнал успел измениться) — спрашиваем ещё раз,
+    показывая новое: согласие на «завести всё» не разрешает «поправить три».
+    """
+    thread = proposal["thread"]
+    note = ""
+    for _ in range(ASK_LIMIT):
+        actions.Recorder(proposal, journal=journal).propose()
+        answer = interrupt(_prompt(plan, proposal, source, note))
+        picked = str(answer.get("project") or "").strip().upper() if isinstance(answer, dict) else ""
+        project = picked or str(proposal["target"].get("project") or "")
+        _migrate_legacy_history(history or [], project, thread, source, journal)
+        actual = _proposal(plan, project, thread, source, journal)
+        echoed = str(answer.get("digest") or "") if isinstance(answer, dict) else ""
+        if echoed and echoed != proposal["digest"]:
+            earlier = journal.approved_operations(thread, "jira", echoed)
+            if earlier is not None and _continues(earlier, actual, journal):
+                # Согласие дано на это же предложение, и расходится оно только
+                # продвижением его собственного выполнения до падения.
+                answer = {**answer, "digest": proposal["digest"]}
+        decision = actions.bind(answer, proposal["digest"])
+        if decision["decision"] == actions.STALE:
+            note = decision["reason"]
+            proposal = _proposal(plan, str(proposal["target"].get("project") or ""),
+                                 thread, source, journal)
+            continue
         if picked:
-            decision["project"] = picked.upper()
-    return decision
+            decision["project"] = picked
+        if decision["decision"] not in {"approved", "drafts"}:
+            return decision, proposal
+        if (actual["operations"] == proposal["operations"]
+                or _continues(proposal["operations"], actual, journal)):
+            # Проект назван в том же ответе — это часть решения, а не расхождение.
+            decision["digest"] = actual["digest"]
+            return decision, actual
+        note = (
+            f"В проекте {project} часть карточек уже заведена в этом чате или журнал изменился "
+            "после показа: ниже — что уедет на самом деле. Подтвердите ещё раз."
+        )
+        proposal = actual
+    return (
+        {"decision": actions.STALE, "digest": proposal["digest"],
+         "reason": "предложение менялось между показом и ответом; запустите заведение заново"},
+        proposal,
+    )
 
 
 def create_node(state: State, config: RunnableConfig) -> dict:
@@ -409,7 +602,7 @@ def create_node(state: State, config: RunnableConfig) -> dict:
         return skip("disabled", "заведение выключено через JIRA_CREATE_ISSUES")
     absent = jira_writer.missing_vars()
     if absent:
-        return skip("skipped", "не заданы в .env: " + ", ".join(absent))
+        return skip("skipped", credentials.missing_message(absent))
 
     try:
         plan = jira_plan.parse(document)
@@ -422,21 +615,71 @@ def create_node(state: State, config: RunnableConfig) -> dict:
     # Ссылка на источник нужна уже здесь: она уходит в описание задачи, а
     # черновик обязан показывать описание целиком, включая её.
     source = (state.get("source") or {}).get("url", "")
+    thread = _thread(config)
+    if nested(config):
+        # Вложенный прогон задач не заводит и не спрашивает: план уезжает
+        # вызывающему предложением, и заведёт его `create_proposed` после
+        # решения оператора — одного на все предложения хода. Журнал здесь
+        # не спрашивается: заводить будут в области треда вызывающего, а не
+        # этого, и показывать чужую судьбу карточек значило бы обещать не то.
+        shown = _proposal(plan, project, thread, source, None)
+        offered = {
+            "kind": "jira",
+            "graph": PIPELINE.key,
+            "approval_required": cfg.jira_create_require_approval() or not project,
+            "prompt": _prompt(plan, shown, source),
+            "effect": {
+                "project": project,
+                "document": document,
+                "fingerprint": plan.fingerprint(),
+                "digest": plan.digest(source),
+                "source": source,
+            },
+        }
+        reason = "вложенный прогон: заведение передано вызывающему графу"
+        return {
+            "issues": {"status": "proposed", "project": project, "reason": reason},
+            "proposals": proposals.offer(state, offered),
+            "messages": [AIMessage(content=f"Задачи в Jira не заведены: {reason}.")],
+            "stage": "create",
+        }
+
+    try:
+        journal = actions.store()
+        _migrate_legacy_history(state.get("messages") or [], project, thread, source, journal)
+        proposal = _proposal(plan, project, thread, source, journal)
+    except actions.JournalUnavailable as exc:
+        # Журнал недоступен — заводить вслепую нельзя: именно он и отличает
+        # повтор от первого раза и правку от новой задачи.
+        return skip("failed", f"журнал операций недоступен ({exc})")
+    if project and not actions.pending(proposal):
+        return _unchanged(proposal)
+
     # Спрашиваем в двух случаях: так настроено или спрашивать всё равно
     # придётся — без проекта заводить некуда, и это единственный вопрос,
     # который конвейер имеет право задать.
+    approval: dict = {}
     if cfg.jira_create_require_approval() or not project:
-        decision = _ask(plan, project, source)
-        project = decision.get("project") or project
-        if decision["decision"] not in {"approved", "drafts"}:
-            return skip("rejected", decision.get("reason") or "оператор отменил заведение")
-        if decision["decision"] == "drafts" and project:
+        try:
+            approval, proposal = _ask(plan, proposal, source, journal,
+                                     state.get("messages") or [])
+        except actions.JournalUnavailable as exc:
+            return skip("failed", f"журнал операций недоступен ({exc})")
+        project = str(proposal["target"].get("project") or "")
+        recorder = actions.Recorder(proposal, journal=journal)
+        recorder.decide(approval)
+        if approval["decision"] == actions.STALE:
+            return skip("stale", approval["reason"])
+        if approval["decision"] not in {"approved", "drafts"}:
+            return skip("rejected", approval.get("reason") or "оператор отменил заведение")
+        if approval["decision"] == "drafts" and project:
             from agent import jira_forms
 
             try:
                 result = jira_forms.prepare(plan, project, source=source)
             except jira_writer.JiraError as exc:
                 return skip("failed", str(exc))
+            recorder.done("forms", {"status": "forms", "project": project})
             return {"issues": result, "stage": "create", "messages": [AIMessage(
                 content="Подготовлены формы Jira: откройте их в разделе задач, проверьте "
                         "и сохраните вручную. Задачи автоматически не создавались."
@@ -444,24 +687,19 @@ def create_node(state: State, config: RunnableConfig) -> dict:
     if not project:
         return skip(
             "skipped",
-            "не указан проект: выберите его в интерфейсе или задайте JIRA_PROJECT_KEY",
+            "не указан проект: выберите его в интерфейсе или задайте проект по умолчанию "
+            "в «Настройки» → «Мои подключения»",
         )
-
-    # Ключ прогона: тред, проект и сам план. Повтор узла после падения даёт тот
-    # же ключ и потому находит свои прошлые операции; следующий прогон с другим
-    # планом — другой ключ, и заводит он своё.
-    thread = str((config.get("configurable") or {}).get("thread_id") or "no-thread")
-    run = jira_journal.run_key(thread, project, plan.fingerprint())
+    if not actions.pending(proposal):
+        return _unchanged(proposal)
     try:
-        result = jira_writer.create_issues(
-            plan, project, source=source, run=run, journal=jira_journal.Journal()
-        )
+        result = _execute(plan, proposal, approval, source=source, journal=journal)
     except jira_writer.JiraError as exc:
         return skip("failed", str(exc))
-    except OSError as exc:
-        # Журнал недоступен — заводить вслепую нельзя: именно он и отличает
-        # повтор от первого раза.
+    except actions.JournalUnavailable as exc:
         return skip("failed", f"журнал операций недоступен ({exc})")
+    if result.get("status") == "stale":
+        return skip("stale", result["reason"])
 
     return {
         "issues": result,
@@ -470,14 +708,135 @@ def create_node(state: State, config: RunnableConfig) -> dict:
     }
 
 
+def _unchanged(proposal: dict) -> dict:
+    """Все карточки уже заведены этим чатом и не менялись: спрашивать не о чем."""
+    project = proposal["target"]["project"]
+    keys = [op.get("remote") or op["key"] for op in proposal["operations"]]
+    reason = (
+        f"все карточки плана уже заведены в проекте {project} этим чатом и не менялись "
+        f"({', '.join(keys)})"
+    )
+    return {
+        "issues": {"status": "unchanged", "project": project, "reason": reason},
+        "messages": [AIMessage(content=f"Задачи в Jira не отправлялись: {reason}.")],
+        "stage": "create",
+    }
+
+
+def _execute(plan: jira_plan.Plan, proposal: dict, approval: dict, *, source: str,
+             journal: Any) -> dict:
+    """
+    Выполнение и сверка по согласованному предложению.
+
+    Перед записью предложение собирается ещё раз и сравнивается с тем, на
+    которое дано согласие: между ответом и этой строкой журнал мог измениться
+    параллельным прогоном того же треда. Разошлось — ничего не пишем.
+    """
+    project = proposal["target"]["project"]
+    recorder = actions.Recorder(proposal, strict=True, journal=journal)
+    if approval:
+        fresh = _proposal(plan, project, proposal["thread"], source, journal)
+        stale = actions.stale(approval, fresh["digest"])
+        if stale:
+            result = {"status": "stale", "project": project, "reason": stale}
+            recorder.done("stale", result)
+            return result
+    else:
+        # Политика не спрашивала (JIRA_CREATE_REQUIRE_APPROVAL=0): согласия
+        # нет, но предложение в журнале есть — видно, что и почему уехало.
+        recorder.propose()
+    book = recorder.operations()
+    result = jira_writer.create_issues(
+        plan, project, source=source, run=proposal["scope"], journal=book
+    )
+    result = jira_writer.verify_issues(result, run=proposal["scope"], journal=book)
+    recorder.done(result.get("status", "failed"), result)
+    return result
+
+
+def create_proposed(effect: dict, *, thread: str, project: str = "",
+                    approval: dict | None = None) -> dict:
+    """
+    Завести задачи по предложению вложенного прогона.
+
+    План разбирается заново из документа карточек и сверяется отпечатком
+    содержимого: заводится ровно то, что предлагали, а не то, что разбор дал
+    бы сегодня. Проект — из решения оператора, иначе предложенный. Область
+    журнала строится так же, как в `create_node`, но по треду вызывающего:
+    повтор применения находит свои операции и не заводит задачи второй раз.
+
+    Предложение показывало заведение, а не правку: вложенный граф не знает
+    журнала вызывающего. Поэтому если в области вызывающего карточки этого
+    плана уже заведены с другим содержимым, по предложению ничего не пишется
+    — правку заведённых задач согласуют отдельно, в самом треде.
+
+    Тред вызывающего обязателен. Без него область у всех предложений с теми
+    же карточками и проектом одна, и независимое предложение вернуло бы
+    задачи, заведённые по чужому, вместо своих.
+    """
+    thread = str(thread or "").strip()
+    if not thread:
+        raise ValueError("заведение задач по предложению требует треда вызывающего графа")
+    source = str(effect.get("source") or "")
+    try:
+        plan = jira_plan.parse(str(effect.get("document") or ""))
+    except jira_plan.PlanError as exc:
+        return {"status": "failed", "reason": f"план не разобран ({exc})"}
+    # Предложения, выпущенные до отпечатка содержимого, сверяются по составу.
+    same = (plan.digest(source) == effect["digest"] if effect.get("digest")
+            else plan.fingerprint() == effect.get("fingerprint"))
+    if not same:
+        return {"status": "stale", "reason": "план карточек изменился после предложения"}
+
+    project = (project or str(effect.get("project") or "")).strip().upper()
+    if not project:
+        return {"status": "skipped", "reason": "не указан проект"}
+    if not jira_writer.is_enabled():
+        return {"status": "disabled", "reason": "заведение выключено через JIRA_CREATE_ISSUES"}
+    absent = jira_writer.missing_vars()
+    if absent:
+        return {"status": "skipped", "reason": credentials.missing_message(absent)}
+
+    try:
+        journal = actions.store()
+        proposal = _proposal(plan, project, thread, source, journal)
+        edits = [op["key"] for op in proposal["operations"] if op["action"] == jira_writer.UPDATE]
+        if edits:
+            return {
+                "status": "stale",
+                "reason": "в этом чате карточки " + ", ".join(edits) + " уже заведены с другим "
+                "содержимым; правку заведённых задач согласуйте в самом треде jira",
+            }
+        if not actions.pending(proposal):
+            return {**_unchanged(proposal)["issues"], "created": []}
+        # Согласие на предложение проверил `proposals.apply` по его id; здесь
+        # оно привязывается к содержимому, которое уедет в этой области.
+        bound = {**actions.approval_of(approval), "digest": proposal["digest"]} if approval else {}
+        if bound:
+            actions.Recorder(proposal, journal=journal).decide(bound)
+        return _execute(plan, proposal, bound, source=source, journal=journal)
+    except jira_writer.JiraError as exc:
+        return {"status": "failed", "reason": str(exc)}
+    except actions.JournalUnavailable as exc:
+        return {"status": "failed", "reason": f"журнал операций недоступен ({exc})"}
+
+
 def _created_note(result: dict) -> str:
     """Ключи и ссылки — то, ради чего конвейер и запускали."""
-    created = result.get("created") or []
+    entries = result.get("created") or []
+    created = [item for item in entries
+               if not item.get("unchanged") and not item.get("updated") and not item.get("recovered")]
     head = (
         f"Заведено задач в проекте {result['project']}: {len(created)}"
         if created
-        else f"В проекте {result['project']} не заведено ни одной задачи"
+        else f"В проекте {result['project']} не заведено новых задач"
     )
+    updated = [item for item in entries if item.get("updated")]
+    if updated:
+        head += f", обновлено {len(updated)}"
+    unchanged = [item for item in entries if item.get("unchanged")]
+    if unchanged:
+        head += f", без изменений {len(unchanged)}"
     failed = result.get("failed") or []
     if failed:
         head += f", отказов {len(failed)}"
@@ -486,9 +845,18 @@ def _created_note(result: dict) -> str:
         # Неопределённость называется отдельно от отказа: «не заведено» и
         # «неизвестно, заведено ли» требуют от человека разных действий.
         head += f", с неизвестным результатом {len(unresolved)}"
-    recovered = [item for item in created if item.get("recovered")]
+    recovered = [item for item in entries if item.get("recovered")]
     if recovered:
         head += f", восстановлено из журнала {len(recovered)}"
+    check = result.get("verification") or {}
+    if check:
+        # Сверка — отдельной фразой: «заведено» говорит трекер, «лежит то, что
+        # отправили» — чтение после записи.
+        head += (
+            f". Сверка после записи: совпало {len(check.get('verified') or [])}"
+            f", расхождений {len(check.get('differs') or [])}"
+            f", не прочитано {len(check.get('unverified') or [])}"
+        )
     body = jira_writer.format_created(result)
     return f"{head}.\n{body}" if body else f"{head}."
 
@@ -516,4 +884,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "jira")

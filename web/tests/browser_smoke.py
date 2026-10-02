@@ -134,6 +134,25 @@ class Handler(SimpleHTTPRequestHandler):
             )
         if self.path.endswith("/manifest"):
             return self.reply(manifest(self.path.split("/")[-2]))
+        if self.path.startswith("/api/chats/") and "/files" in self.path:
+            thread = self.path.split("/")[3]
+            return self.reply(
+                {
+                    "thread_id": thread,
+                    "files": [],
+                    "limits": {"max_bytes": 1024, "max_files": 10, "suffixes": [".md"]},
+                }
+            )
+        if self.path == "/api/auth/config":
+            # Вход через Keycloak выключен: интерфейс работает админ-токеном.
+            return self.reply({"enabled": False})
+        if self.path == "/api/me":
+            # Вход админ-токеном: интерфейс без OIDC, как у фикстуры в целом.
+            return self.reply(
+                {"subject": "service", "name": "API_ADMIN_TOKEN", "admin": True, "service": True}
+            )
+        if self.path == "/api/library":
+            return self.reply({"examples": [], "published": []})
         if self.path.endswith("/graph"):
             ids = ["__start__", "context", "analyst", "__end__"]
             return self.reply(
@@ -168,6 +187,19 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/fixture/interrupt":
             INTERRUPTED = True
             return self.reply({})
+        if self.path == "/threads/search":
+            graph = body.get("metadata", {}).get("graph_id", "agent")
+            return self.reply(
+                [
+                    {
+                        "thread_id": "saved-thread",
+                        "status": "idle",
+                        "created_at": "2026-09-26T08:00:00+00:00",
+                        "updated_at": "2026-09-26T09:00:00+00:00",
+                        "metadata": {"graph_id": graph, "title": "Сохранённый чат"},
+                    }
+                ]
+            )
         if self.path == "/assistants/search":
             return self.reply(
                 [
@@ -294,7 +326,7 @@ def main(extra_checks=None):
 
             # Настройки стали разделом приложения, а не окном поверх работы:
             # вход в них один — меню профиля.
-            def open_settings(item="Настройки приложения", group=None):
+            def open_settings(item="Настройки сервера", group=None):
                 js("document.querySelector('.menu-avatar .menu-trigger').click()")
                 js(
                     "[...document.querySelectorAll('.menu-item')]"
@@ -323,6 +355,8 @@ def main(extra_checks=None):
                 "Emulation.setDeviceMetricsOverride",
                 {"width": 1366, "height": 768, "deviceScaleFactor": 1, "mobile": False},
             )
+            # Запись прежнего вида — тред на сценарий: интерфейс читает её,
+            # пока своей записи о последнем чате у него нет.
             call(
                 "Page.addScriptToEvaluateOnNewDocument",
                 {"source": "localStorage.setItem('orbita.thread.agent','saved-thread');"},
@@ -370,15 +404,12 @@ def main(extra_checks=None):
             assert js("window.framesPainted") == 0, "Background scene re-renders markup"
             click("Показать предыдущие")
             until("document.querySelectorAll('.msg').length === 100")
-            js(
-                "[...document.querySelectorAll('.console-tabs button')]"
-                ".find(b=>b.textContent.includes('События')).click()"
-            )
-            until("document.querySelector('.engine-timeline') !== null")
-            js(
-                "[...document.querySelectorAll('.console-tabs button')]"
-                ".find(b=>b.textContent.includes('Поток')).click()"
-            )
+            # Разговор — в колонке чата, а не в нижней консоли: консоли больше
+            # нет, и открывать-закрывать её не нужно. Файлы чата с разговором
+            # свёрнуты в строку.
+            assert js("document.querySelectorAll('.chat-panel .msg').length") == 100
+            assert js("document.querySelector('.console') === null")
+            assert js("document.querySelector('.chat-panel-toggle').getAttribute('aria-expanded')") == "false"
             screenshot = call("Page.captureScreenshot")["data"]
             (ARTIFACTS / "desktop.png").write_bytes(base64.b64decode(screenshot))
             for width in [1366, 900, 390]:
@@ -409,28 +440,46 @@ def main(extra_checks=None):
             until(
                 "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Запустить')&&!b.disabled)"
             )
+            # Колонку чата закрыли — прогон откроет её сам, на вкладке «Чат».
+            # Только в широком окне: в узком она выдвинулась бы поверх схемы.
+            call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": 1366, "height": 768, "deviceScaleFactor": 1, "mobile": False},
+            )
+            until("document.querySelector('.app').dataset.narrow === 'false'")
+            if js("!!document.querySelector('.inspector')"):
+                js("document.querySelector('[aria-label=\"Колонка чата и подробностей\"]').click()")
+            until("document.querySelector('.inspector') === null")
             click("Запустить")
             click("Запустить")
             until("document.querySelector('.pick-button').disabled")
             until(
                 "[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Остановить'))"
             )
+            until("document.querySelector('.inspector-tab.active')?.textContent.includes('Чат')")
+            assert js("document.querySelector('.chat-panel-toggle').getAttribute('aria-expanded')") == "false"
             # Вторая половина того же правила: поле пустеет, когда сервер принял
             # ход. До этого момента текст принадлежит оператору — см. проверку
             # отказа выше и отказ после preflight в browser_regressions.
             until("document.querySelector('.task-composer textarea').value === ''")
             assert js(
-                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
+                "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый чат')).disabled"
             )
             click("Остановить")
             until("document.querySelector('.run-badge').textContent.includes('Остановлен')")
             time.sleep(0.5)
             assert js("document.querySelector('.run-badge').textContent.includes('Остановлен')")
             assert REQUESTS.count("/threads/saved-thread/runs/stream") == 1, "Duplicate submission"
+            # События движка — во вкладке «Прогон» той же колонки.
+            js("document.querySelectorAll('.inspector-tab')[1].click()")
+            until("!!document.querySelector('.run-events')")
+            js("document.querySelector('.run-events').open = true")
+            until("document.querySelectorAll('.run-events .engine-timeline li').length > 0")
+            js("document.querySelector('.inspector-tab').click()")
             until(
-                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый прогон')).disabled"
+                "![...document.querySelectorAll('button')].find(b=>b.textContent.includes('Новый чат')).disabled"
             )
-            click("Новый прогон")
+            click("Новый чат")
             until("document.querySelectorAll('.msg').length === 0")
             js("document.querySelector('.pick-button').click()")
             until("!!document.querySelector('.pick-menu [data-graph=demo]')")
@@ -448,9 +497,14 @@ def main(extra_checks=None):
             }
             additional = extra_checks(call, js, until, click, shell) if extra_checks else []
             js("fetch('/fixture/interrupt',{method:'POST'})")
+            # Последний чат — одна запись на пользователя: после проверок в
+            # ней чат другого сценария, а здесь нужен тред с остановкой.
             call(
                 "Page.addScriptToEvaluateOnNewDocument",
-                {"source": "localStorage.setItem('orbita.graph','agent');"},
+                {
+                    "source": "localStorage.setItem('orbita.graph','agent');"
+                    "localStorage.setItem('orbita.chat', JSON.stringify({thread:'saved-thread',graph:'agent'}));"
+                },
             )
             call("Page.reload")
             until(
@@ -487,6 +541,8 @@ def main(extra_checks=None):
                             "desktop/tablet/mobile overflow",
                             "agent picker visible",
                             "active run locks graph and thread",
+                            "run opens the chat column with materials folded",
+                            "run events live in the run tab",
                             "double submission blocked",
                             "rejected submission preserves draft",
                             "accepted run clears the draft",

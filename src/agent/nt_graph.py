@@ -28,7 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
-from agent import confluence, jira, nodes, nt_roles
+from agent import confluence, jira, metrics, nodes, nt_roles
 from agent.nt import (
     anomaly_detector,
     assessment,
@@ -56,9 +56,9 @@ from agent.nt.models import failure, window
 from agent.nt.report import render_report
 from agent.nt.settings import Settings, load_settings
 from agent.nt_state import State
-from agent.nt_tools import build_tools
+from agent.nt_tools import NT_TOOLS, build_tools
 from agent.routes import budget_gate
-from agent.runtime import options
+from agent.runtime import nested, options
 
 PIPELINE = nt_roles.PIPELINE
 log = logging.getLogger(__name__)
@@ -277,7 +277,9 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         except Exception as exc:
             log.warning("nt_llm_failed node=understand_task run_id=%s test_id=%s",
                         state.get("run_id"), state.get("test_id"), exc_info=True)
-            return {"stage": "understand_task", "source_errors": _error(state, "LLM_UNAVAILABLE",
+            # Оборванный ответ оплачен: расход остаётся в треде и отказом.
+            return {**nodes.truncation_charge(exc, state), "stage": "understand_task",
+                    "source_errors": _error(state, "LLM_UNAVAILABLE",
                         _reason(exc, "context extraction unavailable"))}
 
     def discover_scope(state: State) -> dict:
@@ -485,7 +487,8 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             log.warning("nt_llm_failed node=investigate run_id=%s test_id=%s iteration=%s",
                         state.get("run_id"), state.get("test_id"), state.get("iteration", 0),
                         exc_info=True)
-            return {"investigation_history": settled(history), "stop_reason": "investigation_error",
+            return {**nodes.truncation_charge(exc, state),
+                    "investigation_history": settled(history), "stop_reason": "investigation_error",
                     "source_errors": _error(state, "LLM_UNAVAILABLE", _reason(
                         exc, "investigation unavailable; deterministic report retained")),
                     "stage": "investigate"}
@@ -499,6 +502,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         метрик и границам контура, и разрешение на них оператор уже дал
         настройками. `NT_TOOL_APPROVAL=all` расширяет вопрос на любой вызов,
         `off` убирает остановку совсем.
+
+        Вложенный прогон не спрашивает: вызовы, которые требуют решения,
+        отклоняются политикой, как отклонил бы оператор. Выполнить их молча
+        значило бы решить за оператора то, что настройки оставили ему, — а
+        ряд такого запроса на вердикт по SLA и так не влияет.
         """
         limits = settings_for()
         mode = limits.tool_approval
@@ -520,6 +528,10 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         waiting = [call for call in calls if asks(call)]
         if mode == "off" or not waiting:
             return {"stage": "approve_tools", "tool_approval": {}}
+        if nested(config):
+            return {"stage": "approve_tools", "tool_approval": {
+                "approved": [], "rejected": [call["id"] for call in waiting],
+                "reason": "", "by": "nested"}}
         payload = {
             "action": "query",
             "title": "Модель просит выполнить запросы к источникам",
@@ -542,10 +554,11 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
             "rejected": [] if approved else identifiers,
             "reason": decision.get("reason", "")}}
 
-    def denied_responses(calls, reason):
+    def denied_responses(calls, reason, by=""):
         """Ответ инструмента на отклонённый вызов: висячих вызовов остаться не должно."""
-        text = _json(failure("POLICY_DENIED", "operator rejected this call"
-                             + (f": {reason}" if reason else "")))
+        who = ("nested run: this call needs an operator decision and was not executed"
+               if by == "nested" else "operator rejected this call")
+        text = _json(failure("POLICY_DENIED", who + (f": {reason}" if reason else "")))
         return [ToolMessage(content=text, tool_call_id=call["id"], name=call["name"])
                 for call in calls]
 
@@ -557,11 +570,13 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
         if denied:
             calls = pending_calls(state)
             refusals = denied_responses([c for c in calls if c["id"] in denied],
-                                        approval.get("reason", ""))
+                                        approval.get("reason", ""), approval.get("by", ""))
             kept = [c for c in calls if c["id"] not in denied]
             if not kept:
                 return {"investigation_history": [*history, *refusals],
-                        "stop_reason": "operator_rejected", "stage": "additional_tools"}
+                        "stop_reason": ("nested_denied" if approval.get("by") == "nested"
+                                        else "operator_rejected"),
+                        "stage": "additional_tools"}
             # Отклонённые вызовы снимаются с ответа модели, иначе ToolNode
             # выполнит их вместе с разрешёнными.
             extra = dict(getattr(history[-1], "additional_kwargs", None) or {})
@@ -686,4 +701,6 @@ def build_graph(llm: Any = None, *, sources: Sources | None = None,
     return builder
 
 
-graph = build_graph().compile()
+# Инструменты исследования завёрнуты в свой узел, а не в ToolNode графа:
+# их ряды заводятся по набору по умолчанию.
+graph = metrics.observe(build_graph().compile(), "nt", tools=NT_TOOLS)

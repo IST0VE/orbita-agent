@@ -48,15 +48,16 @@ export function AppearanceSettings({
       <div className="set-row">
         <div className="set-field">
           <span className="set-label">
-            <span className="set-name">Ширина левой колонки</span>
+            <span className="set-name">Ширина боковых колонок</span>
           </span>
           <span className="set-control">
             <button className="btn-sm" onClick={onResetLayout}>Сбросить</button>
           </span>
         </div>
         <div className="set-desc">
-          Колонку материалов растягивают за правую кромку. Сброс возвращает
-          ширину по умолчанию — ту же, что двойной щелчок по кромке.
+          Колонку чатов растягивают за правую кромку, колонку чата и подробностей —
+          за левую. Сброс возвращает обеим ширину по умолчанию — ту же, что
+          двойной щелчок по кромке.
         </div>
       </div>
     </div>

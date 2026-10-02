@@ -51,6 +51,9 @@ ROLES: tuple[Role, ...] = (
         # уже в чужом проекте. Источник ей тоже не нужен: финальный документ
         # обязан быть самодостаточным, этого от него требует его же промпт.
         needs=("review",),
+        # Её JSON разбирает `jira_plan.py`: строку, переписанную «по-русски»
+        # починкой алфавита, он не разберёт, и задачи не заведутся.
+        markdown=False,
     ),
 )
 
@@ -96,6 +99,22 @@ def brief(role: Role, task: str, artifacts: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+def subject(state: dict) -> str:
+    """Что раскладывалось — строкой под задачей на каждой странице этапа."""
+    source = state.get("source") or {}
+    if source.get("kind") == "confluence" and source.get("read"):
+        line = f"Источник: страница Confluence «{source.get('title') or ''}» — {source.get('url') or ''}"
+    elif source.get("kind") == "files" and source.get("read"):
+        line = "Источник: файлы чата — " + ", ".join(source.get("names") or [])
+    elif source.get("kind") == "message":
+        line = "Источник: аналитика в тексте запроса."
+    else:
+        return ""
+    if source.get("truncated"):
+        line += " Текст обрезан по потолку чтения."
+    return line
+
+
 PIPELINE = Pipeline(
     key="jira",
     title="Jira-декомпозиция",
@@ -119,4 +138,9 @@ PIPELINE = Pipeline(
         title="Заведение задач",
         summary="Заводит задачи в выбранном проекте Jira и возвращает ключи и ссылки.",
     ),
+    subject=subject,
+    # Таблицы карты, backlog'а и матриц выравнивает код; машинные карточки
+    # последнего этапа не трогаются (`Role.markdown`). Язык не правится: этот
+    # конвейер пишет на языке аналитики, и её цитаты должны остаться как есть.
+    tidy=True,
 )

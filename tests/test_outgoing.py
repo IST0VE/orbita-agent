@@ -110,7 +110,7 @@ def test_the_update_graph_masks_the_new_version(monkeypatch: pytest.MonkeyPatch)
         "source": {"title": "договор — обновление abc123"},
     }
 
-    plan = update_graph.prepare_node(state)["publication_plan"]
+    plan = update_graph.prepare_node(state, {})["publication_plan"]
 
     assert FAKE_KEY not in plan["document"]
     # Предпросмотр собран из того же проверенного тела, а не из исходного.
@@ -124,7 +124,7 @@ def test_the_update_graph_refuses_an_address_with_a_password():
         "source": {"title": "инструкция — обновление abc123"},
     }
 
-    result = update_graph.prepare_node(state)
+    result = update_graph.prepare_node(state, {})
 
     assert result["publication"]["status"] == "failed"
     assert "url-credentials" in result["publication"]["reason"]

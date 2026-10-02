@@ -575,6 +575,32 @@ def test_refusal_of_the_model_reaches_the_report_in_the_words_of_the_provider(mo
     assert state["analysis_result"] == "FAILED"
 
 
+def test_truncated_answer_stops_the_analysis_but_stays_in_the_budget(monkeypatch):
+    """Обрыв на потолке длины уходит в отчёт отказом, но оплачен и потому посчитан."""
+    from agent import llm_retry, tool_compat
+
+    sources, _ = setup_source()
+    calls = []
+    cut = AIMessage(content='{"hypo', response_metadata={
+        "finish_reason": "length",
+        "token_usage": {"prompt_tokens": 1000, "completion_tokens": 8000},
+    })
+
+    def truncate(model_for, messages, config, tools, *, allow_tools):
+        calls.append(messages)
+        raise llm_retry.ResponseTruncated("Генерация остановлена по лимиту", cut)
+
+    monkeypatch.setattr(tool_compat, "invoke", truncate)
+    state = nt_graph.build_graph(sources=sources).compile().invoke(
+        {**INPUT, "messages": [HumanMessage("Проверь троттлинг CPU")]},
+        {"configurable": {"publish": False}})
+
+    assert state["stop_reason"] == "investigation_error"
+    assert calls
+    assert state["usage"]["calls"] == state["cost"]["calls"] == len(calls)
+    assert state["usage"]["output"] == 8000 * len(calls)
+
+
 def test_provider_refusal_is_masked_and_bounded_before_it_is_shown(monkeypatch):
     from agent import nt_graph as graph_module
 

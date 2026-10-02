@@ -13,19 +13,25 @@
 Общие правила остались функциями, а не превратились в наследование узлов:
 `publish_plan`, `publish_commitment`, `commitment_changes` проверяются по
 отдельности и вызываются из любого графа.
+
+Публикация идёт общим порядком внешних действий (`actions.py`): одобряемый
+набор — предложение, его отпечаток показывается на остановке и возвращается
+в ответе, каждая страница проходит через журнал операций и перечитывается
+после записи. Журнал здесь терпим к отказу: страница уезжает и без него, а
+причина остаётся в итоге публикации.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
+from agent import actions, confluence, credentials, drafts, proposals, publishers, roles
 from agent import config as cfg
-from agent import confluence, drafts, publishers, roles
+from agent.actions import approval_of
 from agent.documents import (
     document_header,
     page_title,
@@ -34,7 +40,7 @@ from agent.documents import (
     stage_pages,
 )
 from agent.pipeline import Pipeline
-from agent.runtime import options
+from agent.runtime import nested, options
 from agent.state import State
 from agent.summary import summary_of
 
@@ -130,7 +136,7 @@ def _publish_skip(
 
     absent = publisher.missing()
     if absent:
-        return ("skipped", "не заданы в .env: " + ", ".join(absent))
+        return ("skipped", credentials.missing_message(absent))
     return None
 
 
@@ -205,6 +211,8 @@ def commitment_changes(approved: dict, fresh: dict) -> list[str]:
     changes: list[str] = []
     if approved.get("target") != fresh.get("target"):
         changes.append(f"цель публикации: {approved.get('target')} → {fresh.get('target')}")
+    if approved.get("format") != fresh.get("format"):
+        changes.append("формат публикации")
     if approved.get("destination") != fresh.get("destination"):
         changes.append("назначение публикации")
     if approved.get("digest") != fresh.get("digest"):
@@ -230,25 +238,162 @@ def commitment_changes(approved: dict, fresh: dict) -> list[str]:
     return changes
 
 
-def approval_of(answer: Any) -> dict:
-    """
-    Ответ оператора — в решение.
+def _thread(config: RunnableConfig | None) -> str:
+    return str(((config or {}).get("configurable") or {}).get("thread_id") or "")
 
-    Интерфейсы возвращают разное: Studio — введённый JSON, чат — строку, свой
-    код — просто True. Понимаем все три, потому что человеку на другом конце
-    не должно быть важно, чем он пользуется.
-    """
-    if isinstance(answer, dict):
-        raw = answer.get("decision", answer.get("approved"))
-        reason = str(answer.get("reason", "") or "")
-    else:
-        raw, reason = answer, ""
 
-    if isinstance(raw, str):
-        approved = raw.strip().lower() in {"approve", "approved", "yes", "y", "да", "ок"}
-    else:
-        approved = bool(raw)
-    return {"decision": "approved" if approved else "rejected", "reason": reason}
+def publish_action(commitment: dict, *, graph: str, thread: str = "") -> dict:
+    """
+    Одобряемый набор как предложение общего порядка (`actions.seal`).
+
+    Отпечаток — тот же `commitment_digest`, к которому привязано решение
+    оператора (`plan_digest`): в журнале и на остановке один и тот же.
+    Операции — страницы по их идентичности у цели (`where`).
+    """
+    return actions.seal(
+        "publish",
+        graph=graph,
+        target={
+            "system": commitment.get("target", ""),
+            "format": commitment.get("format", ""),
+            "destination": commitment.get("destination") or {},
+        },
+        operations=[
+            {
+                "op": "page",
+                "key": page.get("where", ""),
+                "title": page.get("title", ""),
+                "hash": page.get("digest", ""),
+                "action": page.get("action", "unknown"),
+                "version": page.get("version"),
+                "page_id": page.get("page_id", ""),
+            }
+            for page in commitment.get("pages") or []
+        ],
+        thread=thread,
+        owner=actions.actor(),
+        scope=actions.run_key(thread, "publish", str(commitment.get("target") or "")),
+        fingerprint=commitment_digest(commitment),
+    )
+
+
+def write_pages(
+    publisher: publishers.Publisher,
+    pages: list[dict],
+    *,
+    expected: dict[str, dict] | None = None,
+    recorder: actions.Recorder | None = None,
+    completed: dict[str, dict] | None = None,
+) -> list[dict]:
+    """
+    Страницы — в цель по одной: запись в журнал, публикация, сверка.
+
+    `expected` — одобренное состояние каждой страницы по её идентичности у
+    цели (`where`): с ним Confluence откажет, если страницу успели поменять
+    после показа. Сверка после записи (`publishers.verify`) ничего не
+    отменяет — документ уже записан, — но расхождение видно в итоге.
+    """
+    scope = recorder.proposal["scope"] if recorder else ""
+    results = []
+    for page in pages:
+        title, document = page["title"], page["document"]
+        where = _location_of(publisher, title)
+        if completed and where in completed:
+            results.append({**completed[where], "role": page.get("role", "")})
+            continue
+        if recorder:
+            recorder.step(lambda book, w=where, p=page: book.begin(
+                scope, "page", w, content_hash=p.get("digest", ""), title=p["title"]))
+        try:
+            kwargs = {"expected": expected.get(where, {})} if expected is not None else {}
+            result = dict(publisher.publish(title, document, **kwargs))
+        except publishers.PublishError as exc:
+            result = {"status": "failed", "title": title, "reason": str(exc)}
+            if recorder:
+                recorder.step(lambda book, w=where, r=str(exc): book.fail(scope, "page", w, r))
+        else:
+            check = publishers.verify(publisher, result, title, document)
+            if check:
+                result["verified"] = check.get("verified", actions.UNVERIFIED)
+                if check.get("detail"):
+                    result["verify_detail"] = check["detail"]
+            if recorder:
+                remote = str(result.get("page_id") or result.get("path") or "")
+
+                def done(book, w=where, r=result, c=check, remote=remote):
+                    book.finish(scope, "page", w, remote=remote, url=str(r.get("url") or ""))
+                    if c:
+                        book.checked(scope, "page", w, c.get("verified", actions.UNVERIFIED),
+                                     detail=c.get("detail", ""), remote_hash=c.get("remote_hash"))
+
+                recorder.step(done)
+        result["role"] = page.get("role", "")
+        results.append(result)
+    return results
+
+
+def _resumed_pages(publisher: publishers.Publisher, pages: list[dict], approved: dict,
+                   fresh: dict, recorder: actions.Recorder) -> tuple[dict, str]:
+    """Уже записанные страницы этого действия; чужая правка остаётся конфликтом."""
+    previous = {item["where"]: item for item in approved.get("pages") or []}
+    current = {item["where"]: item for item in fresh.get("pages") or []}
+    if (approved.get("target") != fresh.get("target")
+            or approved.get("format") != fresh.get("format")
+            or approved.get("destination") != fresh.get("destination")
+            or approved.get("digest") != fresh.get("digest")
+            or set(previous) != set(current)):
+        return {}, "; ".join(commitment_changes(approved, fresh))
+    done: dict[str, dict] = {}
+    for page in pages:
+        where = _location_of(publisher, page["title"])
+        before = previous.get(where)
+        if before is None:
+            continue
+        record = recorder.step(lambda book, w=where: book.record(
+            recorder.proposal["scope"], "page", w))
+        if not record or record.get("action_id") != recorder.proposal["id"]:
+            continue
+        if record.get("content_hash") != page.get("digest"):
+            return {}, f"{page['title']}: журнал относится к другому содержимому"
+        if record.get("state") not in (actions.PENDING, actions.UNKNOWN, actions.COMPLETED):
+            continue
+        remote = str(record.get("remote") or (current.get(where) or {}).get("page_id") or "")
+        result = {"status": "updated", "title": page["title"], "page_id": remote,
+                  "path": str(record.get("remote") or where), "url": str(record.get("url") or "")}
+        check = publishers.verify(publisher, result, page["title"], page["document"])
+        if check.get("verified") != actions.VERIFIED:
+            return {}, f"{page['title']}: прежняя запись не подтверждена чтением цели"
+        if record["state"] != actions.COMPLETED:
+            recorder.step(lambda book, w=where, r=result: book.finish(
+                recorder.proposal["scope"], "page", w,
+                remote=str(r.get("page_id") or r.get("path") or ""), url=r["url"],
+                detail="восстановлено чтением цели"))
+        recorder.step(lambda book, w=where, c=check: book.checked(
+            recorder.proposal["scope"], "page", w, actions.VERIFIED,
+            remote_hash=c.get("remote_hash")))
+        done[where] = {**result, "status": "created" if before.get("action") == "create"
+                       else "updated", "verified": actions.VERIFIED, "recovered": True}
+        # Собственная запись могла изменить create → update и версию страницы.
+        # Для сравнения одобряемого набора она остаётся прежним предложением.
+        current[where] = before
+    normalized = {**fresh, "pages": [current.get(item["where"], item)
+                                    for item in fresh.get("pages") or []]}
+    differences = commitment_changes(approved, normalized)
+    return done, ("; ".join(differences) if differences else "")
+
+
+def verification_of(results: list[dict]) -> dict:
+    """Итог сверки публикации по страницам. Пусто — цель не сверяет."""
+    checked = [r for r in results if r.get("verified")]
+    if not checked:
+        return {}
+    return {
+        "verified": [r["title"] for r in checked if r["verified"] == actions.VERIFIED],
+        "differs": [{"title": r["title"], "reason": r.get("verify_detail", "")}
+                    for r in checked if r["verified"] == actions.DIFFERS],
+        "unverified": [{"title": r["title"], "reason": r.get("verify_detail", "")}
+                       for r in checked if r["verified"] == actions.UNVERIFIED],
+    }
 
 
 def prepare_node(
@@ -266,8 +411,13 @@ def prepare_node(
 
     Поэтому подготовка заканчивается записью в состояние, а остановка
     показывает сохранённое и ничего не считает.
+
+    Во вложенном прогоне здесь же выпускается предложение публикации — план
+    считается независимо от PUBLISH_REQUIRE_APPROVAL: спрашивать или нет,
+    решит вызывающий, а показать ему есть что в любом случае.
     """
-    if not cfg.publish_require_approval():
+    inner = nested(config)
+    if not inner and not cfg.publish_require_approval():
         return {}
 
     plan = publish_plan(state, config, pipeline)
@@ -279,31 +429,55 @@ def prepare_node(
     ask = getattr(plan["publisher"], "preview", None) or (lambda title: {"action": "unknown"})
     previews = [ask(page["title"]) for page in plan["pages"]]
     commitment = publish_commitment(plan, previews)
-    commitment["drafts"] = drafts.pages(plan, previews)
-    return {"publication_plan": commitment}
+    update = {"publication_plan": {**commitment, "drafts": drafts.pages(plan, previews)}}
+    if not inner:
+        # Предложение — в журнал действий до вопроса: по нему видно, что
+        # показали оператору, даже если ответа так и не было.
+        actions.Recorder(
+            publish_action(update["publication_plan"], graph=pipeline.key, thread=_thread(config))
+        ).propose()
+    if inner:
+        update["proposals"] = proposals.offer(
+            state,
+            {
+                "kind": "publish",
+                "graph": pipeline.key,
+                "approval_required": cfg.publish_require_approval(),
+                "prompt": _approval_payload(
+                    state, config, pipeline, plan, update["publication_plan"]["drafts"]
+                ),
+                "effect": proposed_effect(plan, commitment),
+            },
+        )
+    return update
 
 
-def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
+def proposed_effect(plan: dict, commitment: dict) -> dict:
     """
-    Остановка на подтверждение оператором перед публикацией.
+    Что уедет по предложению: одобряемый набор и сами страницы.
 
-    `interrupt()` замораживает тред и отдаёт наружу собранные документы;
-    возобновление — `Command(resume=...)`. В Studio и в чат-интерфейсе это
-    работает без дополнительного кода, поэтому кнопки писать не нужно.
-
-    Оператора не дёргают зря: если публикация и так не состоится (выключена,
-    отложена, документы не изменились), нода молча пропускает ход.
+    Страницы лежат целиком, с шапкой: вызывающий граф их не пересобирает — у
+    него нет ни состояния, ни описания конвейера, по которым они собирались.
+    Сверяется перед записью набор (`publish_proposed`), а не пересборка.
     """
-    if not cfg.publish_require_approval():
-        return {}
+    return {
+        "commitment": commitment,
+        "pages": [
+            {
+                "role": page.get("role", ""),
+                "title": page["title"],
+                "document": page["document"],
+                "digest": page["digest"],
+            }
+            for page in plan["pages"]
+        ],
+    }
 
-    prepared = state.get("publication_plan") or {}
-    plan = publish_plan(state, config, pipeline)
-    if plan["skip"] or plan["collisions"] or not prepared:
-        # Нечего подтверждать: публикация не состоится, план невыполним или
-        # подготовка его не сохранила.
-        return {}
 
+def _approval_payload(
+    state: State, config: RunnableConfig, pipeline: Pipeline, plan: dict, pages: list[dict]
+) -> dict:
+    """Что оператор видит на остановке перед публикацией — или в предложении."""
     payload = {
         "action": "publish",
         "target": plan["publisher"].name,
@@ -317,7 +491,7 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
         # судьба заголовка — создастся страница или перезапишет чужую.
         # Склеенный документ рядом остаётся: по нему конвейер читают
         # целиком, а решение принимают по страницам (см. drafts.py).
-        "drafts": prepared["drafts"],
+        "drafts": pages,
         "document": plan["document"],
         "hint": 'ответьте true/false или {"decision": "rejected", "reason": ...}',
     }
@@ -331,12 +505,41 @@ def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = role
         payload["reject_hint"] = (
             "Отказ отменит внешнюю публикацию, но готовый отчёт будет сохранён локально."
         )
-    answer = interrupt(payload)
-    decision = approval_of(answer)
-    if isinstance(answer, dict) and answer.get("decision") == "drafts":
-        decision["decision"] = "drafts"
-    # Решение относится к показанному набору, а не к слову «опубликовать».
-    decision["plan_digest"] = commitment_digest(prepared)
+    return payload
+
+
+def approve_node(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PIPELINE) -> dict:
+    """
+    Остановка на подтверждение оператором перед публикацией.
+
+    `interrupt()` замораживает тред и отдаёт наружу собранные документы;
+    возобновление — `Command(resume=...)`. В Studio и в чат-интерфейсе это
+    работает без дополнительного кода, поэтому кнопки писать не нужно.
+
+    Оператора не дёргают зря: если публикация и так не состоится (выключена,
+    отложена, документы не изменились), нода молча пропускает ход. Во
+    вложенном прогоне не дёргают вовсе: вопрос уехал предложением.
+    """
+    if nested(config) or not cfg.publish_require_approval():
+        return {}
+
+    prepared = state.get("publication_plan") or {}
+    plan = publish_plan(state, config, pipeline)
+    if plan["skip"] or plan["collisions"] or not prepared:
+        # Нечего подтверждать: публикация не состоится, план невыполним или
+        # подготовка его не сохранила.
+        return {}
+
+    action = publish_action(prepared, graph=pipeline.key, thread=_thread(config))
+    answer = interrupt(
+        actions.shown(_approval_payload(state, config, pipeline, plan, prepared["drafts"]), action)
+    )
+    # Решение относится к показанному набору, а не к слову «опубликовать»:
+    # отпечаток из ответа сверяется с показанным (`actions.bind`), а сам
+    # набор — с пересчитанным перед записью (`_stale_approval`).
+    decision = actions.bind(answer, action["digest"])
+    decision["plan_digest"] = action["digest"]
+    actions.Recorder(action).decide(decision)
     return {"approval": decision}
 
 
@@ -398,6 +601,9 @@ def _stale_approval(state: State, plan: dict, decision: dict) -> str:
     Отказ проверять нечего: он и так не публикует. Проверяются согласие и
     выбор черновиков — то есть те решения, после которых что-то пишется.
     """
+    if decision.get("decision") == actions.STALE:
+        # Ответ пришёл с отпечатком другой версии набора (`actions.bind`).
+        return str(decision.get("reason") or "решение относится к другой версии плана")
     if decision.get("decision") not in {"approved", "drafts"}:
         return ""
 
@@ -461,9 +667,12 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
             "цель публикации не различает документы плана: " + "; ".join(plan["collisions"]),
         )
 
+    inner = nested(config)
     if plan["skip"]:
         status, reason = plan["skip"]
-        if (status == "skipped" and pipeline.rejection_fallback
+        # Резервное сохранение — тоже запись наружу, пусть и на свой диск:
+        # вложенный прогон его не делает, документ остаётся в состоянии.
+        if (status == "skipped" and not inner and pipeline.rejection_fallback
                 and plan["publisher"].name != pipeline.rejection_fallback):
             return _publish_fallback(
                 state,
@@ -474,6 +683,11 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
                 source_reason=reason,
             )
         return skip(status, reason)
+
+    if inner:
+        # Предложение выпущено подготовкой (`prepare_node`); писать по нему
+        # будет вызывающий граф, после своего решения (`publish_proposed`).
+        return skip("proposed", "вложенный прогон: публикация передана вызывающему графу")
 
     decision = state.get("approval") or {}
     stale = _stale_approval(state, plan, decision) if cfg.publish_require_approval() else ""
@@ -501,15 +715,17 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
                 result = {"status": "failed", "title": page["title"], "reason": str(exc)}
             results.append({**result, "role": page["role"]})
         failed = sum(item["status"] == "failed" for item in results)
-        return {
-            "document": document,
-            "publication": {
-                "status": "drafts" if not failed else "failed" if failed == len(results) else "partial",
-                "title": title,
-                "pages": results,
-                "reason": "Откройте черновики по ссылкам. Правки и публикация — в Confluence.",
-            },
+        publication = {
+            "status": "drafts" if not failed else "failed" if failed == len(results) else "partial",
+            "title": title,
+            "pages": results,
+            "reason": "Откройте черновики по ссылкам. Правки и публикация — в Confluence.",
         }
+        actions.Recorder(
+            publish_action(state.get("publication_plan") or {}, graph=pipeline.key,
+                           thread=_thread(config))
+        ).done(publication["status"], publication)
+        return {"document": document, "publication": publication}
 
     if cfg.publish_require_approval():
         if decision.get("decision") != "approved":
@@ -526,18 +742,20 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
                 )
             return skip("rejected", reason)
 
-    results = []
-    approved_pages = {p["title"]: p for p in (state.get("publication_plan") or {}).get("pages", [])}
-    for page in plan["pages"]:
-        try:
-            kwargs = {}
-            if cfg.publish_require_approval() and plan["publisher"].name == "confluence":
-                kwargs["expected"] = approved_pages.get(page["title"], {})
-            result = dict(plan["publisher"].publish(page["title"], page["document"], **kwargs))
-        except publishers.PublishError as exc:
-            result = {"status": "failed", "title": page["title"], "reason": str(exc)}
-        result["role"] = page["role"]
-        results.append(result)
+    publisher = plan["publisher"]
+    prepared = state.get("publication_plan") or {}
+    approved = cfg.publish_require_approval() and bool(prepared)
+    # Предложение этой записи: одобренный набор, а без вопроса — набор без
+    # предпросмотра цели (судьба страниц «unknown»): спрашивать wiki второй
+    # раз ради журнала незачем.
+    commitment = prepared if approved else publish_commitment(plan, [{} for _ in plan["pages"]])
+    recorder = actions.Recorder(publish_action(commitment, graph=pipeline.key, thread=_thread(config)))
+    if not approved:
+        recorder.propose()
+    expected = None
+    if cfg.publish_require_approval() and publisher.name == "confluence":
+        expected = {page.get("where"): page for page in prepared.get("pages") or []}
+    results = write_pages(publisher, plan["pages"], expected=expected, recorder=recorder)
 
     status = _rollup(results)
     publication = {"status": status, "title": title, "pages": results}
@@ -549,6 +767,12 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
         publication["reason"] = "; ".join(
             f"{r['title']}: {r.get('reason', 'без причины')}" for r in broken
         )
+    check = verification_of(results)
+    if check:
+        publication["verification"] = check
+    recorder.done(status, publication)
+    if recorder.error:
+        publication["journal_error"] = recorder.error
 
     update = {"document": document, "publication": publication}
     # Хеш обновляем, только если уехало всё: иначе следующий прогон в режиме
@@ -557,3 +781,66 @@ def _publish(state: State, config: RunnableConfig, pipeline: Pipeline = roles.PI
     if not broken:
         update["document_hash"] = plan["digest"]
     return update
+
+
+def publish_proposed(effect: dict, *, approval: dict | None = None, thread: str = "",
+                     graph: str = "") -> dict:
+    """
+    Опубликовать страницы из предложения вложенного прогона.
+
+    Сверяется то же, что сверяет `publish_node` перед записью по согласию:
+    набор, пересчитанный по текущим настройкам и текущему состоянию цели,
+    обязан совпасть с предложенным. Между предложением и решением оператора
+    успевают поменяться PUBLISH_TARGET, PUBLISH_DIR и сама страница на той
+    стороне — и тогда писать нельзя: согласие давали другому.
+
+    Запись идёт тем же порядком, что у самого графа: действие и решение — в
+    журнал треда вызывающего (`thread`), страницы — через журнал операций и
+    сверку после записи.
+    """
+    approved = effect.get("commitment") or {}
+    pages = effect.get("pages") or []
+    if not pages:
+        return {"status": "nothing", "reason": "в предложении нет страниц"}
+
+    if not publishers.is_enabled():
+        return {"status": "disabled", "reason": "этап выключен через CONFLUENCE_PUBLISH"}
+    publisher = publishers.current()
+    absent = publisher.missing()
+    if absent:
+        return {"status": "skipped", "reason": credentials.missing_message(absent)}
+
+    plan = {"publisher": publisher, "pages": pages, "digest": approved.get("digest")}
+    recorder = actions.Recorder(publish_action(approved, graph=graph, thread=thread))
+    completed, changes = _resumed_pages(
+        publisher, pages, approved, publish_commitment(plan), recorder
+    )
+    if changes:
+        return {
+            "status": "stale",
+            "reason": "план изменился после предложения (" + changes + ")",
+        }
+
+    if approval:
+        recorder.decide({**approval_of(approval), "digest": recorder.proposal["digest"]})
+    else:
+        recorder.propose()
+    expected = None
+    if publisher.name == "confluence":
+        expected = {page.get("where"): page for page in approved.get("pages") or []}
+    results = write_pages(publisher, pages, expected=expected, recorder=recorder,
+                          completed=completed)
+
+    publication = {"status": _rollup(results), "target": publisher.name, "pages": results}
+    broken = [r for r in results if r.get("status") == "failed"]
+    if broken:
+        publication["reason"] = "; ".join(
+            f"{r['title']}: {r.get('reason', 'без причины')}" for r in broken
+        )
+    check = verification_of(results)
+    if check:
+        publication["verification"] = check
+    recorder.done(publication["status"], publication)
+    if recorder.error:
+        publication["journal_error"] = recorder.error
+    return publication

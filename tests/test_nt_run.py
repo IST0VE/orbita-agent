@@ -175,6 +175,20 @@ def test_unrecognized_model_output_has_bounded_repair_loop():
     assert "лимит" in result["artifacts"]["report"]
 
 
+def test_truncated_plan_finishes_the_campaign_but_is_charged():
+    """Оборванный план не исполняется, но оплачен: расход остаётся в треде."""
+    cut = AIMessage(content='{"action": "rea', response_metadata={
+        "finish_reason": "length",
+        "token_usage": {"prompt_tokens": 1000, "completion_tokens": 8000},
+    })
+    runner = FakeRunner()
+    result = invoke(graph(runner, cut, auto_approve=True))
+    assert not runner.prepared and not runner.starts
+    assert "Генерация остановлена по лимиту" in result["last_error"]
+    assert result["usage"]["calls"] == result["cost"]["calls"] == 1
+    assert result["usage"]["output"] == 8000
+
+
 def test_analysis_failure_keeps_actual_run_results():
     def broken(_):
         raise RuntimeError("analyzer unavailable")

@@ -49,7 +49,7 @@ for key, title, widget in (
                               "widget": widget, "surface": "right", "empty": "hide"})
 for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":
-        surface["widgets"] = ["artifacts", "published"]
+        surface["widgets"] = ["publication-links", "artifacts", "published"]
     elif surface["id"] == "right":
         # Три исхода подряд и в этом порядке: выполнился ли тест, уложился ли
         # он в SLA и хватило ли данных, чтобы это утверждать.

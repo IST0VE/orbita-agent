@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import responses
 
@@ -107,6 +109,35 @@ def test_v2_still_searches_through_v1():
     confluence.search("что угодно", V2)
 
     assert responses.calls[0].request.url.startswith(BASE + SEARCH)
+
+
+@responses.activate
+def test_v2_without_a_key_learns_it_from_the_space_id(monkeypatch):
+    """CQL знает пространство только по ключу, а v2 публикует по id."""
+    monkeypatch.setattr(confluence, "_SPACE_KEYS", {})
+    responses.add(responses.GET, BASE + "/api/v2/spaces/777", json={"id": "777", "key": "OWN"})
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+    by_id = dataclasses.replace(V2, space_key="")
+
+    confluence.search("вебхук", by_id)
+    confluence.search("вебхук", by_id)
+
+    searched = [call.request.params["cql"] for call in responses.calls if "cql" in call.request.params]
+    assert searched == ['type = "page" AND space = "OWN" AND text ~ "вебхук"'] * 2
+    # Ключ пространства постоянный: спрошен один раз на оба поиска.
+    assert len(responses.calls) == 3
+
+
+@responses.activate
+def test_v2_without_a_known_key_does_not_search_everywhere(monkeypatch):
+    monkeypatch.setattr(confluence, "_SPACE_KEYS", {})
+    responses.add(responses.GET, BASE + "/api/v2/spaces/777", json={"id": "777"})
+
+    with pytest.raises(confluence.ConfluenceError, match="ключ пространства 777"):
+        confluence.search("вебхук", dataclasses.replace(V2, space_key=""))
+
+    # Поиск без `space = …` прошёл бы по всем пространствам, куда пускает токен.
+    assert [call.request.url for call in responses.calls] == [BASE + "/api/v2/spaces/777"]
 
 
 @responses.activate
@@ -236,3 +267,50 @@ def test_round_trip_keeps_the_content():
 
     assert "Заголовок" in back
     assert "Абзац про экспорт." in back
+
+
+# --------------------------------------------------------------------------
+# Поиск роли конвейера подготовки: формы слов и область поиска
+# --------------------------------------------------------------------------
+@responses.activate
+def test_the_search_role_looks_for_word_forms_too():
+    """
+    «паролю» не находит страницу про «пароль», если индекс не русский:
+    27 сентября 2026 пять запросов из тринадцати вернулись пустыми.
+    """
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("требования к паролю", V1, broad=True)
+
+    assert responses.calls[0].request.params["cql"] == (
+        'type = "page" AND space = "SUP" AND '
+        '(text ~ "требования к паролю" OR (text ~ "требован*" AND text ~ "парол*"))'
+    )
+
+
+@responses.activate
+def test_the_administrator_can_widen_the_search(monkeypatch):
+    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "GSLB, DOCS")
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("вебхук", V1)
+
+    assert responses.calls[0].request.params["cql"] == (
+        'type = "page" AND space in ("SUP", "GSLB", "DOCS") AND text ~ "вебхук"'
+    )
+    assert confluence.scope_label(V1) == "пространства SUP, GSLB, DOCS"
+
+
+@responses.activate
+def test_a_star_searches_every_space(monkeypatch):
+    monkeypatch.setenv("CONFLUENCE_SEARCH_SPACES", "*")
+    responses.add(responses.GET, BASE + SEARCH, json={"results": []}, status=200)
+
+    confluence.search("вебхук", V1)
+
+    assert responses.calls[0].request.params["cql"] == 'type = "page" AND text ~ "вебхук"'
+    assert confluence.scope_label(V1) == "все доступные пространства"
+
+
+def test_the_scope_is_named_for_the_publication_space():
+    assert confluence.scope_label(V1) == "пространство SUP"

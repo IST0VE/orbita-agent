@@ -424,3 +424,153 @@ def test_review_second_call_retries_without_replaying_first_response(monkeypatch
     assert update["usage"]["calls"] == 2
     assert update["usage"]["output"] == 40
     assert clock.sleeps == [5.0]
+
+
+# --------------------------------------------------------------------------
+# Потолок длины ответа
+# --------------------------------------------------------------------------
+def test_a_response_cut_at_the_cap_stops_the_run_instead_of_passing_half_a_document(
+    monkeypatch, clock
+):
+    """Оборванный ответ не передаётся дальше и не повторяется с тем же лимитом."""
+    monkeypatch.setenv("LLM_MAX_TOKENS", "8000")
+    payloads = []
+
+    def endpoint(request):
+        payloads.append(json.loads(request.content))
+        response = completion("повтор " * 50)
+        body = json.loads(response.content)
+        body["choices"][0]["finish_reason"] = "length"
+        return httpx.Response(200, json=body)
+
+    with install_endpoint(monkeypatch, endpoint):
+        model = providers.build_llm()
+        with pytest.raises(llm_retry.ResponseTruncated, match="LLM_MAX_TOKENS=8000"):
+            llm_retry.invoke(model, [HumanMessage("Опиши схему")])
+
+    assert len(payloads) == 1, "обрыв на потолке не повторяется"
+    # Новый langchain-openai шлёт `max_completion_tokens`, старый — `max_tokens`.
+    assert payloads[0].get("max_completion_tokens", payloads[0].get("max_tokens")) == 8000
+    assert clock.sleeps == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), ("", None), ("12000", 12000), ("0", None)]
+)
+def test_the_response_cap_is_opt_in(monkeypatch, value, expected):
+    from agent import config as cfg
+
+    if value is None:
+        monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("LLM_MAX_TOKENS", value)
+
+    assert cfg.llm_max_tokens() == expected
+    assert cfg.llm_kwargs().get("max_tokens") == expected
+
+
+@pytest.mark.parametrize("value", [None, "", "0"])
+def test_unspecified_cap_preserves_provider_limit_and_accepts_long_reasoning(
+    monkeypatch, clock, value
+):
+    if value is None:
+        monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("LLM_MAX_TOKENS", value)
+    payloads = []
+
+    def endpoint(request):
+        payloads.append(json.loads(request.content))
+        body = json.loads(completion("Complete document after reasoning").content)
+        body["usage"].update(
+            completion_tokens=21000, total_tokens=21100,
+            completion_tokens_details={"reasoning_tokens": 20000},
+        )
+        return httpx.Response(200, json=body)
+
+    with install_endpoint(monkeypatch, endpoint):
+        result = llm_retry.invoke(providers.build_llm(), [HumanMessage("Task")])
+
+    assert "max_tokens" not in payloads[0]
+    assert "max_completion_tokens" not in payloads[0]
+    assert "chat_template_kwargs" not in payloads[0]
+    assert result.content == "Complete document after reasoning"
+    assert result.usage_metadata["output_token_details"]["reasoning"] == 20000
+    assert len(payloads) == 1
+
+
+def test_reasoning_can_exhaust_the_cap_without_a_document(monkeypatch, clock, caplog):
+    attempts = []
+
+    def endpoint(request):
+        attempts.append(request)
+        body = json.loads(completion("").content)
+        body["choices"][0]["finish_reason"] = "length"
+        body["choices"][0]["message"]["reasoning_content"] = "private reasoning"
+        body["usage"].update(
+            completion_tokens=8000, total_tokens=8100,
+            completion_tokens_details={"reasoning_tokens": 8000},
+        )
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setenv("LLM_TEMPERATURE", "0.6")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "8000")
+    with install_endpoint(monkeypatch, endpoint), caplog.at_level(logging.WARNING):
+        with pytest.raises(llm_retry.ResponseTruncated) as error:
+            llm_retry.invoke(providers.build_llm(), [HumanMessage("private prompt")])
+
+    message = str(error.value)
+    assert "reasoning: 8000" in message
+    assert "LLM_EXTRA_BODY" in message
+    assert "LLM_TEMPERATURE=0" not in message
+    assert "reasoning: 8000" in caplog.text
+    assert "private" not in message + caplog.text
+    assert len(attempts) == 1
+    assert clock.sleeps == []
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_provider_cap_is_reported_when_application_cap_is_disabled(monkeypatch, clock, value):
+    from langchain_core.messages import AIMessage
+
+    monkeypatch.setenv("LLM_MAX_TOKENS", value)
+    message = llm_retry._truncation_message(AIMessage(
+        content="unfinished", response_metadata={"stop_reason": "max_tokens"},
+    ))
+    assert "лимит модели/шлюза" in message
+    assert ("LLM_MAX_TOKENS=0" if value else "LLM_MAX_TOKENS не задан") in message
+    assert "None" not in message
+
+
+def test_gateway_thinking_settings_reach_the_actual_request(monkeypatch, clock):
+    extra = {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20}
+    monkeypatch.setenv("LLM_EXTRA_BODY", json.dumps(extra))
+    payloads = []
+
+    def endpoint(request):
+        payloads.append(json.loads(request.content))
+        return completion("Complete document")
+
+    with install_endpoint(monkeypatch, endpoint):
+        result = llm_retry.invoke(providers.build_llm(), [HumanMessage("Task")])
+    assert result.content == "Complete document"
+    assert payloads[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payloads[0]["top_k"] == 20
+    assert "extra_body" not in payloads[0]
+
+
+@pytest.mark.parametrize("value", ["bad json", "[]", "null", '{"top_p": NaN}', '{"messages": []}', '{"max_completion_tokens": 0}'])
+def test_invalid_gateway_settings_fail_before_a_request(monkeypatch, value):
+    from agent import config as cfg
+
+    monkeypatch.setenv("LLM_EXTRA_BODY", value)
+    with pytest.raises(cfg.ConfigError, match="LLM_EXTRA_BODY"):
+        cfg.llm_kwargs()
+
+
+def test_gateway_settings_are_not_forwarded_to_anthropic(monkeypatch):
+    from agent import config as cfg
+
+    monkeypatch.setenv("LLM_EXTRA_BODY", '{"chat_template_kwargs":{"enable_thinking":false}}')
+    with pytest.raises(cfg.ConfigError, match="OpenAI"):
+        providers._anthropic("test-model", cfg.llm_kwargs())

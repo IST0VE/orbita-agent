@@ -14,6 +14,8 @@ import { validateForm } from "../src/engine/widgets/formValidation.ts";
 import { LiveEventFactory, runErrorMessage } from "../src/engine/api/langgraphAdapter.ts";
 import type { RuntimeEvent } from "../src/engine/runtime/types.ts";
 import type { UiManifest } from "../src/engine/manifest/types.ts";
+import { artifactMeta } from "../src/engine/widgets/builtins/artifactMeta.ts";
+import { fileName } from "../src/lib/share.ts";
 
 function event(sequence: number, type: string, data: unknown = {}, eventId = `event-${sequence}`): RuntimeEvent {
   return {
@@ -442,6 +444,29 @@ test("input fields reach configurable by the target the manifest declares", () =
   });
 });
 
+test("a fixed input value is sent as declared, whatever the screen holds", () => {
+  const manifest = {
+    schema_version: "1.0",
+    manifest_version: "1.0",
+    graph_id: "demo",
+    title: "demo",
+    input: [
+      { id: "task", target: "configurable.input_dir", widget: "chat-files", options: { fixed: "@chat" } },
+      { id: "document", target: "configurable.input_file", widget: "file-picker" },
+    ],
+  } as unknown as UiManifest;
+
+  // Файлы чата: какую папку читать, решает сервер по треду прогона, а
+  // интерфейс шлёт одно и то же `@chat` — даже если в состоянии экрана
+  // осталось имя старой папки задачи.
+  assert.deepEqual(configurableOf(manifest, {}), { input_dir: "@chat" });
+  assert.deepEqual(configurableOf(manifest, { task: "partial-refund", document: ["a.md"] }), {
+    input_dir: "@chat",
+    input_file: ["a.md"],
+  });
+  assert.equal(inputSurfaceOf(manifest, manifest.input![0]), "left");
+});
+
 test("fallback manifest allows the actions it promises", () => {
   const manifest = fallbackManifest("unknown");
   const kinds = (manifest.actions ?? []).map((action) => action.kind);
@@ -588,4 +613,38 @@ test("pause is offered while the run is going and nowhere else", async () => {
 
   assert.equal(await build(pausingManifest(true), "running").dispatch({ kind: "run.pause" }), true);
   assert.deepEqual(preflight, []);
+});
+
+
+test("stage documents are named by the manifest and downloaded in their own format", () => {
+  const binding = {
+    path: "artifacts",
+    widget: "artifact-list",
+    options: {
+      documents: {
+        survey: { title: "Разбор схемы" },
+        diagram: { title: "Данные схемы", format: "json" },
+        diagram_ids: { title: "Идентификаторы схемы", format: "text" },
+      },
+    },
+  };
+  assert.deepEqual(artifactMeta(binding, "survey", "# текст"), { title: "Разбор схемы", format: "markdown" });
+  assert.deepEqual(artifactMeta(binding, "diagram", '{"nodes": []}'), { title: "Данные схемы", format: "json" });
+  assert.deepEqual(artifactMeta(binding, "diagram_ids", "a b"), { title: "Идентификаторы схемы", format: "text" });
+  // Обрезанные данные схемы — уже не JSON: отдаются текстом, а не битым .json.
+  assert.equal(artifactMeta(binding, "diagram", '{"nodes": [\n\n[…обрезаны]').format, "text");
+  // Не объявлено — ключ и Markdown, как было.
+  assert.deepEqual(artifactMeta({ path: "artifacts", widget: "artifact-list" }, "report", "x"), {
+    title: "report",
+    format: "markdown",
+  });
+});
+
+test("a document title becomes a file name Windows accepts", () => {
+  assert.equal(
+    fileName("Orbita: тема [01a0] — 03 Страница документации", "md"),
+    "Orbita_ тема [01a0] — 03 Страница документации.md",
+  );
+  assert.equal(fileName("a/b\\c?", "txt"), "a_b_c.txt");
+  assert.equal(fileName("  ...  ", "md"), "document.md");
 });

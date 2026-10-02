@@ -20,7 +20,12 @@ RUN npm run build
 # поэтому в Compose у сервиса можно отобрать все capabilities, как у backend.
 FROM nginxinc/nginx-unprivileged:stable-alpine
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Тело сервера — отдельным файлом: его же включает nginx/server.conf, который
+# в серверном режиме монтируется вместо default.conf (docker-compose.server.yml).
+COPY nginx/app.conf /etc/nginx/orbita/app.conf
+# Заголовки безопасности страниц: app.conf включает их в каждый свой location.
+COPY nginx/headers.conf /etc/nginx/orbita/headers.conf
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /web/dist /usr/share/nginx/html
 
 EXPOSE 8080

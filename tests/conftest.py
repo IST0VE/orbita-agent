@@ -46,10 +46,16 @@ _PREFIXES = (
     "PUBLISH_",
     "CHECKPOINT_",
     "DIAGRAM_",
+    "FLOW_",
     "POSTGRES_",
     "JIRA_",
     "ATLASSIAN_",
     "NT_",
+    "OIDC_",
+    "SETTINGS_",
+    "METRICS_",
+    "PREP_",
+    "TOOL_",
 )
 _NAMES = (
     "DEEPSEEK_API_KEY",

@@ -132,3 +132,82 @@ def test_pipes_in_code_and_prose_do_not_create_tables():
     root = parse(text_to_storage("a | b\nnot a separator\n```\n| A | B |\n| --- | --- |\n```"))
     assert root.find("table") is None
     assert root.find("p").text == "a | b"
+
+
+def test_a_row_longer_than_the_header_stays_in_the_table():
+    """
+    27 сентября 2026 таблица пробелов вышла с шапкой в пять колонок и строками
+    в шесть, и все строки остались на странице текстом с «|».
+    """
+    root = parse(text_to_storage("| № | Чего не знаем |\n| --- | --- |\n| П1 | формат | блокирует |"))
+
+    rows = root.findall("table/tbody/tr")
+    assert len(rows) == 2
+    assert len(rows[0]) == 3
+    assert rows[1][2].text == "блокирует"
+    assert root.find("p") is None
+
+
+def test_links_become_clickable():
+    root = parse(text_to_storage(
+        "См. [страницу](https://wiki.example.com/x?a=1&b=2) и https://jira.example.com/browse/ORB-1."
+    ))
+
+    links = root.findall("p/a")
+    assert [link.get("href") for link in links] == [
+        "https://wiki.example.com/x?a=1&b=2",
+        "https://jira.example.com/browse/ORB-1",
+    ]
+    assert links[0].text == "страницу"
+    # Точка в конце предложения — не часть адреса.
+    assert "".join(root.find("p").itertext()).endswith("ORB-1.")
+
+
+@pytest.mark.parametrize("markup", [
+    "<https://wiki.example.com/pages/12345>",
+    "**https://wiki.example.com/pages/12345**",
+    "**[страница](https://wiki.example.com/pages/12345)**",
+])
+def test_formatted_links_are_valid_storage(markup):
+    root = parse(text_to_storage(markup))
+
+    assert root.find(".//a").get("href") == "https://wiki.example.com/pages/12345"
+    if markup.startswith("**"):
+        assert root.find("p/strong/a") is not None
+
+
+def test_a_url_in_a_link_label_does_not_create_a_nested_anchor():
+    root = parse(text_to_storage(
+        "[**см.** https://wiki.example.com/1](https://wiki.example.com/2)"
+    ))
+
+    assert len(root.findall(".//a")) == 1
+    assert root.find("p/a").get("href") == "https://wiki.example.com/2"
+    assert root.find("p/a/strong").text == "см."
+
+
+def test_inline_code_preserves_literal_markdown_and_urls():
+    root = parse(text_to_storage("`**https://wiki.example.com/?a=1&b=2**`"))
+
+    assert root.find("p/code").text == "**https://wiki.example.com/?a=1&b=2**"
+    assert root.find(".//a") is None
+    assert root.find(".//strong") is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://wiki.example.com/?a=1&",
+    "https://wiki.example.com/path_(example)",
+    "https://wiki.example.com/?a=**value**",
+])
+def test_url_characters_are_escaped_without_becoming_markup(url):
+    root = parse(text_to_storage(url))
+
+    assert root.find("p/a").get("href") == url
+    assert root.find("p/a").text == url
+
+
+def test_link_label_is_escaped_and_cannot_inject_html():
+    root = parse(text_to_storage('[<img src="x"/>](https://wiki.example.com/?x=1&y=2)'))
+
+    assert root.find("p/a").text == '<img src="x"/>'
+    assert root.find(".//img") is None

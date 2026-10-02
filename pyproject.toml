@@ -36,6 +36,19 @@ dependencies = [
     # framing и multipart, — и без этой строки набор зависимостей разрешался
     # в уязвимую версию у каждого, кто ставит проект заново.
     "httpx2>=2.12.0",
+    # Проверка токенов входа (OIDC_ISSUER): подпись RS256/ES256 по JWKS realm.
+    # Уже приезжает с langgraph-api; названа потому, что её импортирует security.py.
+    "pyjwt[crypto]>=2.10",
+    # База приложения: личные подключения Jira и Confluence (db.py, credentials.py).
+    # Шифрует их `cryptography` — она уже приезжает с pyjwt[crypto].
+    "psycopg[binary,pool]>=3.2",
+    # Метрики для Prometheus (metrics.py). Их пишут все графы: вызов модели,
+    # узел, запрос к Jira и Confluence — поэтому пакет нужен и без сервера.
+    "prometheus-client>=0.20",
+    # security.py и metrics.py импортируются из каждого графа: личный токен
+    # берётся по пользователю запроса (credentials.py). Уже приезжает с
+    # langgraph-api; новых пакетов не тянет — anyio есть у httpx.
+    "starlette>=0.47",
 ]
 
 # Всё, что нужно для разработки и для запуска Studio, но не нужно
@@ -68,12 +81,11 @@ uitest = [
     "websockets>=13",
 ]
 
-# Постоянные чекпоинты и долгая память в Postgres (см. checkpointer.py и
-# docker-compose.yml). Отдельным экстра, потому что нужны не всем: по умолчанию
-# всё живёт в процессе.
+# Постоянные чекпоинты и долгая память в Postgres для своего рантайма (см.
+# checkpointer.py и профиль demo в docker-compose.yml). Драйвер уже в основных
+# зависимостях; экстра добавляет только чекпоинтер LangGraph.
 postgres = [
     "langgraph-checkpoint-postgres>=2.0",
-    "psycopg[binary,pool]>=3.2",
 ]
 
 # [project.urls]

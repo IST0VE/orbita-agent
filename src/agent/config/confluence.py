@@ -254,6 +254,20 @@ def confluence_search_limit() -> int:
     return env_int("CONFLUENCE_SEARCH_LIMIT", 8, minimum=1, maximum=50)
 
 
+def confluence_search_spaces() -> tuple[str, ...]:
+    """
+    Где ещё искать, кроме пространства публикации: ключи через запятую.
+
+    Поиск прибит к пространству публикации, и расширить его может только
+    администратор, а не модель: CQL собирает клиент (`confluence.search`).
+    Документация продукта при этом часто живёт в соседнем пространстве, и
+    роль поиска, не видящая его, честно пишет «в wiki не описано» про то,
+    что описано рядом. `*` — все пространства, которые видит токен.
+    """
+    raw = env_str("CONFLUENCE_SEARCH_SPACES")
+    return tuple(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+
+
 def confluence_read_max_chars() -> int:
     """
     Потолок на текст одной прочитанной страницы.

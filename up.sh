@@ -74,7 +74,13 @@ if [ ! -f .env ]; then
   echo "Создан .env из .env.example."
 fi
 
-for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN; do
+# POSTGRES_PASSWORD — пароль базы при создании тома pgdata; USER_SECRETS_KEY —
+# ключ личных токенов. Оба нужны один раз и потом не меняются. METRICS_TOKEN —
+# токен Prometheus из профиля monitoring: без профиля он просто не нужен.
+# GRAFANA_ADMIN_PASSWORD — пароль admin в Grafana того же профиля; без него
+# Grafana заводится с admin / admin. METRICS_DB_PASSWORD — пароль роли, которой
+# Grafana читает из базы метрики потока задач (доска «Orbita · поток задач»).
+for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN METRICS_TOKEN METRICS_DB_PASSWORD POSTGRES_PASSWORD USER_SECRETS_KEY GRAFANA_ADMIN_PASSWORD; do
   if [ -z "$(env_get "$name")" ]; then
     secret=$(new_secret)
     [ "${#secret}" -ge 32 ] || fail "Не удалось получить случайные байты из /dev/urandom для $name."
@@ -82,6 +88,31 @@ for name in API_ADMIN_TOKEN NT_RUNNER_TOKEN; do
     echo "В .env записан случайный $name."
   fi
 done
+
+# Серверный режим: Orbita для команды на своём домене за корпоративным прокси
+# с HTTPS, Keycloak на том же имени (docker-compose.server.yml,
+# docs/DEPLOYMENT.md, «Сервер с доменом»).
+public_url=$(env_get ORBITA_PUBLIC_URL)
+if [ -n "$public_url" ]; then
+  [[ $public_url =~ ^https://[A-Za-z0-9.-]+$ ]] \
+    || fail "ORBITA_PUBLIC_URL в .env — адрес вида https://orbita.example.ru: https, без порта, пути и косой черты в конце."
+  # COMPOSE_FILE в .env, а не -f в команде: тогда серверный файл видят и
+  # `docker compose logs`, `ps`, `down`, набранные руками.
+  compose_file=${COMPOSE_FILE:-$(env_get COMPOSE_FILE)}
+  if [ -z "$compose_file" ]; then
+    env_set COMPOSE_FILE docker-compose.yml:docker-compose.server.yml
+    env_set COMPOSE_PATH_SEPARATOR :
+    echo "В .env записан COMPOSE_FILE: включён серверный режим (docker-compose.server.yml)."
+  elif [[ $compose_file != *docker-compose.server.yml* ]]; then
+    fail "ORBITA_PUBLIC_URL задан, а COMPOSE_FILE не включает docker-compose.server.yml. Впишите в .env: COMPOSE_FILE=docker-compose.yml:docker-compose.server.yml"
+  fi
+  if [ -z "$(env_get KEYCLOAK_ADMIN_PASSWORD)" ]; then
+    secret=$(new_secret)
+    [ "${#secret}" -ge 32 ] || fail "Не удалось получить случайные байты из /dev/urandom для KEYCLOAK_ADMIN_PASSWORD."
+    env_set KEYCLOAK_ADMIN_PASSWORD "$secret"
+    echo "В .env записан случайный KEYCLOAK_ADMIN_PASSWORD — пароль admin в консоли Keycloak."
+  fi
+fi
 
 provider=$(env_get LLM_PROVIDER | tr '[:upper:]' '[:lower:]')
 provider=${provider:-deepseek}
@@ -112,10 +143,12 @@ fi
 # 127.0.0.1 из контейнера — это сам контейнер. Адреса runner и базы Compose
 # задаёт сам, цели runner переводит на хост флаг --loopback-alias, а остальное
 # (Prometheus, Jira, шлюз модели на этой машине) надо поправить в .env.
+# OIDC_ISSUER — адрес Keycloak для браузера, а не для контейнера: localhost в
+# нём верен.
 loopback=$(tr -d '\r' < .env \
   | grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*["'\'']?[A-Za-z][A-Za-z0-9+.-]*://(localhost|127\.[0-9.]+|\[::1\])([:/"'\'']|[[:space:]]*$)' \
   | sed -E 's/^[[:space:]]*([A-Za-z0-9_]+).*/\1/' \
-  | grep -vxE 'NT_RUNNER_URL|POSTGRES_URI' | sort -u | paste -sd, - | sed 's/,/, /g') || true
+  | grep -vxE 'NT_RUNNER_URL|POSTGRES_URI|OIDC_ISSUER' | sort -u | paste -sd, - | sed 's/,/, /g') || true
 if [ -n "$loopback" ]; then
   printf '\n\033[33mВнимание: в .env адреса на 127.0.0.1/localhost: %s.\n' "$loopback"
   printf 'Из контейнера они ведут в сам контейнер. Используйте host.docker.internal; для модели нужен HTTPS (docs/DEPLOYMENT.md).\033[0m\n'
@@ -141,18 +174,35 @@ echo "Собираю образы и поднимаю контейнеры. Пе
 # digest: даже целиком закешированный образ получает новый ID, и Compose
 # пересоздаёт контейнеры — повторный запуск обрывал бы идущие прогоны.
 export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+logged="agent runner"
+[ -z "$public_url" ] || logged="$logged keycloak web"
 if ! docker compose up -d --build --wait --wait-timeout 600; then
   echo
-  echo "Последние строки журналов агента и runner:"
-  docker compose logs --tail 30 agent runner || true
+  echo "Последние строки журналов ($logged):"
+  # shellcheck disable=SC2086 # список сервисов — отдельными словами
+  docker compose logs --tail 30 $logged || true
   fail "Запуск не удался. Состояние контейнеров: docker compose ps"
 fi
 
-port=${ORBITA_WEB_PORT:-$(env_get ORBITA_WEB_PORT)}
-url="http://localhost:${port:-8080}"
-
-printf '\n\033[32mOrbita запущена: %s\033[0m\n' "$url"
-echo "При первом входе браузер спросит токен API — это значение API_ADMIN_TOKEN из .env."
+if [ -n "$public_url" ]; then
+  url=$public_url
+  printf '\n\033[32mOrbita запущена: %s\033[0m\n' "$url"
+  echo "Вход — через Keycloak. Консоль: $url/auth/admin/ (admin, пароль — KEYCLOAK_ADMIN_PASSWORD из .env)."
+  echo "Первый запуск: подключите AD и выдайте роли orbita-user и orbita-admin — docs/DEPLOYMENT.md, «Сервер с доменом»."
+else
+  port=${ORBITA_WEB_PORT:-$(env_get ORBITA_WEB_PORT)}
+  url="http://localhost:${port:-8080}"
+  printf '\n\033[32mOrbita запущена: %s\033[0m\n' "$url"
+  echo "При первом входе браузер спросит токен API — это значение API_ADMIN_TOKEN из .env."
+fi
+# Профиль monitoring — Prometheus и Grafana (docker-compose.yml).
+profiles=${COMPOSE_PROFILES:-$(env_get COMPOSE_PROFILES)}
+case ",$profiles," in
+  *,monitoring,*)
+    grafana_port=${ORBITA_GRAFANA_PORT:-$(env_get ORBITA_GRAFANA_PORT)}
+    echo "Графики:        http://localhost:${grafana_port:-3000}  (Grafana, доска Orbita)"
+    ;;
+esac
 echo
 echo "Журнал агента:  docker compose logs -f agent"
 echo "Стенды для НТ:  config/nt-runner.json, после правки — docker compose restart runner"

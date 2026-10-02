@@ -1,0 +1,110 @@
+# Серверный режим: Orbita для команды на своём домене. Кладётся поверх
+# docker-compose.yml и меняет в нём только то, что на сервере иначе:
+#
+#   https://<домен>/        интерфейс и API
+#   https://<домен>/auth/   Keycloak: вход, выход, консоль администратора
+#
+# HTTPS и сертификат домена — у корпоративного прокси: он снимает TLS и шлёт
+# всё, включая /auth/, по HTTP на порт web этого сервера (ORBITA_WEB_PORT, 8080).
+#
+# Включается строками в .env — их дописывает up.sh, когда задан ORBITA_PUBLIC_URL:
+#
+#     ORBITA_PUBLIC_URL=https://orbita.example.ru
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.server.yml
+#     COMPOSE_PATH_SEPARATOR=:
+#
+# С COMPOSE_FILE в .env этот файл подхватывают и `docker compose logs`, `ps`,
+# `down` — все команды видят один и тот же набор сервисов. Пошагово и что
+# нужно от прокси — docs/DEPLOYMENT.md, раздел «Сервер с доменом».
+#
+# `!reset` и `!override` понимает Docker Compose 2.24.4 и новее.
+services:
+  agent:
+    environment:
+      # Issuer — адрес realm для браузера; ключи и обмен кода на токены агент
+      # берёт изнутри сети Compose, token endpoint — рядом с ключами.
+      OIDC_ISSUER: ${ORBITA_PUBLIC_URL:?Set ORBITA_PUBLIC_URL (https://your.domain) in .env}/auth/realms/orbita
+      OIDC_JWKS_URL: http://keycloak:8080/auth/realms/orbita/protocol/openid-connect/certs
+      # Клиент — тот, что создаёт config/keycloak/server/orbita-realm.json.
+      OIDC_CLIENT_ID: orbita-web
+      # На сервере в realm попадает весь домен (LDAP), поэтому без роли не
+      # пускают. Пустить всех — роль orbita-user в ролях по умолчанию realm.
+      OIDC_REQUIRED_ROLE: ${OIDC_REQUIRED_ROLE:-orbita-user}
+      # Список из docker-compose.yml плюс то, что закреплено здесь.
+      SETTINGS_FIXED: POSTGRES_URI,NT_RUNNER_URL,PUBLISH_DIR,AGENT_INPUT_DIR,CHAT_FILES_DIR,JIRA_JOURNAL_PATH,OIDC_ISSUER,OIDC_JWKS_URL,OIDC_CLIENT_ID
+
+  web:
+    # Порт открыт в сеть: к нему ходит корпоративный прокси. Пускать к нему
+    # стоит только прокси — файрволом; прокси на этой же машине —
+    # ORBITA_WEB_BIND=127.0.0.1. Напрямую по http://сервер:8080 вход всё равно
+    # не работает: браузер не даёт crypto.subtle странице без HTTPS.
+    ports: !override
+      - "${ORBITA_WEB_BIND:-0.0.0.0}:${ORBITA_WEB_PORT:-8080}:8080"
+    volumes:
+      # Вместо default.conf из образа: тот же сервер плюс Keycloak под /auth.
+      - ./web/nginx/server.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # База Keycloak — отдельная база `keycloak` в том же PostgreSQL, что и данные
+  # Orbita: один сервис, один том, одна резервная копия. Образ создаёт при
+  # инициализации тома только базу `orbita`, поэтому `keycloak` создаётся
+  # здесь — и на новом томе, и на томе, который уже работал без неё.
+  keycloak-db:
+    image: postgres:16-alpine
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: postgres
+    environment:
+      PGHOST: postgres
+      PGUSER: orbita
+      PGDATABASE: orbita
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}
+    command:
+      - sh
+      - -c
+      - >-
+        psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -qx 1
+        || psql -c "CREATE DATABASE keycloak"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  keycloak:
+    # Без профиля: на сервере вход — не выбор, а условие работы.
+    profiles: !reset []
+    # `start` — рабочий режим: данные в базе, а не в контейнере. Realm из файла
+    # импортируется, только пока его нет в базе; дальше он живёт в Keycloak
+    # (пользователи из LDAP, роли, группы) и правится в консоли.
+    command: ["start", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env (up.sh creates it)}
+      # Полный внешний адрес: он же `iss` токенов и адрес страниц входа.
+      KC_HOSTNAME: ${ORBITA_PUBLIC_URL:?Set ORBITA_PUBLIC_URL (https://your.domain) in .env}/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      # Проверка готовности — на порту управления без /auth (healthcheck в
+      # docker-compose.yml); иначе путь унаследовался бы от KC_HTTP_RELATIVE_PATH.
+      KC_HTTP_MANAGEMENT_RELATIVE_PATH: /
+      # TLS снимает корпоративный прокси, дальше запрос идёт по HTTP через web.
+      # Схему и адрес клиента Keycloak берёт из X-Forwarded-*, которые ставит
+      # web/nginx/server.conf.
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: orbita
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}
+      # Подставляется в адреса возврата клиента orbita-web при импорте realm.
+      ORBITA_PUBLIC_URL: ${ORBITA_PUBLIC_URL}
+    # Консоль и вход — через web под /auth; прямой порт на петле не нужен.
+    ports: !reset []
+    volumes:
+      # Тот же путь в контейнере, что у локального realm, — Compose заменяет
+      # том, а не добавляет второй: тестовые пользователи на сервер не едут.
+      - ./config/keycloak/server:/opt/keycloak/data/import:ro
+      # Корневые сертификаты компании: им Keycloak доверяет при подключении к
+      # контроллеру домена по LDAPS, вдобавок к публичным центрам. Эту папку
+      # он читает сам, отдельная настройка не нужна.
+      - ./config/ca:/opt/keycloak/conf/truststores:ro
+    depends_on:
+      keycloak-db:
+        condition: service_completed_successfully

@@ -17,10 +17,16 @@ FROM python:3.12-slim
 
 # PYTHONUNBUFFERED — чтобы логи сервера появлялись в `docker compose logs`
 # сразу, а не когда буфер сочтёт нужным.
+#
+# LANGGRAPH_CLI_NO_ANALYTICS — `langgraph dev` при каждом запуске отправляет
+# сведения о машине и флагах запуска на внешний сервис аналитики LangChain.
+# Содержимого тредов там нет, но сервер в закрытом контуре наружу ходить не
+# должен вовсе, и лишнее обращение в журнале прокси — вопрос к ИБ.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LANGGRAPH_CLI_NO_ANALYTICS=1
 
 WORKDIR /app
 
@@ -59,11 +65,13 @@ COPY --from=k6 /usr/bin/k6 /usr/local/bin/k6
 # те же пути заданы через `environment`, где их не перебьёт личный .env.
 ENV PUBLISH_DIR=/data/published \
     AGENT_INPUT_DIR=/data/input \
+    CHAT_FILES_DIR=/data/chats \
     JIRA_JOURNAL_PATH=/data/jira-operations.sqlite3
 # `.langgraph_api` — собственное хранилище тредов сервера разработки,
-# `/data/nt-runs` — журнал и файлы прогонов runner. Каталоги создаются здесь,
-# чтобы тома монтировались на готовое место с нужным владельцем.
-RUN mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api
+# `/data/nt-runs` — журнал и файлы прогонов runner, `/data/chats` — файлы
+# чатов. Каталоги создаются здесь, чтобы тома монтировались на готовое место
+# с нужным владельцем: пустой том Docker заполняет из образа вместе с правами.
+RUN mkdir -p /data/published /data/input /data/chats /data/nt-runs /app/.langgraph_api
 
 # Даже учебный сервер не должен выполнять разбор пользовательских файлов и
 # HTTP-запросы от root. /app остаётся доступен на запись из-за runtime-файлов

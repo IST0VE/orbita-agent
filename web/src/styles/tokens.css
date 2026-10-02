@@ -283,13 +283,13 @@
    * ширины упирается в границы, а окно, в котором минимум не помещается,
    * показывает колонку выдвижной панелью.
    */
-  --col-left: 300px;
+  --col-left: 280px;
   --col-left-min: 240px;
   --col-left-max: 520px;
-  --col-right: 320px;
+  /* Правая колонка — открытый чат: в ней идёт разговор, и ей нужно больше. */
+  --col-right: 360px;
   --header-height: 52px;
   --context-height: 40px;
-  --console-height: 260px;
   --control-height: 32px;
   --control-height-lg: 36px;
 }

@@ -8,7 +8,7 @@
 
 Граф:
 
-  START -> context -> requirements -> (tools -> requirements)*
+  START -> context -> materials -> requirements -> (tools -> requirements)*
         -> gate_api          -> api
         -> gate_data         -> data
         -> gate_architecture -> architecture
@@ -24,7 +24,11 @@
             базы знаний (`knowledge.py`) и то, что помним по проекту
             (`memory.py`). Именно в конец: префикс промпта обязан остаться
             неподвижным, иначе кеш обнулится и вся экономика проекта развалится;
-  <роль>    вызов модели со стабильным префиксом этой роли. Первые несколько
+  materials читает кодом то, что оператор назвал сам: выбранные файлы и
+            страницы Confluence и задачи Jira по ссылкам из запроса
+            (`materials.py`). Прочитанное уезжает в `artifacts` и доходит
+            брифом до аналитика и ревьюера на каждом ходе треда;
+  <роль>   вызов модели со стабильным префиксом этой роли. Первые несколько
             тысяч токенов префикса у всех пяти ролей побайтово одинаковы
             (`prompts.COMMON`), поэтому вторая и следующие роли попадают
             в кеш уже на первом своём вызове;
@@ -78,6 +82,7 @@ from __future__ import annotations
 # на них ссылаются тесты, и молча увести их в другой модуль значило бы
 # сломать вызывающих ради чистоты списка.
 # ruff: noqa: F401
+from agent import metrics
 from agent.builder import build_graph
 from agent.cost import (
     cost_summary,
@@ -135,4 +140,4 @@ from agent.tools import list_task_files, read_task_file
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера.
 # Персистентность на сервере своя, свой чекпоинтер тут только конфликтует.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "agent")

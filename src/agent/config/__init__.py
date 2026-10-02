@@ -36,6 +36,7 @@ from __future__ import annotations
 from agent.config.confluence import *  # noqa: F403
 from agent.config.cost import *  # noqa: F403
 from agent.config.env import *  # noqa: F403
+from agent.config.flow import *  # noqa: F403
 from agent.config.inputs import *  # noqa: F403
 from agent.config.jira import *  # noqa: F403
 from agent.config.knowledge import *  # noqa: F403

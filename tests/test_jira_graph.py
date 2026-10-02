@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from agent import confluence, inputs, jira_graph, jira_prompts, jira_roles, jira_writer
+from agent import confluence, inputs, jira_graph, jira_prompts, jira_roles, jira_writer, nodes
 
 # Аналитика приезжает документом, а не просьбой: короткое сообщение этот граф
 # не пускает дальше проверки входа, и тесту прогона нужен настоящий вход.
@@ -776,6 +776,15 @@ def test_a_document_becomes_issues_after_the_operator_names_the_project(
     responses.add(responses.POST, f"{base}/rest/api/3/issue", json={"key": "ORB-1"}, status=201)
     responses.add(responses.POST, f"{base}/rest/api/3/issue", json={"key": "ORB-2"}, status=201)
 
+    def stored(request):
+        # Сверка после записи читает задачу: трекер отдаёт то, что ему прислали.
+        posts = [call for call in responses.calls if call.request.method == "POST"]
+        index = int(request.url.split("ORB-")[1].split("?")[0]) - 1
+        return 200, {}, json.dumps({"fields": json.loads(posts[index].request.body)["fields"]})
+
+    for key in ("ORB-1", "ORB-2"):
+        responses.add_callback(responses.GET, f"{base}/rest/api/3/issue/{key}", callback=stored)
+
     model = GenericFakeChatModel(messages=iter(ANSWERS))
     app = jira_graph.build_graph(llm=model).compile(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "jira-e2e", "input_dir": TASK_DIR}}
@@ -791,7 +800,55 @@ def test_a_document_becomes_issues_after_the_operator_names_the_project(
     assert [issue["key"] for issue in state["issues"]["created"]] == ["ORB-1", "ORB-2"]
     assert state["issues"]["project"] == "ORB"
     # Ребёнок уехал с настоящим ключом эпика, а не с локальным.
-    child = json.loads(responses.calls[-1].request.body)["fields"]
+    posts = [call for call in responses.calls if call.request.method == "POST"]
+    child = json.loads(posts[-1].request.body)["fields"]
     assert child["parent"] == {"key": "ORB-1"}
     # Ключи видно и в треде: за ними приходят сразу, а не в документ.
     assert "ORB-2" in state["messages"][-1].content
+    # После записи задачи перечитаны: лежит то, что отправили, с меткой операции.
+    check = state["issues"]["verification"]
+    assert [item["key"] for item in check["verified"]] == ["ORB-1", "ORB-2"]
+    assert check["differs"] == [] and check["unverified"] == []
+    assert "Сверка после записи: совпало 2" in state["messages"][-1].content
+
+
+# --------------------------------------------------------------------------
+# Форма документов
+# --------------------------------------------------------------------------
+class _Counting:
+    """Подделка модели: один и тот же ответ и счёт вызовов."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        return AIMessage(content=self.content)
+
+
+def test_machine_cards_are_never_rewritten_by_the_alphabet_repair():
+    """
+    Карточки разбирает `jira_plan.py`: строку JSON, переписанную «по-русски»,
+    он не разберёт. Починка алфавита их не трогает — ни запросом, ни текстом.
+    """
+    cards = '{"issues": [{"id": "TASK-1", "summary": "Сделать服务端-часть"}]}'
+    model = _Counting(cards)
+    node = nodes.make_role_node(
+        jira_roles.BY_KEY["issues"], llm=model, pipeline=jira_roles.PIPELINE
+    )
+
+    update = node({"messages": [HumanMessage("разложи")], "artifacts": {}}, {})
+
+    assert model.calls == 1
+    assert update["artifacts"]["issues"] == cards
+
+
+def test_a_prose_stage_gets_its_table_evened_out():
+    ragged = "# Карта\n\n| Сервис | Слой |\n| --- | --- |\n| orders-api | backend | fact |"
+    model = _Counting(ragged)
+    node = nodes.make_role_node(jira_roles.FIRST, llm=model, pipeline=jira_roles.PIPELINE)
+
+    update = node({"messages": [HumanMessage("разложи")], "artifacts": {}}, {})
+
+    assert "| Сервис | Слой |  |" in update["artifacts"]["scope"]

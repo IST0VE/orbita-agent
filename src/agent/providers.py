@@ -34,7 +34,7 @@ from __future__ import annotations
 from langchain_core.language_models import BaseChatModel
 
 from agent import config as cfg
-from agent import llm_pacing
+from agent import llm_pacing, metrics
 
 # Ритм обращений к модели: один обработчик на процесс, потому что минутное окно
 # шлюз считает по ключу, а не по клиенту. Клиентов ниже несколько — по одному на
@@ -61,10 +61,12 @@ def _openai(model: str, kwargs: dict) -> BaseChatModel:
 
 def _anthropic(model: str, kwargs: dict) -> BaseChatModel:
     """
-    Anthropic требует max_tokens на уровне API; ChatAnthropic подставляет свой
-    дефолт, если LLM_MAX_TOKENS не задан. Здесь это единственный провайдер,
-    где переменная влияет на длину ответа всегда, а не только как потолок.
+    Anthropic требует max_tokens на уровне API. Если LLM_MAX_TOKENS пуст
+    или равен 0, ChatAnthropic подставляет свой дефолт — у этого провайдера
+    ответ без потолка не бывает.
     """
+    if kwargs.get("extra_body"):
+        raise cfg.ConfigError("LLM_EXTRA_BODY поддерживается только OpenAI-совместимыми API")
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as exc:  # пакет не в зависимостях проекта — он опционален
@@ -130,7 +132,10 @@ def build_llm(
         # больше десяти мест, и каждое из них обошло бы обёртку.
         # Retries must re-enter the callback. SDK-internal retries bypass it
         # and can exceed TPM/RPM; application calls use llm_retry.invoke.
-        kwargs = dict(cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer], max_retries=0)
+        # Метрики — после ритма: время ответа не должно включать очередь шлюза.
+        kwargs = dict(
+            cfg.llm_kwargs(), temperature=temp, callbacks=[_pacer, metrics.LLM], max_retries=0
+        )
         client = _FACTORIES[name](model_name, kwargs)
         _CLIENTS[key] = client
     return client

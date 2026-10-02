@@ -21,6 +21,7 @@ export type AppSection = "workspace" | "settings" | "journal";
 export type WorkspaceView = "graph" | "result" | "document";
 
 export type SettingsGroupId =
+  | "personal"
   | "ai"
   | "connections"
   | "integrations"

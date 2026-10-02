@@ -20,13 +20,15 @@ import { surfaceItems } from "../engine/surfaces/SurfaceRenderer";
 import type { SafeWidgetContext, UiManifest, WidgetAction } from "../engine/manifest/types";
 import type { RuntimeSnapshot } from "../engine/runtime/types";
 import { SafeMarkdown } from "../engine/security/safeMarkdown";
+import { downloadText } from "../lib/share";
 import { CircleAlert, LayoutGrid, Network } from "../ui/icons";
 import { EmptyState } from "../ui";
 import { isInspectorWidget } from "./result";
 import type { WorkspaceView } from "./sections";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
-export type OpenDocument = { title: string; text: string };
+/** `file` — имя, под которым документ скачивается; нет имени — нет и кнопки. */
+export type OpenDocument = { title: string; text: string; file?: string };
 
 export function Workspace({
   bundle,
@@ -74,6 +76,11 @@ export function Workspace({
         documentOpen={Boolean(document)}
         documentTitle={document?.title ?? "Документ"}
         onCloseDocument={onCloseDocument}
+        onDownloadDocument={
+          document?.file
+            ? () => downloadText(document.file as string, document.text, "text/markdown;charset=utf-8")
+            : undefined
+        }
         resultReady={results.length > 0}
         graph={graph}
       />

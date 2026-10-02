@@ -37,7 +37,22 @@ def test_each_role_sees_every_earlier_stage():
     этапами, а по двум документам из четырёх их не найти.
     """
     for index, role in enumerate(roles.ROLES):
-        assert role.needs == roles.KEYS[:index]
+        assert tuple(key for key in role.needs if key in roles.KEYS) == roles.KEYS[:index]
+
+
+def test_raw_materials_reach_the_analyst_and_the_reviewer_only():
+    """
+    Прочитанное кодом видят двое: аналитик пишет по нему требования, ревьюер
+    сверяет их с ним. Проектировщики работают с документом аналитика — иначе
+    конвейер развалится на независимые мнения о встрече.
+    """
+    seeing = [role.key for role in roles.ROLES if set(roles.READ_BY_CODE) <= set(role.needs)]
+    assert seeing == [roles.FIRST.key, roles.LAST.key]
+    assert roles.SOURCES in roles.LAST.needs
+    assert not any(
+        set(role.needs) & {*roles.READ_BY_CODE, roles.SOURCES}
+        for role in roles.ROLES[1:-1]
+    )
 
 
 def test_only_the_first_role_reads_files():
@@ -110,7 +125,7 @@ def test_stages_arrive_in_pipeline_order():
     artifacts = {key: f"документ {key}" for key in roles.KEYS}
     text = roles.brief(roles.LAST, "Задача", artifacts)
 
-    positions = [text.index(f"документ {key}") for key in roles.LAST.needs]
+    positions = [text.index(f"документ {key}") for key in roles.LAST.needs if key in roles.KEYS]
     assert positions == sorted(positions)
 
 

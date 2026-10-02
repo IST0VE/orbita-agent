@@ -117,16 +117,17 @@ def test_auto_fallback_completes_graph_and_reads_real_file(monkeypatch, tmp_path
     assert sum("tools" in payload for payload in payloads) == 1
     assert len(payloads) == 7  # rejected probe + tool request + five documents
     assert {key[1] for key in tool_compat._PROMPT_ENDPOINTS} == {"company-model"}
-    assert set(state["artifacts"]) == set(roles.PIPELINE.keys)
+    assert set(state["artifacts"]) & set(roles.PIPELINE.keys) == set(roles.PIPELINE.keys)
     assert state["usage"]["calls"] == 6
     assert state["usage"]["output"] == 120
     result = next(m for m in state["messages"] if isinstance(m, ToolMessage))
     assert result.content == "Refund limit is 731 units."
     assert "731" in json.dumps(payloads[2]["messages"])
+    # Ответы модели, а не заметки прелюдии о прочитанном: те пишет код.
     assert all(
         m.response_metadata["tool_mode"] == "prompt"
         for m in state["messages"]
-        if isinstance(m, AIMessage)
+        if isinstance(m, AIMessage) and m.response_metadata
     )
 
 

@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from agent.graph import trim_history
+from agent.nodes import role_input
 
 
 def history(turns: int) -> list:
@@ -111,6 +112,83 @@ def test_single_question_history_keeps_the_task_instead_of_emptying(monkeypatch:
     ids = {m.tool_call_id for m in trimmed if isinstance(m, ToolMessage)}
     called = {call["id"] for m in trimmed if isinstance(m, AIMessage) for call in (m.tool_calls or [])}
     assert ids <= called
+
+
+def research_turn(*pages: int) -> list:
+    """
+    Ход роли поиска в конвейере подготовки, как 27 сентября 2026: запрос
+    оператора, заметка о прочитанной задаче, разбор, список запросов, а за ними
+    её собственная переписка с Confluence. `pages` — размер каждой прочитанной
+    страницы в словах; слово здесь — около полутора токенов.
+    """
+    messages = [
+        HumanMessage("помоги мне с задачей https://jira.example.com/browse/ORB-1"),
+        AIMessage("Прочитана задача ORB-1 «Управление пользователями»."),
+        AIMessage("# Разбор задачи\n\n" + "требование " * 300),
+        AIMessage("# Что нужно выяснить\n\nЗапрос: пользователи nginx. " + "пробел " * 800),
+    ]
+    for i, words in enumerate(pages):
+        messages += [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "confluence_page", "args": {"page_id": str(i)}, "id": f"p{i}"}
+                ],
+            ),
+            ToolMessage(
+                content=f"страница {i} " + "абзац " * words,
+                tool_call_id=f"p{i}",
+                name="confluence_page",
+            ),
+        ]
+    return messages
+
+
+def test_the_answer_the_model_asked_for_is_never_cut_away(monkeypatch: pytest.MonkeyPatch):
+    """
+    Ответ инструмента больше остатка лимита. Окно, отсчитанное от конца, не
+    вмещало его и оставалось пустым: роль видела один запрос оператора, звала
+    тот же инструмент снова и в конце писала, что ничего не прочитано.
+    Лимит здесь уступает: вызов без ответа, ради которого модель звали, — это
+    оплаченный вызов, который ничего не даёт.
+    """
+    monkeypatch.setenv("LLM_MAX_HISTORY_TOKENS", "3000")
+    turn = research_turn(2600)
+
+    trimmed = trim_history(turn)
+
+    assert trimmed[0] is turn[0]
+    assert trimmed[-2:] == turn[-2:]
+
+
+def test_the_role_input_is_not_trimmed_away(monkeypatch: pytest.MonkeyPatch):
+    """
+    Разбор и список запросов для роли поиска — само её задание. Под лимит
+    уходит середина её переписки, а не то, ради чего она ищет.
+    """
+    monkeypatch.setenv("LLM_MAX_HISTORY_TOKENS", "3000")
+    turn = research_turn(1000, 1000, 1000)
+
+    trimmed = trim_history(turn, keep=role_input(turn))
+
+    assert trimmed[:4] == turn[:4]
+    assert trimmed[-2:] == turn[-2:]
+    assert turn[5] not in trimmed, "старая страница уходит первой"
+    ids = {m.tool_call_id for m in trimmed if isinstance(m, ToolMessage)}
+    called = {
+        call["id"] for m in trimmed if isinstance(m, AIMessage) for call in (m.tool_calls or [])
+    }
+    assert ids <= called
+
+
+def test_role_input_is_everything_before_its_own_tool_loop():
+    turn = research_turn(10, 10)
+
+    assert role_input(turn) == 4
+    assert role_input(turn[:4]) == 4
+    assert role_input(turn[:1]) == 1
+    # Расследование НТ: бриф и сразу ходы модели.
+    assert role_input([turn[0], *turn[4:]]) == 1
 
 
 def test_input_stops_growing_with_the_thread(monkeypatch: pytest.MonkeyPatch):

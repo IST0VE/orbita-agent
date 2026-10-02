@@ -6,12 +6,12 @@
  * отвечала на вопрос «в каком я разделе», а вторая «на что я смотрю».
  *
  * Справа стоит то, что относится к открытому виду, и ничего больше: у схемы
- * это поиск, масштаб и представление, у документа — возврат к схеме.
+ * это поиск, масштаб и представление, у документа — скачивание и возврат к схеме.
  */
 
 import { GraphControls } from "../engine/canvas/GraphControls";
 import type { GraphView } from "../engine/canvas/useGraphView";
-import { FileText, LayoutGrid, Network, X } from "../ui/icons";
+import { Download, FileText, LayoutGrid, Network, X } from "../ui/icons";
 import type { WorkspaceView } from "./sections";
 
 const VIEWS: Array<{ id: WorkspaceView; label: string; icon: typeof Network; hint: string }> = [
@@ -26,6 +26,7 @@ export function WorkspaceHeader({
   documentOpen,
   documentTitle,
   onCloseDocument,
+  onDownloadDocument,
   resultReady,
   graph,
 }: {
@@ -34,6 +35,8 @@ export function WorkspaceHeader({
   documentOpen: boolean;
   documentTitle: string;
   onCloseDocument: () => void;
+  /** Скачать открытый документ; нет — документ не из тех, что отдаются файлом. */
+  onDownloadDocument?: () => void;
   /** В результате есть что показать: вкладка получает отметку. */
   resultReady: boolean;
   graph: GraphView;
@@ -62,6 +65,12 @@ export function WorkspaceHeader({
 
       <div className="canvas-tools-right">
         {view === "graph" ? <GraphControls view={graph} /> : null}
+        {view === "document" && onDownloadDocument ? (
+          <button className="btn-ghost btn-sm" onClick={onDownloadDocument}>
+            <Download size={15} aria-hidden="true" />
+            Скачать
+          </button>
+        ) : null}
         {view === "document" ? (
           <button className="btn-ghost btn-sm" onClick={onCloseDocument}>
             <X size={15} aria-hidden="true" />

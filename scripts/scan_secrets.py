@@ -94,6 +94,14 @@ MAX_BYTES = 2_000_000
 # Keep the exception scoped to its exact file and value, including history.
 API_KEY_FIXTURES = {"tests/test_llm_retry.py": {"sk-private-test-key"}}
 
+# Synthetic connection string: the journal picks Postgres by POSTGRES_URI alone.
+# `db` is no compose service, so DOC_HOSTS does not cover it; match the exact line.
+URL_CREDENTIAL_FIXTURES = {
+    "tests/test_actions.py": {
+        'monkeypatch.setenv("POSTGRES_URI", "postgresql://u:p@db:5432/orbita")',
+    },
+}
+
 
 class Finding:
     """Где нашли и что именно. Значения нет — оно и не печатается."""
@@ -127,6 +135,7 @@ def scan_text(text: str, path: str, *, object_id: str | None = None) -> list[Fin
     where = f"{path}@{object_id[:10]}" if object_id is not None else path
     bearer_fixtures = BEARER_FIXTURES.get(path, set())
     api_key_fixtures = API_KEY_FIXTURES.get(path, set())
+    url_fixtures = URL_CREDENTIAL_FIXTURES.get(path, set())
     found: list[Finding] = []
     rules = _rules()
     for number, line in enumerate(text.splitlines(), start=1):
@@ -136,6 +145,8 @@ def scan_text(text: str, path: str, *, object_id: str | None = None) -> list[Fin
                         and match.group(0).split(None, 1)[-1] in bearer_fixtures):
                     continue
                 if kind == "openai-key" and match.group(0) in api_key_fixtures:
+                    continue
+                if kind == "url-credentials" and line.strip() in url_fixtures:
                     continue
                 if _real(kind, match.group(0), line):
                     found.append(Finding(where, number, kind))

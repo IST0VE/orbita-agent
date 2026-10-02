@@ -35,8 +35,9 @@ BASELINE = HERE / "baseline.json"
 #: Показатели, которые должны расти, и те, которые должны падать, перечислены
 #: отдельно: «отклонение на 10%» без направления разрешило бы вдвое меньше
 #: найденных противоречий.
-HIGHER_IS_BETTER = ("source_accuracy", "grounded_claims", "verified_contradictions", "gaps_marked", "stages_done")
-LOWER_IS_BETTER = ("unsupported_claims",)
+HIGHER_IS_BETTER = ("source_accuracy", "grounded_claims", "verified_contradictions", "gaps_marked",
+                    "stages_done", "critic_recall", "quotes_verified")
+LOWER_IS_BETTER = ("unsupported_claims", "critic_false_flags")
 #: Ресурсы: рост дороже и дольше — тоже ухудшение, но с запасом на дрожание.
 BUDGETS = {"usd": 1.5, "seconds": 3.0}
 TOLERANCE = 0.05
@@ -58,10 +59,18 @@ def expectations(case: dict, result: dict) -> list[str]:
         "min_contradictions_mentioned": ("contradictions_mentioned", lambda a, b: a >= b, "меньше"),
         "max_unsupported_claims": ("unsupported_claims", lambda a, b: a <= b, "больше"),
         "max_published_files": ("published_files", lambda a, b: a <= b, "больше"),
+        # Проверка ссылок (`critic.py`): заложенные провалы найдены, лишнего нет.
+        "min_critic_recall": ("critic_recall", lambda a, b: a >= b, "ниже"),
+        "max_critic_false_flags": ("critic_false_flags", lambda a, b: a <= b, "больше"),
+        "min_quotes_verified": ("quotes_verified", lambda a, b: a >= b, "меньше"),
     }
     for name, limit in expect.items():
         if name in checks:
             field, ok, word = checks[name]
+            # У живой модели заложенных провалов нет: показатель не считается,
+            # и ожидание по нему не проверяется (`harness.critic_metrics`).
+            if result.get(field) is None:
+                continue
             if not ok(result[field], limit):
                 problems.append(f"{result['id']}: {field}={result[field]} {word} ожидаемого {limit}")
         elif name == "publication_status" and result["publication_status"] != limit:
@@ -81,10 +90,16 @@ def regressions(base: dict, now: dict) -> list[str]:
         if after is None:
             problems.append(f"{case_id}: случай исчез из набора")
             continue
+        # Показатели проверки ссылок есть только у случаев конвейера подготовки:
+        # у остальных их нет ни в базе, ни в прогоне, и сравнивать нечего.
         for field in HIGHER_IS_BETTER:
+            if before.get(field) is None or after.get(field) is None:
+                continue
             if after[field] < before[field] * (1 - TOLERANCE):
                 problems.append(f"{case_id}: {field} {before[field]} -> {after[field]}")
         for field in LOWER_IS_BETTER:
+            if before.get(field) is None or after.get(field) is None:
+                continue
             if after[field] > before[field] + max(1, before[field] * TOLERANCE):
                 problems.append(f"{case_id}: {field} {before[field]} -> {after[field]}")
         for field, factor in BUDGETS.items():
@@ -97,13 +112,22 @@ def regressions(base: dict, now: dict) -> list[str]:
 
 
 def report(now: dict) -> str:
-    rows = ["| случай | этапов | ссылки | с опорой | без опоры | проверенные противоречия | пробелы | $ | с |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    rows = ["| случай | этапов | ссылки | с опорой | без опоры | проверенные противоречия | пробелы "
+            "| критик: поймано / ложных / цитат | $ | с |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case_id, item in now["cases"].items():
+        critic = "—"
+        if "critic_findings" in item:
+            recall = item.get("critic_recall")
+            critic = (
+                f"{item['critic_findings']} замечаний"
+                if recall is None
+                else f"{recall} / {item['critic_false_flags']} / {item['quotes_verified']}"
+            )
         rows.append(
             f"| {case_id} | {item['stages_done']} | {item['source_accuracy']} | "
             f"{item['grounded_claims']} | {item['unsupported_claims']} | {item['verified_contradictions']} | "
-            f"{item['gaps_marked']} | {item['usd']} | {item['seconds']} |"
+            f"{item['gaps_marked']} | {critic} | {item['usd']} | {item['seconds']} |"
         )
     return "\n".join(rows)
 

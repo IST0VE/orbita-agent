@@ -33,6 +33,11 @@ CONFIG = {"configurable": {"thread_id": "t-1"}}
 TASK = "Спроектировать асинхронную выгрузку данных по материалам встречи."
 
 
+def stages_of(result: dict) -> list[str]:
+    """Документы ролей в порядке появления: код кладёт рядом свои блоки и реестр."""
+    return [key for key in result["artifacts"] if key in roles.KEYS]
+
+
 def usage_meta(hit: int, miss: int, output: int) -> dict:
     return {
         "token_usage": {
@@ -104,7 +109,7 @@ def test_every_role_leaves_its_document(monkeypatch: pytest.MonkeyPatch):
 
     result = run(*PIPELINE)
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert all(text.strip() for text in result["artifacts"].values())
     assert result["stage"] == roles.LAST.key
 
@@ -146,7 +151,7 @@ def test_analyst_reads_a_file_and_the_pipeline_continues(
     assert "выгрузка асинхронная" in answer.content
     # Обращение к инструменту документом не становится: роль не ответила,
     # а спросила.
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 1
 
 
@@ -195,7 +200,7 @@ def test_budget_stops_the_pipeline_and_keeps_what_is_ready(
 
     result = run(*PIPELINE)
 
-    assert list(result["artifacts"]) == [roles.FIRST.key]
+    assert stages_of(result) == [roles.FIRST.key]
     assert result["usage"]["calls"] == 1
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
     assert "Не выполнены этапы" in result["messages"][-1].content
@@ -244,7 +249,7 @@ def test_stray_tool_call_does_not_cost_a_role_its_document(
     result = run(PIPELINE[0], CHATTY, *PIPELINE[2:])
 
     assert result["artifacts"]["api"] == CHATTY.content
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
 
 
 def test_stray_tool_call_does_not_stay_in_the_history(monkeypatch: pytest.MonkeyPatch):
@@ -279,7 +284,7 @@ def test_role_that_only_calls_a_tool_is_asked_again(monkeypatch: pytest.MonkeyPa
 
     result = run(PIPELINE[0], SILENT_CALL, *PIPELINE[1:])
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 1
     # Немой ответ в историю не попал: за ним висел бы вызов без ответа.
     answers = [m for m in result["messages"] if m.type == "ai"]
@@ -300,6 +305,86 @@ def test_asking_again_happens_once(monkeypatch: pytest.MonkeyPatch):
     assert result["usage"]["calls"] == len(roles.ROLES) + 1
     api = roles.PIPELINE.by_key("api").title
     assert f"Не выполнены этапы: {api}" in result["summary"]["problems"]
+
+
+ANNOUNCES = AIMessage(
+    content=(
+        "I'll start by checking the attached files and looking for existing "
+        "documentation and the linked task."
+    ),
+    tool_calls=[{"name": "list_task_files", "args": {}, "id": "call-4"}],
+    response_metadata=usage_meta(hit=1600, miss=64, output=30),
+)
+
+
+def test_an_announcement_next_to_a_tool_call_is_asked_again(monkeypatch: pytest.MonkeyPatch):
+    """
+    «Сейчас посмотрю файлы» рядом с вызовом — обещание, а не документ. Снятый
+    вызов превращал его в документ этапа: 27 сентября 2026 разбор задачи вышел
+    одной строкой по-английски, и следующие роли решили, что тикет не прочитан.
+    Такой ответ переспрашивается, как и немой.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], ANNOUNCES, *PIPELINE[1:])
+
+    assert result["artifacts"]["api"] == PIPELINE[1].content
+    assert result["usage"]["calls"] == len(roles.ROLES) + 1
+
+
+def test_an_announcement_is_not_a_document_even_after_asking_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Второй анонс подряд — этап без документа, и итог прогона это называет."""
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], ANNOUNCES, ANNOUNCES, *PIPELINE[2:])
+
+    assert "api" not in result["artifacts"]
+    api = roles.PIPELINE.by_key("api").title
+    assert f"Не выполнены этапы: {api}" in result["summary"]["problems"]
+
+
+def documented(content: str) -> AIMessage:
+    """Документ этапа без `#` и случайный вызов рядом."""
+    return AIMessage(
+        content=content,
+        tool_calls=[{"name": "list_task_files", "args": {}, "id": "call-5"}],
+        response_metadata=usage_meta(hit=1600, miss=64, output=400),
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        # Разделы нумерованным списком — так, как их перечисляет промпт.
+        "\n\n".join(
+            f"{number}. {title}\n\nПо материалам встречи раздел заполнен: "
+            "эндпоинты, статусы и коды ошибок описаны с примерами."
+            for number, title in enumerate(
+                ("Ресурсы", "Эндпоинты", "Статусы", "Ошибки", "Идемпотентность"), start=1
+            )
+        ),
+        # Заголовок, подчёркнутый `===`: короткий, но документ.
+        "Контракт REST\n=============\n\nGET /exports/{id} — статус выгрузки.",
+    ],
+    ids=["numbered-sections", "setext-heading"],
+)
+def test_a_document_without_hash_headings_is_not_an_announcement(
+    monkeypatch: pytest.MonkeyPatch, document: str
+):
+    """
+    Промпты требуют разделы, но не `#`: «1. Цель системы» стоит в самом
+    списке «Что ты должен выпустить». Такой документ рядом со случайным
+    вызовом стоил лишнего платного переспроса, а при втором таком ответе
+    не сохранялся вовсе.
+    """
+    monkeypatch.setenv("CONFLUENCE_PUBLISH", "0")
+
+    result = run(PIPELINE[0], documented(document), *PIPELINE[2:])
+
+    assert result["artifacts"]["api"] == document
+    assert result["usage"]["calls"] == len(roles.ROLES)
 
 
 def test_analyst_out_of_tool_turns_is_asked_again(monkeypatch: pytest.MonkeyPatch):
@@ -325,7 +410,7 @@ def test_analyst_out_of_tool_turns_is_asked_again(monkeypatch: pytest.MonkeyPatc
         config={"configurable": {"thread_id": "t-1", "input_dir": "задача"}},
     )
 
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
     assert result["usage"]["calls"] == len(roles.ROLES) + 2
 
 

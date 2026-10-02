@@ -40,6 +40,23 @@ export function downloadText(name: string, text: string, type = "text/plain;char
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/**
+ * Имя файла из заголовка документа.
+ *
+ * Заголовок публикации выглядит как «Orbita: тема [тред] — 03 Страница», а
+ * двоеточие и слеш Windows в имени файла не примет: браузер молча заменит их
+ * сам, каждый по-своему. Здесь замена одна и предсказуемая.
+ */
+export function fileName(title: string, extension: string): string {
+  const base = title
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[.\s_]+|[.\s_]+$/g, "")
+    .slice(0, 150);
+  return `${base || "document"}.${extension}`;
+}
+
 /** Имя файла с меткой времени: несколько отчётов подряд не затирают друг друга. */
 export function stampedName(prefix: string, extension: string, now = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");

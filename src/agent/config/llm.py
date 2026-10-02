@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import urlsplit
 
 from agent.config.env import (  # noqa: F401
@@ -59,6 +60,42 @@ def model_name() -> str:
 def llm_temperature() -> float:
     """Отдельно от llm_kwargs: входит в ключ кеша клиентов в `providers.py`."""
     return env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
+
+
+def llm_max_tokens() -> int | None:
+    """
+    Потолок генерации, токены. Пусто или `0` — использовать лимит провайдера.
+
+    У reasoning-моделей сюда входят и рассуждения: весь лимит может быть
+    потрачен до первого символа итогового ответа. Поэтому общий лимит по
+    умолчанию не подставляется: пустая настройка сохраняет поведение master.
+    Сам по себе обрыв на лимите не означает зацикливания.
+    """
+    value = env_int("LLM_MAX_TOKENS", 0, minimum=0)
+    return value or None
+
+
+def llm_extra_body() -> dict:
+    """Дополнительные параметры OpenAI-совместимого шлюза, например thinking."""
+    raw = env_str("LLM_EXTRA_BODY")
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        json.dumps(value, allow_nan=False)
+    except (ValueError, TypeError):
+        raise ConfigError("LLM_EXTRA_BODY: ожидается корректный JSON-объект") from None
+    if not isinstance(value, dict):
+        raise ConfigError("LLM_EXTRA_BODY: ожидается JSON-объект")
+    # SDK сливает extra_body поверх основного запроса. Не даём незаметно
+    # заменить задачу, модель, лимит или протокол вызова.
+    reserved = {
+        "model", "messages", "stream", "stream_options", "tools", "tool_choice",
+        "functions", "function_call", "max_tokens", "max_completion_tokens", "temperature",
+    }
+    if reserved.intersection(value):
+        raise ConfigError("LLM_EXTRA_BODY: основные параметры запроса задаются отдельно")
+    return value
 
 
 def max_history_tokens() -> int:
@@ -159,10 +196,15 @@ def llm_kwargs() -> dict:
     if base_url:
         kwargs["base_url"] = base_url
 
-    if env_opt("LLM_MAX_TOKENS"):
-        kwargs["max_tokens"] = env_int("LLM_MAX_TOKENS", 0, minimum=1)
+    cap = llm_max_tokens()
+    if cap:
+        kwargs["max_tokens"] = cap
 
     if env_opt("LLM_TIMEOUT_S"):
         kwargs["timeout"] = env_float("LLM_TIMEOUT_S", 0.0, minimum=0.0, minimum_exclusive=True)
+
+    extra = llm_extra_body()
+    if extra:
+        kwargs["extra_body"] = extra
 
     return kwargs

@@ -14,6 +14,8 @@ Data Center — строкой, и роль обязана получить те
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import responses
 
@@ -146,6 +148,20 @@ def test_mentions_survive_the_conversion():
     assert "@Мария И." in jira.field_text(document)
 
 
+@pytest.mark.parametrize("label", ["Спецификация", "https://wiki.example.com/pages/12345"])
+def test_adf_links_keep_the_address_once(label):
+    url = "https://wiki.example.com/pages/12345"
+    document = adf(label)
+    document["content"][0]["content"][0]["marks"] = [
+        {"type": "strong"}, {"type": "link", "attrs": {"href": url}},
+    ]
+
+    text = jira.field_text(document)
+
+    assert label in text
+    assert text.count(url) == 1
+
+
 def test_data_center_returns_a_plain_string():
     assert jira.field_text("  Обычная строка из v2  ") == "Обычная строка из v2"
 
@@ -228,6 +244,65 @@ def test_comments_are_ordered_as_a_conversation():
     issue = jira.fetch_issue("ORB-123", CLOUD)
 
     assert [item["text"] for item in issue["comments"]] == ["первый", "второй"]
+
+
+@responses.activate
+def test_an_issue_without_comments_says_so():
+    """
+    Пропущенный раздел модель читает как «не загрузили». 27 сентября 2026
+    конвейер подготовки искал «непрочитанные комментарии» у задачи, где их
+    не было, и потратил на это ход роли поиска. Пустота называется словами.
+    """
+    register_issue(issue_payload())
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "Комментарии: нет" in text
+
+
+@responses.activate
+def test_a_comment_with_only_a_screenshot_is_not_called_absent():
+    """
+    У скриншота в ADF текста нет. Комментарий с одной картинкой отбрасывался
+    как пустой, и модель читала «у задачи ни одного комментария», хотя API его
+    вернул. Нет комментариев и нет текста в комментарии — разные факты.
+    """
+    screenshot = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "mediaSingle",
+                "content": [{"type": "media", "attrs": {"id": "a1", "type": "file"}}],
+            }
+        ],
+    }
+    register_issue(
+        issue_payload(),
+        comments=[
+            {
+                "author": {"displayName": "Мария И."},
+                "created": "2026-09-20T10:00:00.000+0300",
+                "body": screenshot,
+            }
+        ],
+    )
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "Комментарии: нет" not in text
+    assert "- 2026-09-20 Мария И.: (текста нет — вложение или изображение" in text
+
+
+@responses.activate
+def test_comments_that_were_not_requested_are_not_called_absent():
+    """При JIRA_COMMENTS_LIMIT=0 пустой список ничего не говорит о самой задаче."""
+    register_issue(issue_payload())
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", replace(CLOUD, comments_limit=0)))
+
+    assert "не запрашивались" in text
+    assert "Комментарии: нет" not in text
 
 
 @responses.activate
@@ -377,3 +452,58 @@ def test_missing_variables_are_listed_by_name(monkeypatch: pytest.MonkeyPatch):
 
     assert jira.missing_vars() == ["JIRA_TOKEN"]
     assert not jira.is_configured()
+
+
+# --------------------------------------------------------------------------
+# Поиск роли конвейера подготовки: проекты и формы слов
+# --------------------------------------------------------------------------
+@responses.activate
+def test_the_search_role_can_keep_to_its_projects():
+    """
+    Без проекта запрос «смена пароля» 27 сентября 2026 вернул задачи десятка
+    чужих команд, а нужная лежала в соседнем проекте той же системы.
+    """
+    responses.add(responses.GET, f"{BASE}{API}/search/jql", json={"issues": []}, status=200)
+
+    jira.search("смена пароля", CLOUD, broad=True, projects="orb, pay")
+
+    assert responses.calls[0].request.params["jql"] == (
+        'project in ("ORB", "PAY") AND '
+        '(text ~ "смена пароля" OR (text ~ "смен*" AND text ~ "парол*")) ORDER BY updated DESC'
+    )
+
+
+def test_a_wrong_project_key_is_refused_before_the_request():
+    """Ни одного зарегистрированного ответа: запрос в сеть уронил бы тест."""
+    with pytest.raises(jira.JiraError, match="ключ проекта"):
+        jira.search("пароль", CLOUD, projects='ORB") OR project = "SECRET')
+
+
+@responses.activate
+def test_attachments_are_named_but_not_read():
+    """
+    Содержимое вложений не читается, но знать о них роли обязаны: иначе разбор
+    пишет «вложения не просматривались» и спрашивает о них автора задачи.
+    """
+    register_issue(
+        issue_payload(
+            attachment=[
+                {"filename": "макет вкладки.png", "size": 20480},
+                {"filename": "требования.docx"},
+            ]
+        )
+    )
+
+    text = jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))
+
+    assert "attachment" in responses.calls[0].request.params["fields"]
+    assert "- макет вкладки.png (20480 байт)" in text
+    assert "- требования.docx" in text
+    assert "содержимое не читается" in text
+
+
+@responses.activate
+def test_no_attachments_is_said_aloud():
+    register_issue(issue_payload())
+
+    assert "Вложений нет." in jira.format_issue(jira.fetch_issue("ORB-123", CLOUD))

@@ -20,6 +20,7 @@ from collections.abc import Callable
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Send
 
 from agent import config as cfg
 from agent import roles
@@ -52,7 +53,12 @@ def make_role_router(
     following = pipeline.after(role)
     target = f"gate_{following.key}" if following else last_target
 
-    def role_router(state: State) -> str:
+    def role_router(state: State) -> str | Send:
+        if failure := state.get("failure"):
+            # Роль записала расход оборванного ответа и ждёт второго шага,
+            # чтобы упасть (`nodes.charged_stop`). Мимо карты веток: это не
+            # путь конвейера, а конец прогона ошибкой.
+            return Send(role.key, {"failure": failure})
         if state.get("halt"):
             return "halted"
         last = state["messages"][-1]

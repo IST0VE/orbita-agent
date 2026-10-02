@@ -35,6 +35,7 @@ from threading import Lock
 import requests
 
 from agent import config as cfg
+from agent import metrics
 
 # Методы без побочных эффектов: повторить их безопасно.
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -261,7 +262,13 @@ def block_delay(attempt: int, response: requests.Response | None = None) -> floa
 
 
 def send(
-    method: str, url: str, *, timeout: float, interval: float | None = None, **kwargs
+    method: str,
+    url: str,
+    *,
+    timeout: float,
+    interval: float | None = None,
+    system: str = "other",
+    **kwargs,
 ) -> requests.Response:
     """
     Запрос в общей очереди. Безопасный метод пережидает отказ шлюза, остальные — нет.
@@ -277,6 +284,9 @@ def send(
     система, и медленная wiki не обязана замедлять Jira. Очередь при этом
     остаётся одна на процесс, потому что за обоими хостами стоит один
     корпоративный периметр и считать он может по адресу источника.
+
+    `system` — подпись в метриках (`jira`, `confluence`): каждая попытка
+    считается отдельно, поэтому отказ шлюза виден, даже если повтор прошёл.
     """
     repeatable = method.upper() in SAFE_METHODS
     # Redirects can forward document bodies to a different host or downgrade TLS.
@@ -290,15 +300,18 @@ def send(
     with _pacer.slot(interval):
         attempt = 0
         while True:
+            began = time.perf_counter()
             try:
                 response = _session.request(method, url, timeout=timeout, headers=headers, **kwargs)
             except requests.RequestException as exc:
+                metrics.integration(system, method, "network", time.perf_counter() - began)
                 delay = block_delay(attempt) if repeatable and transport_block(exc) else None
                 if delay is None:
                     raise
                 _pacer.pause(delay)
                 attempt += 1
                 continue
+            metrics.integration(system, method, response.status_code, time.perf_counter() - began)
             if not repeatable or not block_reason(response):
                 return response
             delay = block_delay(attempt, response)

@@ -39,7 +39,7 @@ from importlib import metadata
 from typing import Any
 
 from agent import config as cfg
-from agent import outgoing, settings_io
+from agent import metrics, outgoing, settings_io
 
 MASK = "********"
 
@@ -266,6 +266,8 @@ class Logbook(logging.Handler):
             record.name.startswith(name) and text in entry["message"] for name, text in _IGNORED
         ):
             return
+        if record.levelno >= logging.WARNING:
+            metrics.log_record(record.levelname, record.name)
         ring = self._problems if record.levelno >= logging.WARNING else self._routine
         # `Handler.handle` уже держит `self.lock` на время `emit`.
         self._sequence += 1

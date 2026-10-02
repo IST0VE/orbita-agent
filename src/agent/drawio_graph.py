@@ -65,7 +65,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
 from agent import config as cfg
-from agent import diagram_roles, drawio, inputs, sources
+from agent import diagram_roles, drawio, inputs, metrics, sources
 from agent import graph as g
 
 PIPELINE = diagram_roles.PIPELINE
@@ -127,15 +127,15 @@ def _pick(task: str, wanted: str) -> Path:
     found = drawio.find(inputs.folder(task))
     if not found:
         raise drawio.DiagramError(
-            "в папке задачи нет ни одного файла .drawio. Положите схему в папку "
-            "и выберите её в интерфейсе или укажите имя файла в настройках прогона."
+            f"в папке «{inputs.title_for(task)}» нет ни одного файла .drawio. "
+            "Загрузите схему в чат и отметьте её в списке файлов."
         )
     if len(found) > 1:
         names = [_relative(path, task) for path in found]
         shown = ", ".join(names[:10]) + (f" и ещё {len(names) - 10}" if len(names) > 10 else "")
         raise drawio.DiagramError(
-            f"в папке задачи схем несколько ({shown}), а какую разбирать, не выбрано. "
-            "Выберите схему в интерфейсе"
+            f"в папке «{inputs.title_for(task)}» схем несколько ({shown}), а какую "
+            "разбирать, не выбрано. Отметьте схему в списке файлов"
         )
     return found[0]
 
@@ -277,4 +277,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "drawio")

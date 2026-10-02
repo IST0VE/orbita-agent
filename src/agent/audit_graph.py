@@ -43,7 +43,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 
-from agent import audit_roles, checks, confluence, inputs, sources
+from agent import audit_roles, checks, confluence, credentials, inputs, metrics, sources
 from agent import graph as common_graph
 
 PIPELINE = audit_roles.PIPELINE
@@ -87,10 +87,10 @@ def missing_package(state: State, config: RunnableConfig) -> str:
         return (
             f"{'Выбраны файлы' if many else 'Выбран файл'} "
             + ", ".join(lost)
-            + f", но в папке задачи {'их' if many else 'его'} нет или "
+            + f", но в файлах чата {'их' if many else 'его'} нет или "
             + ("они не читаются" if many else "он не читается")
-            + ". Выберите другие файлы или снимите выбор, чтобы сверить папку "
-            "целиком. Прогон остановлен до первого вызова модели — деньги "
+            + ". Выберите другие файлы или снимите выбор, чтобы сверить все файлы "
+            "чата. Прогон остановлен до первого вызова модели — деньги "
             "не потрачены."
         )
 
@@ -102,17 +102,17 @@ def missing_package(state: State, config: RunnableConfig) -> str:
         if not absent:
             return ""
         return (
-            "В запросе есть ссылка на страницу Confluence, но читать её нечем: не "
-            "заданы " + ", ".join(absent) + ". Заполните переменные в .env и "
-            "перезапустите сервер — или положите документы файлами в папку задачи. "
+            "В запросе есть ссылка на страницу Confluence, но читать её нечем: "
+            + credentials.missing_message(absent)
+            + ". Или загрузите документы файлами в чат. "
             "Прогон остановлен до первого вызова модели — деньги не потрачены."
         )
 
     return (
-        "Сверять нечего: в папке задачи нет текстовых файлов и в запросе нет ссылки "
+        "Сверять нечего: в файлах чата нет текстовых файлов и в запросе нет ссылки "
         "на страницу Confluence. Этот конвейер проверяет готовые документы друг "
         "против друга, поэтому пересказ пакета в сообщении ему не годится: сверять "
-        "его будет не с чем. Положите документы в папку задачи или дайте ссылку на "
+        "его будет не с чем. Загрузите документы в чат или дайте ссылку на "
         "страницу. Прогон остановлен до первого вызова модели — деньги не потрачены."
     )
 
@@ -181,6 +181,8 @@ def package_node(state: State, config: RunnableConfig) -> dict:
         "package": {
             "read": True,
             "kind": picked["kind"],
+            "title": picked.get("title", ""),
+            "url": picked.get("url", ""),
             "names": sorted(documents),
             "requirements": len(report["requirements"]),
             "findings": len(report["findings"]),
@@ -211,7 +213,7 @@ def _block(picked: dict, documents: dict[str, str]) -> str:
             "внутри него, и об этом ограничении надо сказать в отчёте."
         )
     else:
-        parts.append("Источник: файлы папки задачи. Документов в пакете: "
+        parts.append("Источник: файлы чата. Документов в пакете: "
                      f"{len(documents)}.")
         if picked.get("chosen"):
             parts.append(
@@ -234,7 +236,7 @@ def _note(picked: dict, documents: dict[str, str], report: dict) -> str:
     where = (
         f"страница Confluence «{picked.get('title', '')}»"
         if picked["kind"] == "confluence"
-        else f"файлы папки задачи ({', '.join(sorted(documents))})"
+        else f"файлы чата ({', '.join(sorted(documents))})"
     )
     by_severity: dict[str, int] = {}
     for finding in report["findings"]:
@@ -270,4 +272,4 @@ def build_graph(llm: Any = None) -> StateGraph:
 
 
 # Для Studio / langgraph dev: компилируем БЕЗ чекпоинтера, как и остальные графы.
-graph = build_graph().compile()
+graph = metrics.observe(build_graph().compile(), "audit")

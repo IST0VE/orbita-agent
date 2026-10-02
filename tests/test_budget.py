@@ -17,7 +17,10 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agent import roles
 from agent.graph import budget_gate, build_graph
+from agent.llm_retry import ResponseTruncated
+from agent.nodes import make_role_node, truncation_charge
 
 CONFIG = {"configurable": {"thread_id": "t-1"}}
 
@@ -42,6 +45,8 @@ def asks_for_tool(call_id="call-1", text=""):
     # `text` — то, что роль успела написать рядом с вопросом к инструменту.
     # На последнем ходе вызов снимается, и написанное становится документом
     # этапа: именно так конвейер выпускает бумаги по неполному материалу.
+    # Документом, а не анонсом, оно считается по заголовку (`DOCUMENT`,
+    # `nodes.announces_tools`); короткая строка без заголовка — это переспрос.
     return AIMessage(
         content=text,
         tool_calls=[{"name": "read_task_file", "args": {"name": "встреча.md"}, "id": call_id}],
@@ -53,6 +58,9 @@ def asks_for_tool(call_id="call-1", text=""):
             }
         },
     )
+
+
+DOCUMENT = "# Документ этапа\n\nНаписан по тому, что успели прочитать."
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +121,10 @@ def test_pipeline_stops_between_stages_and_spends_nothing_more(
 
     result = app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
 
-    assert result["artifacts"] == {"requirements": "Требования"}
+    # Рядом с требованиями — реестр источников, который пишет код, а не модель.
+    assert {key: result["artifacts"][key] for key in roles.KEYS if key in result["artifacts"]} == {
+        "requirements": "Требования"
+    }
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
     assert result["usage"]["calls"] == 1
 
@@ -208,7 +219,7 @@ def test_tool_loop_ends_on_its_own_without_any_budget(monkeypatch: pytest.Monkey
     monkeypatch.setenv("TOOL_TURNS_PER_RUN", "3")
     # Поддельная модель про отвязку схем не знает и просит инструмент всегда:
     # проверяется ограничитель, а не сговорчивость модели.
-    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(40)])
+    app = thread(*[asks_for_tool(f"call-{n}", DOCUMENT) for n in range(40)])
 
     result = app.invoke({"messages": [HumanMessage("вопрос")]}, config=CONFIG)
 
@@ -216,7 +227,9 @@ def test_tool_loop_ends_on_its_own_without_any_budget(monkeypatch: pytest.Monkey
     # Три хода в инструменты плюс четвёртый, последний, и по одному на
     # остальные четыре роли.
     assert result["usage"]["calls"] == 8
-    assert sorted(result["artifacts"]) == ["api", "architecture", "data", "requirements", "review"]
+    assert sorted(set(result["artifacts"]) & set(roles.KEYS)) == [
+        "api", "architecture", "data", "requirements", "review",
+    ]
 
 
 def test_the_tool_ceiling_is_per_run_not_per_thread(monkeypatch: pytest.MonkeyPatch):
@@ -228,7 +241,7 @@ def test_the_tool_ceiling_is_per_run_not_per_thread(monkeypatch: pytest.MonkeyPa
     """
     monkeypatch.delenv("BUDGET_USD_PER_THREAD", raising=False)
     monkeypatch.setenv("TOOL_TURNS_PER_RUN", "2")
-    app = thread(*[asks_for_tool(f"call-{n}", "документ этапа") for n in range(80)])
+    app = thread(*[asks_for_tool(f"call-{n}", DOCUMENT) for n in range(80)])
 
     first = app.invoke({"messages": [HumanMessage("первая задача")]}, config=CONFIG)
     assert first["tool_turns"] == 2
@@ -248,3 +261,67 @@ def test_a_zero_ceiling_means_no_ceiling(monkeypatch: pytest.MonkeyPatch):
 
     assert result["usage"]["calls"] == 1
     assert "Бюджет треда исчерпан" in result["messages"][-1].content
+
+
+# --------------------------------------------------------------------------
+# Оборванный ответ
+#
+# Ответ, упёршийся в потолок длины, роняет прогон: неполный документ дальше
+# не идёт. Но провайдер за него уже взял деньги, и ворота бюджета обязаны
+# это видеть.
+# --------------------------------------------------------------------------
+def truncated(text="Требов", miss=EXPENSIVE, output=8000):
+    message = answer(text, miss=miss, output=output)
+    message.response_metadata["finish_reason"] = "length"
+    return message
+
+
+def test_a_truncated_answer_is_charged_before_the_run_stops(monkeypatch: pytest.MonkeyPatch):
+    """
+    Исключение выбрасывало обновление узла вместе с `usage` и `spend`: два
+    оплаченных обрыва оставляли счётчики пустыми, и ворота пускали третий.
+    """
+    monkeypatch.setenv("BUDGET_USD_PER_THREAD", "0.01")
+    app = thread(truncated(), answer("Не должно прозвучать"))
+
+    with pytest.raises(ResponseTruncated, match="Генерация остановлена по лимиту"):
+        app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
+
+    values = app.get_state(CONFIG).values
+    assert values["usage"]["calls"] == 1
+    assert values["usage"]["output"] == 8000
+    assert values["spend"]["usd"] == values["cost"]["usd"] > 0.01
+    assert "requirements" not in (values.get("artifacts") or {}), "обрыв дальше не идёт"
+
+    second = app.invoke({"messages": [HumanMessage("ещё задача")]}, config=CONFIG)
+
+    assert "Бюджет треда исчерпан" in second["messages"][-1].content
+    assert second["usage"]["calls"] == 1
+
+
+def test_the_next_turn_after_a_truncation_runs_normally():
+    """Ошибка относится к прогону, в котором случилась: следующий ход её не наследует."""
+    app = thread(truncated(), *[answer(f"Этап {n}") for n in range(1, 6)])
+
+    with pytest.raises(ResponseTruncated):
+        app.invoke({"messages": [HumanMessage("задача")]}, config=CONFIG)
+    result = app.invoke({"messages": [HumanMessage("задача с LLM_MAX_TOKENS побольше")]}, config=CONFIG)
+
+    assert result["messages"][-1].content == "Этап 5"
+    assert result["usage"]["calls"] == 6
+    assert not result["failure"]
+
+
+def test_a_truncated_retry_is_charged_together_with_the_silent_answer():
+    """Переспрос роли оборвался — оплачены оба вызова, а не только последний."""
+    node = make_role_node(
+        roles.LAST, llm=GenericFakeChatModel(messages=iter([asks_for_tool(), truncated()]))
+    )
+
+    with pytest.raises(ResponseTruncated) as error:
+        node({"messages": [HumanMessage("задача")], "task": "задача"}, {})
+
+    charged = truncation_charge(error.value, {})
+    assert charged["usage"]["calls"] == 2
+    assert charged["usage"]["cache_miss"] == 2 * EXPENSIVE
+    assert charged["spend"]["usd"] == charged["cost"]["usd"] > 0

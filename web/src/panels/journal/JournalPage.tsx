@@ -46,12 +46,18 @@ export function JournalPage({
   open,
   onClose,
   context,
+  serverLog,
 }: {
   open: boolean;
   onClose: () => void;
   context: JournalContext;
+  /**
+   * Журнал сервера отдаётся только администратору: в нём трассировки всех
+   * прогонов, а значит и куски чужих задач. Остальным — журнал своей вкладки.
+   */
+  serverLog: boolean;
 }) {
-  const [tab, setTab] = useState<Tab>("server");
+  const [tab, setTab] = useState<Tab>(serverLog ? "server" : "client");
   const [level, setLevel] = useState<LevelFilter>("warning");
   const [ownThread, setOwnThread] = useState(false);
   const [query, setQuery] = useState("");
@@ -71,7 +77,11 @@ export function JournalPage({
   // Опрос: первый запрос забирает всё, что есть, следующие — только новое.
   // Запись с тем же `id` приходит снова, когда у неё прибавился повтор.
   useEffect(() => {
-    if (!open) return;
+    if (!serverLog) setTab("client");
+  }, [serverLog]);
+
+  useEffect(() => {
+    if (!open || !serverLog) return;
     let live = true;
     let timer = 0;
     const poll = async () => {
@@ -108,7 +118,7 @@ export function JournalPage({
       live = false;
       window.clearTimeout(timer);
     };
-  }, [open]);
+  }, [open, serverLog]);
 
   // Фокус — как у настроек: на страницу и обратно туда, откуда открыли.
   useEffect(() => {
@@ -168,7 +178,9 @@ export function JournalPage({
         userAgent: navigator.userAgent,
         client,
         server: { info, startedAt, records },
-        serverError: loadError && !records.length ? loadError : undefined,
+        serverError: !serverLog
+          ? "журнал сервера доступен администратору Orbita"
+          : loadError && !records.length ? loadError : undefined,
       },
       { full },
     );
@@ -206,10 +218,12 @@ export function JournalPage({
       <div className="settings-bar journal-bar">
         <h1 className="settings-title">Журнал</h1>
         <div className="tabs" role="group" aria-label="Чей журнал">
-          <button className="tab" aria-pressed={tab === "server"} onClick={() => setTab("server")}>
-            Сервер
-            <span className="console-count">{serverProblems}</span>
-          </button>
+          {serverLog ? (
+            <button className="tab" aria-pressed={tab === "server"} onClick={() => setTab("server")}>
+              Сервер
+              <span className="console-count">{serverProblems}</span>
+            </button>
+          ) : null}
           <button className="tab" aria-pressed={tab === "client"} onClick={() => setTab("client")}>
             Интерфейс
             <span className="console-count">{clientErrors}</span>

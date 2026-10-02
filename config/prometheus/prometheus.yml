@@ -1,0 +1,20 @@
+# Prometheus для Orbita: сервис `prometheus` в docker-compose.yml, профиль
+# monitoring. Что собирается и как читать графики — docs/MONITORING.md.
+#
+# Файл подключён в контейнер только на чтение. После правки:
+#     docker compose --profile monitoring restart prometheus
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Метрики сервера LangGraph (lg_api_*, process_*) и Orbita (orbita_*) —
+  # один адрес. /metrics закрыт, как весь API; METRICS_TOKEN открывает только
+  # его. Файл с токеном пишет точка входа контейнера из переменной окружения.
+  - job_name: orbita-agent
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/metrics-token
+    static_configs:
+      - targets: ["agent:2024"]

@@ -6,28 +6,31 @@
  * лежал в шапке, на второй — в левой колонке, а на третий — сразу в трёх
  * местах и разными словами.
  *
- * Здесь же стоят действия самого сценария: начать заново и открыть консоль.
- * Глобальных действий здесь нет — они в шапке; действий над объектами нет —
- * они рядом с объектами.
+ * Здесь же стоят действия самого сценария: остановить, поставить на паузу,
+ * начать новый чат. Глобальных действий здесь нет — они в шапке; действий
+ * над объектами нет — они рядом с объектами.
+ *
+ * Переключателя консоли выполнения больше нет: разговор и ход прогона стоят
+ * в колонке чата, а события движка — во вкладке «Прогон» той же колонки.
  */
 
 import { RUN_LABELS, RUN_TONES } from "../engine/runtime/labels";
 import type { RunStatus } from "../engine/runtime/types";
 import {
   ChevronRight,
-  FolderOpen,
+  MessageSquare,
   PanelLeft,
   PanelRight,
   Pause,
   Plus,
-  ScrollText,
   Square,
 } from "../ui/icons";
 import { StatusDot } from "../ui";
 
 export function ContextBar({
-  task,
-  onPickTask,
+  chat,
+  fileCount,
+  onShowChat,
   scenario,
   scenarioHint,
   runStatus,
@@ -40,17 +43,16 @@ export function ContextBar({
   onCancelPause,
   onNewThread,
   newThreadDisabled,
-  events,
-  consoleOpen,
-  onToggleConsole,
   sidebarOpen,
   onToggleSidebar,
   inspectorOpen,
   onToggleInspector,
 }: {
-  /** Папка задачи: с чем я работаю. Пусто — материалы ещё не выбраны. */
-  task: string;
-  onPickTask: () => void;
+  /** Открытый чат: с чем я работаю. */
+  chat: string;
+  /** Сколько файлов загружено в этот чат. */
+  fileCount: number;
+  onShowChat: () => void;
   /** Сценарий: чем я работаю. */
   scenario: string;
   scenarioHint: string;
@@ -68,9 +70,6 @@ export function ContextBar({
   onCancelPause: () => void;
   onNewThread: () => void;
   newThreadDisabled: boolean;
-  events: number;
-  consoleOpen: boolean;
-  onToggleConsole: () => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   inspectorOpen: boolean;
@@ -79,20 +78,20 @@ export function ContextBar({
   return (
     <div className="context-bar">
       {/*
-        Крошка начинается с папки задачи. Корнем стояло название раздела —
-        неподвижная надпись «Проекты», которая никуда не вела и называла
-        сущность, которой нет. Крошка из двух шагов, каждый из которых
-        что-то делает, честнее крошки из трёх, где первый шаг декоративный.
+        Крошка начинается с открытого чата: раньше здесь стояла папка задачи,
+        общая для всех вошедших. Чат свой, и его файлы видны только в нём —
+        щелчок открывает их в правой колонке.
       */}
       <nav className="crumbs" aria-label="Контекст работы">
         <button
           type="button"
           className="crumb crumb-action"
-          title={task ? `Папка задачи: ${task}. Показать материалы` : "Выбрать папку задачи в материалах"}
-          onClick={onPickTask}
+          title={`Чат «${chat}». Файлов: ${fileCount}. Показать файлы чата`}
+          onClick={onShowChat}
         >
-          <FolderOpen size={14} aria-hidden="true" />
-          <span className="truncate">{task || "Материалы не выбраны"}</span>
+          <MessageSquare size={14} aria-hidden="true" />
+          <span className="truncate">{chat}</span>
+          {fileCount ? <span className="crumb-count">{fileCount}</span> : null}
         </button>
         <ChevronRight className="crumb-sep" size={14} aria-hidden="true" />
         <span className="crumb crumb-current truncate" title={scenarioHint}>{scenario}</span>
@@ -143,50 +142,39 @@ export function ContextBar({
         ) : null}
 
         <button
-          className="btn-ghost btn-sm"
+          className="btn-ghost btn-sm new-chat"
           disabled={newThreadDisabled}
-          title="Начать новый прогон: очистить тред, сообщения и результаты"
+          title="Начать новый чат: прежний останется в списке слева вместе с файлами"
           onClick={onNewThread}
         >
           <Plus size={15} aria-hidden="true" />
-          Новый прогон
+          Новый чат
         </button>
 
         {/*
-          Три переключателя панелей рядом: показать материалы, показать
-          подробности, показать консоль. Это один вид действий — «что ещё
-          видно на экране», — и место у них одно.
+          Переключатели колонок рядом: список чатов и открытый чат с
+          подробностями. Это один вид действий — «что ещё видно на экране», —
+          и место у них одно.
         */}
         <span className="panel-toggles">
           <button
             className="btn-ghost btn-icon btn-sm"
-            aria-label="Колонка материалов"
+            aria-label="Колонка чатов"
             aria-pressed={sidebarOpen}
-            title={sidebarOpen ? "Скрыть материалы" : "Показать материалы"}
+            title={sidebarOpen ? "Скрыть список чатов" : "Показать список чатов"}
             onClick={onToggleSidebar}
           >
             <PanelLeft size={15} aria-hidden="true" />
           </button>
           <button
             className="btn-ghost btn-icon btn-sm"
-            aria-label="Колонка подробностей"
+            aria-label="Колонка чата и подробностей"
             aria-pressed={inspectorOpen}
-            title={inspectorOpen ? "Скрыть подробности" : "Показать подробности"}
+            title={inspectorOpen ? "Скрыть чат и подробности" : "Показать чат: файлы, ход прогона и результаты"}
             onClick={onToggleInspector}
           >
             <PanelRight size={15} aria-hidden="true" />
           </button>
-        <button
-          className="btn-ghost btn-sm console-toggle"
-          aria-label="Консоль выполнения"
-          aria-pressed={consoleOpen}
-          title={consoleOpen ? "Скрыть консоль выполнения" : "Показать консоль выполнения"}
-          onClick={onToggleConsole}
-        >
-          <ScrollText size={15} aria-hidden="true" />
-          {events ? <span className="console-toggle-count">{events}</span> : null}
-          {running ? <span className="dot dot-run" aria-hidden="true" /> : null}
-        </button>
         </span>
       </div>
     </div>

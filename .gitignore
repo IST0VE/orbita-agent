@@ -20,6 +20,10 @@ venv/
 .env
 .env.*
 !.env.example
+# Корневые сертификаты компании для серверного режима: не секрет, но и не для
+# публичного репозитория
+/config/ca/*
+!/config/ca/README.md
 *.pem
 *.key
 *.env
@@ -92,6 +96,12 @@ build/
 .astro/
 .vite/
 .next/
+
+# Внутренние материалы для компании и рабочие обсуждения: репозиторий публичный.
+/docs/ORBITA_COMPANY_ROADMAP_DRAFT.md
+/docs/ORBITA_ARCHITECTURE_DISCUSSION.md
+/docs/TASK_LIFECYCLE_PLAN.md
+/presentation/
 
 # IDE / OS
 .idea/

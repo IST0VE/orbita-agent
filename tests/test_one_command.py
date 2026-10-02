@@ -22,7 +22,7 @@ yaml = pytest.importorskip("yaml")
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-NGINX = (ROOT / "web" / "nginx.conf").read_text(encoding="utf-8")
+NGINX = (ROOT / "web" / "nginx" / "app.conf").read_text(encoding="utf-8")
 VITE = (ROOT / "web" / "vite.config.ts").read_text(encoding="utf-8")
 SERVICES = COMPOSE["services"]
 
@@ -35,7 +35,7 @@ def vite_proxied() -> set[str]:
 
 def nginx_proxied() -> set[str]:
     location = re.search(r"location ~ \^/\(([^)]*)\)", NGINX)
-    assert location, "в nginx.conf не найдено проксирование API"
+    assert location, "в web/nginx/app.conf не найдено проксирование API"
     return set(location.group(1).split("|"))
 
 
@@ -88,14 +88,16 @@ def test_the_batch_launcher_is_checked_out_with_crlf():
     assert r"scripts\up.ps1" in (ROOT / "up.cmd").read_text(encoding="utf-8")
 
 
-def test_the_default_stack_needs_no_database():
-    """Postgres нужен только демо; обычный запуск не должен его ни ждать, ни требовать."""
-    assert SERVICES["postgres"]["profiles"] == ["demo"]
-    assert "postgres" not in SERVICES["agent"].get("depends_on", {})
-    # Compose подставляет переменные во весь файл до выбора профилей: `:?` у
-    # пароля остановил бы запуск, в котором базы нет.
+def test_the_default_stack_waits_for_its_database():
+    """Личные подключения живут в Postgres: база — часть обычного запуска."""
+    assert "profiles" not in SERVICES["postgres"]
+    assert SERVICES["agent"]["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert SERVICES["agent"]["environment"]["POSTGRES_URI"].endswith("@postgres:5432/orbita")
+    # Пустой пароль Postgres не примет, и отказ пришёл бы из середины запуска.
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert not re.search(r"\$\{POSTGRES_PASSWORD:\?", compose)
+    assert re.search(r"\$\{POSTGRES_PASSWORD:\?", compose)
+    # С хоста база видна только на петле.
+    assert all(port.startswith("127.0.0.1:") for port in SERVICES["postgres"]["ports"])
 
 
 def test_the_runner_is_part_of_the_stack_but_not_published():
@@ -172,11 +174,17 @@ def test_loopback_targets_are_sent_to_the_host(url: str, expected: str):
 def test_both_launchers_do_the_same_checks(script: str):
     text = (ROOT / script).read_text(encoding="utf-8-sig")
 
-    for name in ("API_ADMIN_TOKEN", "NT_RUNNER_TOKEN", "LLM_API_KEY", "ORBITA_WEB_PORT",
-                 "nt-runner.example.json", "host.docker.internal"):
+    for name in ("API_ADMIN_TOKEN", "NT_RUNNER_TOKEN", "METRICS_TOKEN", "LLM_API_KEY",
+                 "ORBITA_WEB_PORT", "ORBITA_GRAFANA_PORT",
+                 "nt-runner.example.json", "host.docker.internal",
+                 # Пароль базы и ключ личных токенов создаются при первом запуске.
+                 "POSTGRES_PASSWORD", "USER_SECRETS_KEY",
+                 # И пароль Grafana: иначе она заводится с admin / admin.
+                 "GRAFANA_ADMIN_PASSWORD",
+                 # Серверный режим: адрес, файл Compose, пароль консоли Keycloak.
+                 "ORBITA_PUBLIC_URL", "docker-compose.yml:docker-compose.server.yml",
+                 "KEYCLOAK_ADMIN_PASSWORD"):
         assert name in text, f"{script} не знает про {name}"
-    # Пароль демо-базы обычному запуску не нужен.
-    assert "POSTGRES_PASSWORD" not in text
     assert "anthropic" in text
     assert "docker compose up -d --build --wait" in text
     # Без неё каждая сборка даёт новый ID образа, и повторный запуск

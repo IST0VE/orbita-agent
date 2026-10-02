@@ -26,18 +26,18 @@ from pathlib import Path
 from dotenv import dotenv_values
 from portal_shots import (
     ROOT,
-    SCROLL_CONSOLE_TO_END,
     SCROLL_TO_TEXT,
     TESTBED_ENV,
     approve_all,
-    console_tab,
     launch,
+    open_events,
     open_portal,
     playwright,
     run_task,
     shoot,
     shoot_box,
     shown,
+    show_chat,
     view,
 )
 
@@ -64,8 +64,7 @@ def main() -> None:
 
     with playwright() as driver:
         browser = launch(driver, headed=args.headed)
-        context, page = open_portal(browser, args.url, "nt", console_height=250,
-                                    thread=args.thread)
+        context, page = open_portal(browser, args.url, "nt", thread=args.thread)
         if not args.thread:
             run_task(page, TASK)
 
@@ -97,6 +96,7 @@ def main() -> None:
 
         # Опубликованный документ открывается вкладкой «Документ»: это и есть
         # то, что читает человек после прогона. Список идёт свежими вверх.
+        show_chat(page)
         document_button = page.locator(
             "details.engine-outline .resource-list button", has_text="Проведи анализ НТ").first
         document_button.wait_for(state="visible", timeout=STEP_MS)
@@ -114,12 +114,10 @@ def main() -> None:
         # Журнал снимается последним: к концу прогона в нём есть и вызовы
         # инструментов, и остановки на подтверждении, а не первые восемь строк.
         # У досъёмки журнала нет: интерфейс собирает события из живого потока,
-        # и у треда, открытого заново, он пуст.
+        # и у чата, открытого заново, он пуст.
         if not args.thread:
-            console_tab(page, "События")
-            page.evaluate(SCROLL_CONSOLE_TO_END)
-            page.wait_for_timeout(500)
-            shoot_box(page, page.locator(".console").first, out, "portal-log.png", pad=0)
+            open_events(page)
+            shoot_box(page, page.locator(".inspector").first, out, "portal-log.png", pad=0)
         context.close()
         browser.close()
 

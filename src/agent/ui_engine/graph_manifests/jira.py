@@ -1,9 +1,10 @@
 """UI semantics for the Jira decomposition graph."""
 
 from agent import jira_roles
-from agent.ui_engine.graph_manifests.common import base_manifest
+from agent.ui_engine.graph_manifests.common import DIGEST, base_manifest, name_documents
 
 MANIFEST = base_manifest(jira_roles.PIPELINE)
+name_documents(MANIFEST, {jira_roles.SOURCE: {"title": "Исходная аналитика"}})
 
 # Ключи заведённых задач — результат узла, а не отчёт о нём: интерфейс рисует
 # их тем же виджетом, что и список слева. Общий манифест этого не выводит:
@@ -59,6 +60,7 @@ MANIFEST["interrupts"].append(
                     "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
                 },
                 "reason": {"type": "string", "maxLength": 4000},
+                "digest": DIGEST,
             },
         },
     }
@@ -71,6 +73,7 @@ for surface in MANIFEST["surfaces"]:
             "document",
             "jira_project",
             "issues",
+            "publication-links",
             "artifacts",
             "published",
         ]

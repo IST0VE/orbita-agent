@@ -185,6 +185,9 @@ export function ApprovalWidget({ value, binding, readonly, onAction }: WidgetPro
   const queries = Array.isArray(payload.queries)
     ? payload.queries as Array<Record<string, unknown>>
     : [];
+  // Отпечаток показанного предложения уходит назад вместе с решением: сервер
+  // узнаёт по нему, к какой версии относится согласие (`agent/actions.py`).
+  const digest = text(payload.digest);
   const decide = (decision: "approved" | "rejected" | "drafts") => onAction?.({
     kind: "interrupt.resume",
     interruptId,
@@ -193,6 +196,7 @@ export function ApprovalWidget({ value, binding, readonly, onAction }: WidgetPro
       decision,
       ...(reason ? { reason } : {}),
       ...(asksProject && project.trim() ? { project: project.trim().toUpperCase() } : {}),
+      ...(digest ? { digest } : {}),
     },
   });
   return <div className="approve" role="dialog" aria-modal="true" aria-label="Требуется решение оператора">

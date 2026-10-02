@@ -9,24 +9,26 @@
 # сервер поднимется, но на первом же ходе ответит ошибкой авторизации.
 #
 # Что где хранится. Сервер разработки (`langgraph dev`) держит треды сам, в
-# своей папке — это том `threads`. Postgres ему не нужен и в обычный запуск не
-# входит: он поднимается только с профилем `demo`, где `run_demo.py` берёт из
-# него чекпоинтер и store, чтобы три хода демо переживали перезапуск.
+# своей папке — это том `threads`. Postgres — база самого приложения: личные
+# подключения Jira и Confluence каждого пользователя (зашифрованы ключом
+# USER_SECRETS_KEY из .env) и чекпоинты профиля `demo`. Том — `pgdata`.
 services:
   postgres:
     image: postgres:16-alpine
-    profiles: ["demo"]
     environment:
       POSTGRES_USER: orbita
-      # Не `:?`: Compose подставляет переменные во весь файл до выбора профилей,
-      # и обязательный пароль остановил бы обычный запуск, где базы нет. Без
-      # пароля откажется стартовать сам PostgreSQL — и только в профиле demo.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      # Пароль задаётся один раз — при создании тома pgdata. Сменить его потом
+      # правкой .env нельзя: база его уже не спросит, а агент придёт с новым.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}
       POSTGRES_DB: orbita
+    ports:
+      # Только петля: агенту, запущенному без Docker (docs/GETTING_STARTED.md).
+      # Не 5432 — на машине разработчика он часто занят своим PostgreSQL.
+      - "127.0.0.1:${ORBITA_POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Демо стартует только после того, как база начала отвечать: иначе первый
-    # же setup() упадёт на пустом месте.
+    # Агент и демо стартуют только после того, как база начала отвечать:
+    # иначе первое же обращение упадёт на пустом месте.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orbita -d orbita"]
       interval: 3s
@@ -56,6 +58,8 @@ services:
     environment:
       # Пробрасывается, если задан снаружи; иначе значение приедет из .env.
       LLM_API_KEY: ${LLM_API_KEY:-}
+      # База — сервис этого же файла; в .env записан адрес для запуска без Docker.
+      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}@postgres:5432/orbita
       # Runner — сервис этого же файла. Адрес задан здесь, а не в .env: там
       # записан 127.0.0.1 для запуска без Docker, а из контейнера это сам агент.
       NT_RUNNER_URL: http://runner:8077
@@ -66,12 +70,34 @@ services:
       # Значение из `environment` сильнее `env_file`, поэтому пути однозначны.
       PUBLISH_DIR: /data/published
       AGENT_INPUT_DIR: /data/input
+      # Файлы, загруженные в чаты: папка на тред, на том же томе, что и документы.
+      CHAT_FILES_DIR: /data/chats
       JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
+      # Страница «Настройки» правит .env хоста, смонтированный ниже. Процесс
+      # берёт значения не из него, а из env_file при создании контейнера, и
+      # `restart` их не перечитывает: сохранённое применяет `docker compose up -d`,
+      # который сам пересоздаёт сервисы с изменившимся окружением.
+      SETTINGS_ENV_FILE: /host/.env
+      SETTINGS_APPLY_HINT: выполните на машине docker compose up -d (или up.cmd / up.sh)
+      # Настройки, которые этот блок задаёт сам, а не берёт из .env: в
+      # интерфейсе они закрыты, иначе правка молча ничего бы не меняла.
+      # Список обязан совпадать с блоком — это проверяет test_settings_in_docker.
+      SETTINGS_FIXED: POSTGRES_URI,NT_RUNNER_URL,PUBLISH_DIR,AGENT_INPUT_DIR,CHAT_FILES_DIR,JIRA_JOURNAL_PATH
     volumes:
       - data:/data
-      # Материалы задач — с хоста: их кладёт человек, и терять их вместе с
-      # контейнером незачем. Запись нужна кнопке «новая папка» в интерфейсе;
-      # если папки заводят только на хосте, добавьте `:ro`.
+      # Не /app/.env: `langgraph dev` загружает ./.env поверх окружения, и
+      # личные PUBLISH_DIR и NT_RUNNER_URL перебили бы пути и адрес выше.
+      # create_host_path: false — без .env Docker создал бы на хосте папку
+      # `.env`, и после этого не запустилось бы ничего.
+      - type: bind
+        source: ./.env
+        target: /host/.env
+        bind:
+          create_host_path: false
+      # Библиотека примеров — с хоста: её кладёт администратор, и терять её
+      # вместе с контейнером незачем. Пользователи загружают файлы в свои чаты
+      # (CHAT_FILES_DIR на томе `data`), а сюда пишет только администратор —
+      # запросом POST /api/inputs; если примеры заводят только на хосте, добавьте `:ro`.
       - ./input:/data/input
       # Своё хранилище `langgraph dev`. Postgres рядом его не заменяет: сервер
       # разработки держит треды сам и в свою папку. Без этого тома пересоздание
@@ -83,6 +109,9 @@ services:
     # Docker Desktop знает это имя сам; строка ниже нужна Docker Engine на Linux.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
     # `/ok` закрыт тем же токеном, что и весь API. Проверка с токеном заодно
     # подтверждает, что API_ADMIN_TOKEN задан и принят: с пустым сервер отвечает
     # 503, и `up --wait` сообщит об этом, а не откроет интерфейс, который
@@ -174,6 +203,131 @@ services:
       start_period: 30s
       start_interval: 2s
 
+  # Локальный Keycloak для входа пользователей по OIDC — замена корпоративного,
+  # пока его нет. Профиль: без OIDC_ISSUER в .env он никому не нужен.
+  #     docker compose --profile auth up -d
+  # или COMPOSE_PROFILES=auth в .env — тогда его поднимает и up.cmd / up.sh.
+  # Консоль: http://localhost:8180/admin. Realm `orbita` с клиентом и
+  # тестовыми пользователями импортируется из config/keycloak/import при
+  # старте; start-dev держит данные в контейнере, и пересоздание возвращает
+  # realm к файлу. Страницы входа — тема config/keycloak/themes/orbita в стиле
+  # веб-интерфейса; start-dev её не кеширует, правки видны после F5.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    profiles: ["auth"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      # Порт открыт только на петлю, поэтому пароль по умолчанию терпим.
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Адрес, по которому Keycloak видит браузер. Он же `iss` в токенах, и
+      # OIDC_ISSUER обязан с ним совпасть. Агент ходит за ключами и токенами
+      # изнутри сети Compose: OIDC_JWKS_URL=http://keycloak:8080/realms/orbita/...
+      KC_HOSTNAME: http://localhost:8180
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8180:8080"
+    volumes:
+      - ./config/keycloak/import:/opt/keycloak/data/import:ro
+      - ./config/keycloak/themes/orbita:/opt/keycloak/themes/orbita:ro
+    # curl в образе нет; готовность спрашивается у порта управления bash'ем.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # Метрики и графики: Prometheus собирает /metrics агента, Grafana рисует доску
+  # «Orbita» — деньги и токены, модель и окно шлюза, прогоны графов, Jira и
+  # Confluence, сам сервер. Профиль, как у Keycloak:
+  #     docker compose --profile monitoring up -d
+  # или COMPOSE_PROFILES=monitoring в .env (через запятую с auth) — тогда их
+  # поднимает и up.cmd / up.sh. Grafana: http://localhost:3000, доска открыта
+  # без входа, править — admin / GRAFANA_ADMIN_PASSWORD. Prometheus:
+  # http://localhost:9090. Что измеряется — docs/MONITORING.md.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: ["monitoring"]
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    # /metrics агента закрыт, как весь API. METRICS_TOKEN открывает только его;
+    # Prometheus читает токен из файла, а файл пишет эта точка входа.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ "$${#METRICS_TOKEN}" -lt 16 ]; then
+          echo "METRICS_TOKEN в .env пуст или короче 16 символов: /metrics агента закрыт. Запустите up.cmd / up.sh — они создадут токен — или впишите случайную строку сами." >&2
+          exit 1
+        fi
+        printf '%s' "$$METRICS_TOKEN" > /tmp/metrics-token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=$${PROMETHEUS_RETENTION}
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Сколько дней держать ряды. Том `prometheus` растёт примерно на мегабайты
+      # в день: рядов у агента сотни, а не миллионы.
+      PROMETHEUS_RETENTION: ${PROMETHEUS_RETENTION:-30d}
+    ports:
+      - "127.0.0.1:${ORBITA_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./config/prometheus:/etc/prometheus:ro
+      - prometheus:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      start_interval: 2s
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: ["monitoring"]
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Пароль задаётся при создании тома `grafana`; дальше его меняют в самой
+      # Grafana. Порт открыт только на петлю, поэтому значение по умолчанию терпимо.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Смотреть доску можно без входа: это та же машина, что и сам агент.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/orbita.json
+      # Пароль роли orbita_metrics для доски потока задач (источник «Orbita DB»,
+      # config/grafana/provisioning/datasources/postgres.yml). Роль заводит агент.
+      ORBITA_METRICS_DB_PASSWORD: ${METRICS_DB_PASSWORD:-}
+      # Grafana не ходит наружу за новостями, обновлениями и статистикой.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${ORBITA_GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 2s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   # Профиль, а не обычный сервис: `docker compose up` не должен тратить деньги
   # на вызовы модели без явной команды.
   demo:
@@ -194,9 +348,10 @@ services:
     environment:
       LLM_API_KEY: ${LLM_API_KEY:-}
       CHECKPOINT_BACKEND: postgres
-      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:-}@postgres:5432/orbita
+      POSTGRES_URI: postgresql://orbita:${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD (letters and digits) in .env}@postgres:5432/orbita
       PUBLISH_DIR: /data/published
       AGENT_INPUT_DIR: /data/input
+      CHAT_FILES_DIR: /data/chats
       JIRA_JOURNAL_PATH: /data/jira-operations.sqlite3
     volumes:
       - data:/data
@@ -213,3 +368,7 @@ volumes:
   # Треды сервера разработки. Отдельным томом, а не внутри `data`: у него свой
   # формат, своя версия и своя судьба при обновлении образа.
   threads:
+  # Ряды Prometheus и база Grafana (пароль администратора, личные настройки).
+  # Доска и источник данных в базе не живут — они приезжают из config/grafana.
+  prometheus:
+  grafana:

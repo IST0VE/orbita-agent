@@ -22,7 +22,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from agent import llm_pacing, providers
+from agent import llm_pacing, metrics, providers
 
 
 class Clock:
@@ -334,4 +334,8 @@ def test_client_is_built_with_the_pacer(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("LLM_MODEL", "test-model")
 
     providers.build_llm()
-    assert [type(item) for item in captured["kwargs"]["callbacks"]] == [llm_pacing.Pacer]
+    # Метрики — после ритма: иначе ожидание в очереди шлюза вошло бы во время ответа.
+    assert [type(item) for item in captured["kwargs"]["callbacks"]] == [
+        llm_pacing.Pacer,
+        metrics.LlmMetrics,
+    ]

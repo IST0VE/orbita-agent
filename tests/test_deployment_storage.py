@@ -29,6 +29,8 @@ DEPLOYMENT = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
 PATHS = {
     "PUBLISH_DIR": "/data/published",
     "AGENT_INPUT_DIR": "/data/input",
+    # Файлы чатов — пользовательские данные: пересоздание контейнера их не стирает.
+    "CHAT_FILES_DIR": "/data/chats",
     "JIRA_JOURNAL_PATH": "/data/jira-operations.sqlite3",
 }
 
@@ -37,6 +39,9 @@ def mounts(service: str) -> dict[str, str]:
     """Точка монтирования → источник."""
     found = {}
     for row in COMPOSE["services"][service].get("volumes", []):
+        if isinstance(row, dict):
+            found[row["target"]] = row["source"]
+            continue
         source, target = row.split(":")[:2]
         found[target] = source
     return found
@@ -68,18 +73,23 @@ def test_every_stored_path_lands_on_a_volume_or_the_host():
 def test_the_dev_server_threads_have_their_own_volume():
     """Postgres не делает треды `langgraph dev` постоянными — это делает том."""
     assert "threads" in COMPOSE["volumes"]
-    # Сервер базу не использует, поэтому и не зависит от неё; Postgres — для демо.
+    # База у сервера своя — личные подключения, — но треды он в неё не пишет:
+    # чекпоинтер Postgres включается только у демо.
     assert "CHECKPOINT_BACKEND" not in COMPOSE["services"]["agent"]["environment"]
-    assert "postgres" not in COMPOSE["services"]["agent"].get("depends_on", {})
     assert COMPOSE["services"]["demo"]["environment"]["CHECKPOINT_BACKEND"] == "postgres"
-    assert COMPOSE["services"]["postgres"]["profiles"] == ["demo"]
     assert "PostgreSQL не делает треды `langgraph dev` постоянными" in DEPLOYMENT
 
 
 def test_the_image_creates_the_directories_it_declares():
     """Том монтируется на готовое место с нужным владельцем."""
-    assert "mkdir -p /data/published /data/input /data/nt-runs /app/.langgraph_api" in DOCKERFILE
+    assert (
+        "mkdir -p /data/published /data/input /data/chats /data/nt-runs /app/.langgraph_api"
+        in DOCKERFILE
+    )
     assert "chown -R orbita:orbita /app /data" in DOCKERFILE
+    # Файлы чатов: без каталога в образе новый том получил бы /data/chats
+    # только при первой загрузке — и от того, кто её выполнил.
+    assert "CHAT_FILES_DIR=/data/chats" in DOCKERFILE
 
 
 def test_the_supported_flow_needs_no_extra_compose_file():

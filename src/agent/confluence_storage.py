@@ -28,12 +28,64 @@ _FENCE = re.compile(r"^\s*```")
 _BUILTIN_SECRET_PATTERNS = tuple(pattern for _, pattern in outgoing.MASKED)
 
 
-def _inline(text: str) -> str:
-    """Экранирование плюс минимум разметки: **жирный** и `код`."""
-    out = html.escape(text, quote=False)
-    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
-    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
-    return out
+# Разбираем исходный Markdown, а не HTML после предыдущей замены: иначе
+# **адрес** вставляет <strong> внутрь href, а <адрес> повреждает &gt;.
+_INLINE = re.compile(
+    r"`(?P<code>[^`\n]+)`"
+    r"|\[(?P<label>[^\]\n]+)\]\((?P<href>https?://[^\s)<>\"'`]+)\)"
+    r"|<(?P<auto>https?://[^\s<>\"'`]+)>"
+    r"|\*\*(?P<strong>.+?)\*\*"
+    r"|(?P<url>https?://[^\s<>\"'`]+)"
+)
+# Знаки, которыми предложение кончается сразу за адресом: частью адреса они
+# почти никогда не бывают, а ссылка с точкой на конце ведёт на 404.
+_URL_TAIL = ".,;:!?)]»”"
+
+
+def _link(url: str, label: str) -> str:
+    return f'<a href="{html.escape(url, quote=True)}">{label}</a>'
+
+
+def _bare_link(url: str) -> str:
+    tail = ""
+    while url and url[-1] in _URL_TAIL:
+        opening = {")": "(", "]": "["}.get(url[-1])
+        if opening and url.count(url[-1]) <= url.count(opening):
+            break  # парная скобка принадлежит адресу
+        url, tail = url[:-1], url[-1] + tail
+    return _link(url, html.escape(url, quote=False)) + html.escape(tail, quote=False)
+
+
+def _inline(text: str, *, links: bool = True) -> str:
+    """
+    Экранирование плюс минимум разметки: **жирный**, `код` и ссылки.
+
+    Ссылки — и `[текст](адрес)`, и голый адрес. Документы конвейеров ссылаются
+    на страницы и задачи десятками, а storage format не делает ссылкой адрес
+    в тексте сам: на странице они оставались строками, которые приходилось
+    копировать руками. Ссылками становятся только http(s)-адреса.
+    """
+    out: list[str] = []
+    end = 0
+    for match in _INLINE.finditer(text):
+        out.append(html.escape(text[end:match.start()], quote=False))
+        if match.group("code") is not None:
+            out.append("<code>" + html.escape(match.group("code"), quote=False) + "</code>")
+        elif match.group("strong") is not None:
+            out.append("<strong>" + _inline(match.group("strong"), links=links) + "</strong>")
+        elif not links:
+            # Текст ссылки может содержать URL, но вложенный <a> недопустим.
+            out.append(html.escape(match.group(0), quote=False))
+        elif match.group("href") is not None:
+            out.append(_link(match.group("href"), _inline(match.group("label"), links=False)))
+        elif match.group("auto") is not None:
+            url = match.group("auto")
+            out.append(_link(url, html.escape(url, quote=False)))
+        else:
+            out.append(_bare_link(match.group("url")))
+        end = match.end()
+    out.append(html.escape(text[end:], quote=False))
+    return "".join(out)
 
 
 def mask_text(text: str) -> str:
@@ -122,20 +174,28 @@ def text_to_storage(text: str) -> str:
         if "|" in line and index < len(lines):
             headers = _table_cells(line)
             separator = _table_cells(lines[index])
-            if (headers and len(headers) == len(separator)
+            if (headers and separator and "|" in lines[index]
                     and all(re.fullmatch(r":?-{3,}:?", cell) for cell in separator)):
                 close_list()
                 index += 1
+                rows = []
+                while index < len(lines) and "|" in lines[index] and not _FENCE.match(lines[index]):
+                    rows.append(_table_cells(lines[index]))
+                    index += 1
+                # Ширина — по самой длинной строке. Модель дописывает строкам
+                # колонку и забывает про шапку: 27 сентября 2026 таблица пробелов
+                # вышла с шапкой в пять колонок и строками в шесть, и прежний
+                # конвертер оставлял все строки текстом с «|». Лишняя ячейка не
+                # теряется и не выталкивает строку из таблицы — шапка добивается
+                # пустыми.
+                width = max(len(headers), len(separator), *(len(cells) for cells in rows))
+                headers += [""] * (width - len(headers))
                 out.append("<table><tbody><tr>" + "".join(
                     f"<th>{_inline(cell)}</th>" for cell in headers
                 ) + "</tr>")
-                while index < len(lines) and "|" in lines[index] and not _FENCE.match(lines[index]):
-                    cells = _table_cells(lines[index])
-                    if len(cells) > len(headers):
-                        break  # preserve malformed rows as text instead of dropping cells
-                    cells += [""] * (len(headers) - len(cells))
+                for cells in rows:
+                    cells += [""] * (width - len(cells))
                     out.append("<tr>" + "".join(f"<td>{_inline(cell)}</td>" for cell in cells) + "</tr>")
-                    index += 1
                 out.append("</tbody></table>")
                 continue
 

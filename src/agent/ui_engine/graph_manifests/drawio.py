@@ -1,7 +1,7 @@
 """UI semantics for the draw.io diagram graph."""
 
 from agent import diagram_roles
-from agent.ui_engine.graph_manifests.common import base_manifest
+from agent.ui_engine.graph_manifests.common import base_manifest, name_documents
 
 MANIFEST = base_manifest(diagram_roles.PIPELINE)
 
@@ -10,33 +10,43 @@ MANIFEST = base_manifest(diagram_roles.PIPELINE)
 # только .drawio, значит обещать несуществующее. Вместо него своё поле.
 MANIFEST["input"] = [item for item in MANIFEST["input"] if item["id"] != "document"]
 
-# Какую схему разбирать. Поле было в `drawio_graph.Options` с самого начала, и
-# сообщение об ошибке отправляло оператора «выбрать её в интерфейсе» — а выбрать
-# было нечем: без этой строки значение никуда не уезжало, и граф всегда брал
-# первый найденный файл. В папке с одной схемой разницы не видно; в папке, где
-# схем две, оператор получал документацию не по той.
+# Какую схему разбирать. Схема в чате одна — граф берёт её и называет; схем
+# несколько, а отмеченной нет — отказывает до вызова модели, а не берёт первую
+# по алфавиту: оператор получил бы документацию не по той (`drawio_graph._pick`).
 #
-# `depends_on` — id поля, от которого зависит список: файлы показываются из
-# выбранной папки задачи, а не из всех сразу. Знание о том, какое это поле,
-# остаётся в манифесте, чтобы виджет не знал про `task` по имени.
+# `depends_on` — id поля, из которого берётся список файлов: знание о том,
+# какое это поле, остаётся в манифесте, чтобы виджет не знал про `task` по имени.
 MANIFEST["input"].append(
     {
         "id": "diagram",
         "target": "configurable.diagram",
         "widget": "file-picker",
         "title": "Схема",
-        "source": {"resource_id": "orbita.tasks", "operation": "list"},
         "options": {"kind": "diagram", "depends_on": "task"},
     }
 )
 
-# Клик по .drawio в дереве папки выбирает схему — то же самое поле, что и
-# список выше. Выбор один, показан он дважды: там, где на файлы смотрят, и
-# там, где выбранное видно одной строкой.
+# Отметка .drawio в файлах чата выбирает схему — то же самое поле, что и строка
+# выше. Выбор один, показан он дважды: там, где на файлы смотрят, и там, где
+# выбранное видно одной строкой.
 for item in MANIFEST["input"]:
     if item["id"] == "task":
-        item["options"] = {"document_input": "diagram", "document_kind": "diagram"}
+        item["options"] = {
+            **item["options"],
+            "pick": [{"input": "diagram", "kind": "diagram", "multiple": False}],
+        }
+
+# Разобранную схему нода `source` кладёт в `artifacts` рядом с документами
+# ролей (`drawio_graph.source_node`). Это данные, а не текст: в колонке они
+# показываются как есть и скачиваются файлом своего формата.
+name_documents(
+    MANIFEST,
+    {
+        diagram_roles.DIAGRAM: {"title": "Данные схемы", "format": "json"},
+        diagram_roles.IDS: {"title": "Идентификаторы схемы", "format": "text"},
+    },
+)
 
 for surface in MANIFEST["surfaces"]:
     if surface["id"] == "left":
-        surface["widgets"] = ["task", "diagram", "artifacts", "published"]
+        surface["widgets"] = ["task", "diagram", "publication-links", "artifacts", "published"]

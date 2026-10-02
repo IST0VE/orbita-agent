@@ -1,0 +1,16 @@
+# Источник данных доски Orbita. uid закреплён: на него ссылается каждая панель
+# config/grafana/dashboards/orbita.json, и имя можно менять, не ломая доску.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: orbita-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Шаг сбора из config/prometheus/prometheus.yml: $__rate_interval не
+      # станет короче двух точек, и rate() не покажет пустоту.
+      timeInterval: 15s

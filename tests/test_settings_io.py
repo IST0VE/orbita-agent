@@ -20,14 +20,15 @@ def test_deployment_env_override_keeps_schema_and_survives_atomic_save(
     target.write_text("AGENT_NAME=Before\n", encoding="utf-8")
     target.chmod(0o660)
     monkeypatch.setattr(settings_io, "_root", lambda: source)
-    monkeypatch.setenv("ORBITA_ENV_FILE", str(target))
+    monkeypatch.setenv("SETTINGS_ENV_FILE", str(target))
 
     settings_io.save({"AGENT_NAME": "After"})
 
     assert "AGENT_NAME=After" in target.read_text(encoding="utf-8")
     assert not (source / ".env").exists()
     assert settings_io._example_path() == source / ".env.example"
-    assert not settings_io.can_edit("ORBITA_ENV_FILE")
+    assert not settings_io.can_edit("SETTINGS_ENV_FILE")
+    assert settings_io.is_reserved("SETTINGS_ENV_FILE")
     if os.name == "posix":
         assert stat.S_IMODE(target.stat().st_mode) == 0o660
 
@@ -212,3 +213,94 @@ def test_overlong_comment_is_refused_before_the_file_is_touched(settings_root: P
         settings_io.save({"AGENT_NAME": "Updated"}, {"AGENT_NAME": "x" * 5000})
 
     assert (settings_root / ".env").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    "name", ["POSTGRES_PASSWORD", "NT_RUNNER_TOKEN", "NT_PROMETHEUS_TOKEN", "USER_SECRETS_KEY"]
+)
+def test_a_secret_word_masks_the_value_even_outside_the_schema(name):
+    """Пароль базы и токены НТ в схеме не объявлены — и уезжали в браузер открытым текстом."""
+    assert settings_io.is_secret(name) is True
+
+
+@pytest.mark.parametrize("name", ["JIRA_PROJECT_KEY", "CONFLUENCE_SPACE_KEY"])
+def test_a_key_that_everyone_sees_is_not_masked(name):
+    assert settings_io.is_secret(name) is False
+
+
+def test_a_two_line_section_header_is_a_header_not_a_description():
+    fields = {item["name"]: item for item in settings_io._parse_example()}
+
+    first = fields["NT_PROMETHEUS_URL"]
+    assert first["section"].startswith("НТ: анализ завершённого теста")
+    assert "=" not in first["description"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "JIRA_BASE_URL",
+        "CONFLUENCE_BASE_URL",
+        "JIRA_ALLOW_INSECURE_HTTP",
+        "CONFLUENCE_ALLOW_INSECURE_HTTP",
+        "NT_RUNNER_URL",
+    ],
+)
+def test_where_personal_tokens_go_is_not_edited_over_http(settings_root: Path, name: str) -> None:
+    """
+    На адрес Jira и Confluence уходят личные токены всех пользователей.
+
+    Сменив его из интерфейса, администратор собрал бы их на своём сервере, и
+    повторный ввод общего токена этого бы не остановил.
+    """
+    assert not settings_io.can_edit(name)
+    with pytest.raises(ValueError, match=name):
+        settings_io.save({name: "https://collector.example.test"})
+
+
+def test_a_reserved_field_says_where_it_is_edited(settings_root: Path) -> None:
+    (settings_root / ".env.example").write_text("JIRA_BASE_URL=\n", encoding="utf-8")
+
+    fields = {
+        field["name"]: field for section in settings_io.describe()["sections"] for field in section["fields"]
+    }
+
+    assert fields["JIRA_BASE_URL"]["editable"] is False
+    assert fields["JIRA_BASE_URL"]["locked"] == settings_io.RESERVED_REASON
+
+
+def test_a_new_address_needs_the_secret_it_will_receive(settings_root: Path) -> None:
+    """Иначе сохранённый ключ модели молча уехал бы на подставленный шлюз."""
+    (settings_root / ".env").write_text(
+        "LLM_API_BASE=https://gateway.example.test/v1\nLLM_API_KEY=kept-key\n", encoding="utf-8"
+    )
+    before = (settings_root / ".env").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="LLM_API_KEY"):
+        settings_io.save({"LLM_API_BASE": "https://collector.example.test/v1"})
+    assert (settings_root / ".env").read_text(encoding="utf-8") == before
+
+    settings_io.save({"LLM_API_BASE": "https://other.example.test/v1", "LLM_API_KEY": "new-key"})
+    contents = (settings_root / ".env").read_text(encoding="utf-8")
+    assert "LLM_API_BASE=https://other.example.test/v1" in contents
+    assert "LLM_API_KEY=new-key" in contents
+
+
+def test_the_same_address_or_no_stored_secret_saves_as_before(settings_root: Path) -> None:
+    (settings_root / ".env.example").write_text(
+        "NT_PROMETHEUS_URL=\nNT_PROMETHEUS_TOKEN=\n", encoding="utf-8"
+    )
+    (settings_root / ".env").write_text(
+        "LLM_API_BASE=https://gateway.example.test/v1\nLLM_API_KEY=kept-key\n"
+        "NT_PROMETHEUS_URL=\nNT_PROMETHEUS_TOKEN=\n",
+        encoding="utf-8",
+    )
+
+    settings_io.save({"LLM_API_BASE": "https://gateway.example.test/v1", "LLM_MAX_RETRIES": "3"})
+    settings_io.save({"NT_PROMETHEUS_URL": "https://prometheus.example.test"})
+    # Стёртый вместе со сменой адреса секрет не уйдёт никуда.
+    settings_io.save({"LLM_API_BASE": "https://other.example.test/v1", "LLM_API_KEY": ""})
+
+    contents = (settings_root / ".env").read_text(encoding="utf-8")
+    assert "NT_PROMETHEUS_URL=https://prometheus.example.test" in contents
+    assert "LLM_API_BASE=https://other.example.test/v1" in contents

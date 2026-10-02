@@ -4,8 +4,29 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 
-import { API_URL, loadAssistants, type Assistant } from "./api";
+import {
+  API_URL,
+  attachToChat,
+  createChat,
+  deleteChat,
+  deleteChatFile,
+  loadAssistants,
+  loadChatFiles,
+  loadLibrary,
+  loadMe,
+  moveChat,
+  readChatFile,
+  renameChat,
+  searchChats,
+  titleOf,
+  uploadChatFile,
+  type Assistant,
+  type Chat,
+  type ChatFiles,
+  type Me,
+} from "./api";
 import { authorizedFetch } from "./auth";
+import { currentUser } from "./oidc";
 import { ActionDispatcher } from "./engine/actions/dispatcher";
 import {
   cancelPause,
@@ -23,6 +44,7 @@ import { useGraphView } from "./engine/canvas/useGraphView";
 import { configurableOf } from "./engine/manifest/bindings";
 import { redactor } from "./engine/manifest/redaction";
 import type {
+  ChatFilesContext,
   EngineCapabilities,
   SafeWidgetContext,
   UiManifest,
@@ -40,10 +62,10 @@ import { JournalPage, type JournalContext } from "./panels/journal/JournalPage";
 import { describeError, reportClient } from "./lib/clientLog.ts";
 import { AppShell } from "./app/AppShell";
 import { ContextBar } from "./app/ContextBar";
-import { ExecutionConsole, type ConsoleTab } from "./app/ExecutionConsole";
-import { FileSidebar, type SidebarScroll } from "./app/FileSidebar";
+import { ChatPanel, type ChatScroll } from "./app/ChatPanel";
+import { ChatSidebar, chatTitle } from "./app/ChatSidebar";
 import { GlobalHeader } from "./app/GlobalHeader";
-import { Inspector } from "./app/inspector/Inspector";
+import { Inspector, type RightTab } from "./app/inspector/Inspector";
 import { graphInfo, rememberScenario, sortAssistants } from "./app/scenarios";
 import { hasResultContent } from "./app/result";
 import type { AppSection, SettingsGroupId, WorkspaceView } from "./app/sections";
@@ -53,10 +75,43 @@ import { Workspace, type OpenDocument } from "./app/Workspace";
 type StateType = { messages: Message[] } & OrbitaState & Record<string, unknown>;
 
 const GRAPH_KEY = "orbita.graph";
-const TASK_KEY = "orbita.task";
 const DEFAULT_GRAPH = "agent";
 const apiUrl = API_URL || window.location.origin;
-const threadKey = (graphId: string) => `orbita.thread.${graphId}`;
+
+/*
+ * Последний открытый чат — один на пользователя, а не по чату на сценарий:
+ * список чатов общий, и вернуться надо туда, где был, а не в последний чат
+ * того сценария, что стоит в шапке. Свой у каждого пользователя: на общем
+ * компьютере следующий вошедший не должен открывать тред предыдущего —
+ * сервер его всё равно не отдаст.
+ */
+const owner = () => currentUser()?.subject;
+const chatKey = () => (owner() ? `orbita.chat.${owner()}` : "orbita.chat");
+/** Запись прежнего вида: по треду на сценарий. Читается, пока новой нет. */
+const legacyThreadKey = (graphId: string) =>
+  owner() ? `orbita.thread.${owner()}.${graphId}` : `orbita.thread.${graphId}`;
+
+function rememberChat(thread: string | null, graphId: string) {
+  try {
+    localStorage.setItem(chatKey(), JSON.stringify({ thread, graph: graphId }));
+  } catch {
+    // Приватный режим запрещает запись: вернуться в чат после перезагрузки
+    // — удобство, и падать из-за него нельзя.
+  }
+}
+
+/** Тред, который открыть в этом сценарии при загрузке. */
+function savedThread(graphId: string): string | null {
+  const raw = localStorage.getItem(chatKey());
+  if (raw === null) return localStorage.getItem(legacyThreadKey(graphId)) || null;
+  try {
+    const saved = JSON.parse(raw) as { thread?: unknown; graph?: unknown } | null;
+    if (saved?.graph === graphId && typeof saved.thread === "string") return saved.thread;
+  } catch {
+    // Испорченная запись — то же, что новый чат.
+  }
+  return null;
+}
 
 function pickAssistant(list: Assistant[], wanted: string): Assistant | undefined {
   return list.find((item) => item.assistant_id === wanted || item.graph_id === wanted) ?? list[0];
@@ -68,17 +123,14 @@ function waitingNode(interrupt: { ns?: string[] } | undefined): string | undefin
 }
 
 /**
- * Папка задачи для строки контекста.
+ * Поля, в которых хранится отметка файлов чата.
  *
- * Берётся из того поля ввода, которое объявлено деревом папок: какое это поле
- * и как оно называется, знает манифест, а не фронтенд. У сценария обновления
- * документа таких полей два — в строке контекста показывается первое, то же,
- * что стоит первым и в колонке материалов.
+ * Отметка относится к файлам одного чата: в соседнем чате файлов с такими
+ * именами может не быть, и уехавшее имя обернулось бы отказом «файла нет».
+ * Поэтому при смене чата эти поля очищаются, а прочие параметры — нет.
  */
-function currentTask(manifest: UiManifest, inputs: Record<string, unknown>): string {
-  const field = (manifest.input ?? []).find((input) => input.widget === "task-picker");
-  const value = field ? inputs[field.id] : "";
-  return typeof value === "string" ? value : "";
+function fileInputs(manifest: UiManifest): string[] {
+  return (manifest.input ?? []).filter((input) => input.widget === "file-picker").map((input) => input.id);
 }
 
 export function App() {
@@ -94,10 +146,24 @@ export function App() {
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<EngineCapabilities | null>(null);
   const [threadId, setThreadId] = useState<string | null>(null);
-  const [inputs, setInputs] = useState<Record<string, unknown>>(() => ({
-    task: localStorage.getItem(TASK_KEY) || "",
-  }));
+  const [inputs, setInputs] = useState<Record<string, unknown>>({});
+  /** Чаты всех сценариев: треды пользователя, свежие сверху. */
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [chatsLoading, setChatsLoading] = useState(false);
+  const [chatsError, setChatsError] = useState("");
+  /** Файлы открытого чата; `thread_id` в ответе — чей это список. */
+  const [chatFiles, setChatFiles] = useState<ChatFiles | null>(null);
+  const [chatFilesError, setChatFilesError] = useState("");
+  const [rightTab, setRightTab] = useState<RightTab>("chat");
   const online = useServerStatus();
+  /** Кто вошёл с точки зрения сервера: от этого зависят настройки и журнал. */
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    if (online !== "ok" || me) return;
+    let live = true;
+    loadMe().then((value) => live && setMe(value)).catch(() => undefined);
+    return () => { live = false; };
+  }, [online, me]);
   /** Где находится оператор: рабочая область, настройки или журнал. */
   const [section, setSection] = useState<AppSection>("workspace");
   /** На что он смотрит внутри рабочей области. */
@@ -106,14 +172,21 @@ export function App() {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   /** Открытый документ занимает главную область вместо схемы. */
   const [openDoc, setOpenDoc] = useState<OpenDocument | null>(null);
-  const { width: leftWidth, startResize, reset: resetLeftWidth } = useColumnWidth();
+  const left = useColumnWidth("left");
+  const right = useColumnWidth("right");
+  const resetLayout = useCallback(() => { left.reset(); right.reset(); }, [left.reset, right.reset]);
   const columns = useColumns();
-  const { openInspector, openSidebar, closeSidebar, closeInspector } = columns;
+  const { openInspector, closeSidebar, closeInspector } = columns;
   const graph = useGraphView();
-  /** Консоль выполнения: до первого прогона её нет. */
-  const [consoleOpen, setConsoleOpen] = useState(false);
-  const [consoleTab, setConsoleTab] = useState<ConsoleTab>("stream");
-  const [scrollRequest, setScrollRequest] = useState<SidebarScroll>(null);
+  /**
+   * Раскрыты ли файлы и параметры в колонке чата. `null` — решает чат: пока
+   * разговора нет, раскрыты. С началом прогона они сворачиваются сами: во
+   * время хода смотрят на разговор, а не на список файлов.
+   */
+  const [materialsOpen, setMaterialsOpen] = useState<boolean | null>(null);
+  /** Растёт, когда события прогона попросили показать. */
+  const [eventsFocus, setEventsFocus] = useState(0);
+  const [scrollRequest, setScrollRequest] = useState<ChatScroll>(null);
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroupId | undefined>();
   const [actionError, setActionError] = useState<string | null>(null);
   const [runtime, dispatch] = useReducer(
@@ -124,6 +197,11 @@ export function App() {
   runtimeRef.current = runtime;
   const threadRef = useRef(threadId);
   threadRef.current = threadId;
+  /**
+   * Номер выбора чата: растёт с каждым переходом в другой чат или сценарий.
+   * По нему поздний ответ узнаёт, что оператор уже не там, где его ждали.
+   */
+  const chatChoice = useRef(0);
   const eventFactory = useRef<LiveEventFactory | null>(null);
   const runStarted = useRef(false);
   const runFailed = useRef(false);
@@ -141,8 +219,6 @@ export function App() {
    */
   const [pauseRequested, setPauseRequested] = useState(false);
   const wasLoading = useRef(false);
-  /** Восстановленный тред открывает консоль один раз, а не при каждом кадре. */
-  const restored = useRef(false);
 
   const current = assistants.find((item) => item.assistant_id === assistantId);
   const graphId = current?.graph_id ?? bundle?.manifest.graph_id ?? DEFAULT_GRAPH;
@@ -170,8 +246,7 @@ export function App() {
     (value: string | null) => {
       setThreadId(value);
       dispatch({ type: "thread", threadId: value });
-      if (value) localStorage.setItem(threadKey(graphId), value);
-      else localStorage.removeItem(threadKey(graphId));
+      rememberChat(value, graphId);
     },
     [graphId],
   );
@@ -276,7 +351,7 @@ export function App() {
         const selected = pickAssistant(ordered, assistantId);
         if (selected) {
           setAssistantId(selected.assistant_id);
-          setThreadId(localStorage.getItem(threadKey(selected.graph_id)) || null);
+          setThreadId(savedThread(selected.graph_id));
         }
         Promise.all(
           ordered.map(async (assistant) => {
@@ -351,9 +426,74 @@ export function App() {
       rememberScenario(current.graph_id);
     }
   }, [current]);
+
+  /*
+   * Список чатов — один на все сценарии. Сервер отдаёт только свои треды
+   * (`auth.py`), а сценарий чата приезжает в его `graph_id`: открыть чат
+   * другого сценария значит переключить и сценарий (`openChat`).
+   *
+   * Номер запроса отсекает поздние ответы: список, прочитанный раньше,
+   * не должен лечь поверх прочитанного позже.
+   */
+  const chatsRequest = useRef(0);
+  const refreshChats = useCallback(() => {
+    const request = ++chatsRequest.current;
+    setChatsLoading(true);
+    return searchChats()
+      .then((items) => {
+        if (request !== chatsRequest.current) return;
+        setChats(items);
+        setChatsError("");
+      })
+      .catch((error: Error) => request === chatsRequest.current && setChatsError(error.message))
+      .finally(() => request === chatsRequest.current && setChatsLoading(false));
+  }, []);
   useEffect(() => {
-    localStorage.setItem(TASK_KEY, String(inputs.task ?? ""));
-  }, [inputs.task]);
+    if (online !== "ok") return;
+    void refreshChats();
+  }, [online, refreshChats]);
+
+  /* Файлы открытого чата. У чата без треда их нет: он появится с первым файлом. */
+  const filesRequest = useRef(0);
+  const refreshFiles = useCallback((thread: string | null) => {
+    const request = ++filesRequest.current;
+    setChatFilesError("");
+    if (!thread) {
+      setChatFiles(null);
+      return Promise.resolve();
+    }
+    return loadChatFiles(thread)
+      .then((value) => request === filesRequest.current && setChatFiles(value))
+      .catch((error: Error) => {
+        if (request !== filesRequest.current) return;
+        if (error.name === "chat_not_found") {
+          // Браузер помнил чат, которого больше нет: удалили в другой вкладке
+          // или сервер разработки потерял треды. Открываем новый черновик.
+          forgetThread.current(thread);
+          return;
+        }
+        setChatFilesError(error.message);
+      });
+  }, []);
+  const forgetThread = useRef<(thread: string) => void>(() => undefined);
+  useEffect(() => {
+    if (online !== "ok") return;
+    void refreshFiles(threadId);
+  }, [online, threadId, refreshFiles]);
+
+  // Тред появился — первым прогоном или первым файлом, — а в списке его ещё
+  // нет: список перечитывается, и новый чат встаёт сверху.
+  const knownChats = useRef(chats);
+  knownChats.current = chats;
+  useEffect(() => {
+    if (threadId && !knownChats.current.some((chat) => chat.thread_id === threadId)) void refreshChats();
+  }, [threadId, refreshChats]);
+  // Прогон закончился — у чата новое время и новый статус.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !stream.isLoading) void refreshChats();
+    wasRunning.current = stream.isLoading;
+  }, [stream.isLoading, refreshChats]);
 
   useEffect(() => {
     if (!bundle || bundle.assistant.assistant_id !== assistantId) return;
@@ -410,21 +550,19 @@ export function App() {
   }, [assistantId, graphId, serverInterrupt, stream.isLoading]);
 
   /**
-   * Консоль открывается сама тогда, когда ей есть что показать: с началом
-   * прогона и при возвращении к треду, в котором уже что-то происходило.
-   * Свернул её оператор — она остаётся свёрнутой до следующего прогона.
+   * Прогон начался — ход прогона показывается сам: колонка чата открывается
+   * на вкладке «Чат», а файлы и параметры сворачиваются в строку. Раньше для
+   * этого была нижняя консоль, и её открывали и закрывали руками.
+   *
+   * В узком окне колонка выдвигается поверх схемы, и выдвигать её без спроса
+   * значит закрыть то, что как раз оживает, — там её открывает оператор.
    */
-  useEffect(() => {
-    if (runtime.runId) setConsoleOpen(true);
-  }, [runtime.runId]);
-  useEffect(() => {
-    if (restored.current) return;
-    const values = stream.values as StateType | undefined;
-    if (Array.isArray(values?.messages) && values.messages.length) {
-      restored.current = true;
-      setConsoleOpen(true);
-    }
-  }, [stream.values]);
+  const { narrow } = columns;
+  const showRun = useCallback(() => {
+    setRightTab("chat");
+    setMaterialsOpen(false);
+    if (!narrow) openInspector();
+  }, [narrow, openInspector]);
 
   /** Прогон закончился — итог показывается сам, если он есть. */
   useEffect(() => {
@@ -462,33 +600,58 @@ export function App() {
       // Ход начался — на главном экране снова нужна схема, а не документ.
       setOpenDoc(null);
       setView("graph");
-      setConsoleOpen(true);
+      showRun();
       dispatch({ type: "event", event: factory.startRun() });
+      // Первый запрос даёт чату название. Нового треда ещё нет — SDK заведёт
+      // его сам, и метаданные уедут вместе с ним; тред, заведённый загрузкой
+      // файла, названия не имеет — даём его здесь же.
+      const title = titleOf(question);
+      const thread = threadRef.current;
+      if (thread && !knownChats.current.find((chat) => chat.thread_id === thread)?.title) {
+        renameChat(thread, title).then(() => refreshChats()).catch(() => undefined);
+      }
       return stream.submit(
         { messages: [{ type: "human", content: question.trim() }] },
         {
           config: { configurable: configurableOf(manifest, inputs) },
+          metadata: thread ? undefined : { graph_id: graphId, title },
           streamMode: ["values", "updates", "tasks"],
         },
       );
     },
-    [assistantId, graphId, inputs, manifest, stream],
+    [assistantId, graphId, inputs, manifest, refreshChats, showRun, stream],
   );
 
-  const newThread = useCallback(() => {
+  /*
+   * Открыть чат этого же сценария: существующий тред или новый черновик (null).
+   *
+   * Экран сбрасывается целиком: схема, карточка узла и отметки файлов
+   * относятся к прежнему чату. Черновик заводится на сервере не сразу, а с
+   * первым файлом или первым прогоном: пустых чатов в списке не бывает.
+   */
+  const openThread = useCallback((next: string | null) => {
     if (stream.isLoading || actionPending.current) return;
+    // Повторный клик по открытому чату ничего не меняет. Сброс ниже очистил
+    // бы список файлов, а перечитывается он по смене треда — которой нет:
+    // вместо файлов навсегда оставалось «…».
+    if (next !== null && next === threadRef.current) return;
+    chatChoice.current += 1;
     setOpenDoc(null);
     setSelectedNode(null);
     setActionError(null);
     setView("graph");
-    setConsoleOpen(false);
-    restored.current = true;
+    setMaterialsOpen(null);
     runStarted.current = false;
     runFailed.current = false;
     runCancelled.current = false;
     wasLoading.current = false;
-    setKnownThread(null);
+    setKnownThread(next);
     eventFactory.current = null;
+    setChatFiles(null);
+    const picked = fileInputs(manifest);
+    setInputs((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([id]) => !picked.includes(id)),
+    ));
     dispatch({
       type: "reset",
       assistantId,
@@ -496,13 +659,86 @@ export function App() {
       manifestVersion: manifest.manifest_version,
       topologyHash: bundle?.topologyHash,
     });
-  }, [assistantId, bundle?.topologyHash, graphId, manifest.manifest_version, setKnownThread, stream.isLoading]);
+  }, [assistantId, bundle?.topologyHash, graphId, manifest, setKnownThread, stream.isLoading]);
+
+  const newThread = useCallback(() => openThread(null), [openThread]);
+  forgetThread.current = (thread: string) => {
+    if (threadRef.current === thread) openThread(null);
+  };
+
+  const removeChat = useCallback(async (thread: string) => {
+    await deleteChat(thread);
+    if (thread === threadRef.current) openThread(null);
+    await refreshChats();
+  }, [openThread, refreshChats]);
+
+  /*
+   * Тред для файла, который загружают в ещё не заведённый чат.
+   *
+   * Одно обещание на черновик: несколько файлов, брошенных разом, иначе
+   * завели бы по чату на каждый. Но только на свой черновик — файл,
+   * брошенный в следующий, уехал бы в чужой чат.
+   *
+   * Заведённый чат открывается, только если оператор всё ещё на том
+   * черновике. Ушёл в другой чат, пока сервер отвечал, — поздний ответ
+   * переключал его обратно. Файлы всё равно уезжают в заведённый чат:
+   * бросали их туда, и найти их можно в списке чатов.
+   */
+  const pendingThread = useRef<{ choice: number; thread: Promise<string> } | null>(null);
+  const ensureThread = useCallback(async (): Promise<string> => {
+    if (threadRef.current) return threadRef.current;
+    const choice = chatChoice.current;
+    if (pendingThread.current?.choice !== choice) {
+      const thread = createChat(graphId)
+        .then((chat) => {
+          // Тред черновику мог успеть завести и прогон: тогда он и открыт.
+          if (chatChoice.current === choice && !threadRef.current) {
+            setKnownThread(chat.thread_id);
+            threadRef.current = chat.thread_id;
+          } else {
+            void refreshChats();
+          }
+          return chat.thread_id;
+        })
+        .finally(() => {
+          if (pendingThread.current?.thread === thread) pendingThread.current = null;
+        });
+      pendingThread.current = { choice, thread };
+    }
+    return pendingThread.current.thread;
+  }, [graphId, refreshChats, setKnownThread]);
+
+  const uploadFiles = useCallback(async (files: File[]) => {
+    const thread = await ensureThread();
+    const failed: string[] = [];
+    let latest: ChatFiles | null = null;
+    // По одному: у каждого файла свой ответ, и отказ одного не отменяет остальные.
+    for (const file of files) {
+      try {
+        latest = await uploadChatFile(thread, file);
+      } catch (error) {
+        failed.push((error as Error).message);
+      }
+    }
+    // Экран трогается, только если на нём всё ещё этот чат. Перечитывание
+    // чужого списка отменило бы загрузку списка того чата, что открыт.
+    if (threadRef.current === thread) {
+      if (latest) setChatFiles(latest);
+      else await refreshFiles(thread);
+      setRightTab("chat");
+    }
+    if (failed.length) throw new Error(failed.join("; "));
+  }, [ensureThread, refreshFiles]);
 
   const openDocument = useCallback((payload: unknown) => {
-    const document = (payload ?? {}) as { title?: unknown; text?: unknown };
+    const document = (payload ?? {}) as { title?: unknown; text?: unknown; file?: unknown };
     setOpenDoc({
       title: String(document.title ?? "документ"),
       text: String(document.text ?? ""),
+      // Имя файла есть у того, что Orbita написала сама: документа этапа и
+      // публикации. У файла чата его нет — это загрузка человека, и
+      // предпросмотр .drawio, скачанный «файлом», был бы уже не схемой.
+      ...(typeof document.file === "string" && document.file ? { file: document.file } : {}),
     });
     setSection("workspace");
     setView("document");
@@ -583,6 +819,40 @@ export function App() {
     [],
   );
 
+  /*
+   * Файлы открытого чата для виджетов. Список один на экран: его видят и
+   * панель файлов, и строка выбранного, и композер, — и после загрузки он
+   * обновляется у всех сразу.
+   */
+  const chatContext = useMemo<ChatFilesContext>(() => {
+    const own = chatFiles && chatFiles.thread_id === threadId ? chatFiles : null;
+    return {
+      threadId,
+      // У черновика файлов нет, и это известно без запроса.
+      files: threadId ? own?.files ?? null : [],
+      limits: own?.limits,
+      loading: Boolean(threadId) && !own,
+      error: chatFilesError,
+      upload: uploadFiles,
+      remove: async (name: string) => {
+        const thread = threadRef.current;
+        if (!thread) return;
+        setChatFiles(await deleteChatFile(thread, name));
+      },
+      read: (name: string) => {
+        const thread = threadRef.current;
+        if (!thread) return Promise.reject(new Error("в чате ещё нет файлов"));
+        return readChatFile(thread, name);
+      },
+      library: loadLibrary,
+      attach: async (source) => {
+        const thread = await ensureThread();
+        const result = await attachToChat(thread, source);
+        if (threadRef.current === thread) setChatFiles(result);
+      },
+    };
+  }, [chatFiles, chatFilesError, ensureThread, threadId, uploadFiles]);
+
   const safeContext = useMemo<SafeWidgetContext>(
     () => ({
       locale: navigator.language || "ru",
@@ -592,24 +862,33 @@ export function App() {
       setInput: updateInput,
       resource: resourceAdapter,
       mutateResource: resourceMutationAdapter,
+      chat: chatContext,
     }),
-    [graphId, inputs, resourceAdapter, resourceMutationAdapter, runtime, updateInput],
+    [chatContext, graphId, inputs, resourceAdapter, resourceMutationAdapter, runtime, updateInput],
   );
 
-  const chooseAssistant = (id: string) => {
-    if (id === assistantId || stream.isLoading || actionPending.current) return;
-    const next = assistants.find((item) => item.assistant_id === id);
-    if (!next) return;
+  /*
+   * Перейти в другой сценарий и открыть в нём чат (или черновик — null).
+   *
+   * Чат другого сценария открывается только вместе с его сценарием: у треда
+   * состояние своего графа, и чужая схема прочитала бы его как своё.
+   */
+  const switchScenario = (next: Assistant, thread: string | null) => {
+    chatChoice.current += 1;
     setOpenDoc(null);
     setBundle(null);
     setBundleError(null);
     setSection("workspace");
     setView("graph");
-    setConsoleOpen(false);
-    restored.current = false;
-    dispatch({ type: "reset", assistantId: id, graphId: next.graph_id, manifestVersion: "0.0.fallback" });
-    setAssistantId(id);
-    setThreadId(localStorage.getItem(threadKey(next.graph_id)) || null);
+    setMaterialsOpen(null);
+    dispatch({ type: "reset", assistantId: next.assistant_id, graphId: next.graph_id, manifestVersion: "0.0.fallback" });
+    setAssistantId(next.assistant_id);
+    setThreadId(thread);
+    rememberChat(thread, next.graph_id);
+    // Поля ввода — другого сценария. Файлы — того чата, что откроется: у
+    // чата, переведённого в новый сценарий, они те же, и прятать их незачем.
+    setInputs({});
+    if (thread !== threadRef.current) setChatFiles(null);
     setSelectedNode(null);
     setActionError(null);
     runStarted.current = false;
@@ -619,23 +898,82 @@ export function App() {
     eventFactory.current = null;
   };
 
+  /** Открыть чат из общего списка: своего сценария или чужого. */
+  const openChat = (chat: Chat) => {
+    if (stream.isLoading || actionPending.current) return;
+    const target = chat.graph_id
+      ? assistants.find((item) => item.graph_id === chat.graph_id)
+      : undefined;
+    // Чат без сценария — заведённый до того, как сценарий стали записывать:
+    // открывается там, где открывался раньше, в текущем.
+    if (!chat.graph_id || target?.assistant_id === assistantId) {
+      openThread(chat.thread_id);
+      return;
+    }
+    if (!target) {
+      setActionError(`Сценарий этого чата («${chat.graph_id}») на сервере не найден.`);
+      return;
+    }
+    switchScenario(target, chat.thread_id);
+  };
+
+  /*
+   * Сменить сценарий в шапке.
+   *
+   * Чат без запросов — это только файлы, и сценарий у него ещё не выбран по
+   * сути: он уходит в новый сценарий вместе с файлами. Так можно сначала
+   * положить материалы, а потом решить, что с ними делать. Чат с прогоном
+   * остаётся в своём сценарии и в списке, а в новом открывается черновик.
+   */
+  const chooseAssistant = (id: string) => {
+    if (id === assistantId || stream.isLoading || actionPending.current) return;
+    const next = assistants.find((item) => item.assistant_id === id);
+    if (!next) return;
+    const thread = threadRef.current;
+    const known = knownChats.current.find((chat) => chat.thread_id === thread);
+    const values = stream.values as StateType | undefined;
+    // Был ли в чате запрос, знает список: состояние треда сразу после
+    // перехода ещё может быть прежним. Чат, которого в списке пока нет, заведён
+    // только что — о нём говорит его состояние. События есть только у чата,
+    // в котором прогон шёл на этом экране.
+    const started = runtime.events.length > 0
+      || (known ? known.started : Boolean(values?.messages?.length));
+    if (thread && !started) {
+      switchScenario(next, thread);
+      moveChat(thread, next.graph_id)
+        .then(() => refreshChats())
+        .catch((error: Error) => setActionError(`Чат не перешёл в сценарий: ${error.message}`));
+      return;
+    }
+    switchScenario(next, null);
+  };
+
   /** Выбор узла открывает инспектор: подробности приходят к тому, кто их спросил. */
   const selectNode = useCallback((nodeId: string | null) => {
     setSelectedNode(nodeId);
-    if (nodeId) openInspector();
+    if (nodeId) {
+      setRightTab("details");
+      openInspector();
+    }
   }, [openInspector]);
 
+  /** Показать файлы открытого чата: правая колонка, вкладка «Чат», материалы раскрыты. */
   const showMaterials = useCallback(() => {
     setSection("workspace");
-    openSidebar();
+    setRightTab("chat");
+    setMaterialsOpen(true);
+    openInspector();
     setScrollRequest((previous) => ({ target: "input", nonce: (previous?.nonce ?? 0) + 1 }));
-  }, [openSidebar]);
+  }, [openInspector]);
 
-  const openConsole = useCallback((tab: ConsoleTab) => {
+  /** События прогона: вкладка «Прогон» правой колонки, раздел раскрыт. */
+  const openEvents = useCallback(() => {
     setSection("workspace");
-    setConsoleTab(tab);
-    setConsoleOpen(true);
-  }, []);
+    setSelectedNode(null);
+    setRightTab("details");
+    openInspector();
+    setEventsFocus((value) => value + 1);
+  }, [openInspector]);
 
   const openSettings = useCallback((group?: SettingsGroupId) => {
     setSection("settings");
@@ -662,6 +1000,14 @@ export function App() {
   );
 
   const label = graphInfo(current, graphId, manifestInfo);
+  /** Подпись сценария у чата в общем списке. */
+  const scenarioName = useCallback(
+    (graph: string) =>
+      graph ? graphInfo(assistants.find((item) => item.graph_id === graph), graph, manifestInfo).label : "",
+    [assistants, manifestInfo],
+  );
+  const activeChat = chats.find((chat) => chat.thread_id === threadId);
+  const activeChatTitle = threadId ? (activeChat ? chatTitle(activeChat) : "Чат") : "Новый чат";
   const fatalError = assistantsError || bundleError || actionError;
   const locked = stream.isLoading || busy;
   const streamError = stream.error ? runErrorMessage(stream.error) : null;
@@ -734,7 +1080,8 @@ export function App() {
       inspectorOpen={columns.inspector}
       narrow={columns.narrow}
       animated={animated}
-      leftWidth={leftWidth}
+      leftWidth={left.width}
+      rightWidth={right.width}
       onDismissDrawer={() => { closeSidebar(); closeInspector(); }}
       header={
         <GlobalHeader
@@ -747,14 +1094,17 @@ export function App() {
           onSection={setSection}
           onOpenSettings={openSettings}
           onOpenJournal={openJournal}
+          admin={me?.admin ?? false}
+          service={me?.service ?? false}
           alerts={alerts}
-          onOpenAlerts={() => openConsole("events")}
+          onOpenAlerts={openEvents}
         />
       }
       context={
         <ContextBar
-          task={currentTask(manifest, inputs)}
-          onPickTask={showMaterials}
+          chat={activeChatTitle}
+          fileCount={chatContext.files?.length ?? 0}
+          onShowChat={showMaterials}
           scenario={label.label}
           scenarioHint={label.hint}
           runStatus={runtime.runStatus}
@@ -773,9 +1123,6 @@ export function App() {
           }}
           onNewThread={newThread}
           newThreadDisabled={locked}
-          events={runtime.events.length}
-          consoleOpen={consoleOpen}
-          onToggleConsole={() => setConsoleOpen((value) => !value)}
           sidebarOpen={columns.sidebar}
           onToggleSidebar={columns.toggleSidebar}
           inspectorOpen={columns.inspector}
@@ -798,20 +1145,21 @@ export function App() {
         </div>
       }
       sidebar={
-        <FileSidebar
-          manifest={manifest}
-          runtime={runtime}
-          context={safeContext}
-          inputs={inputs}
-          onInput={updateInput}
-          onAction={handleAction}
-          surfaceKey={assistantId}
-          startResize={startResize}
-          resetWidth={resetLeftWidth}
-          scrollRequest={scrollRequest}
-          ready={Boolean(bundle)}
+        <ChatSidebar
+          chats={chats}
+          loading={chatsLoading}
+          error={chatsError}
+          activeId={threadId}
+          draftScenario={label.label}
+          draftGraph={graphId}
+          scenarioName={scenarioName}
+          locked={locked}
+          onOpen={openChat}
+          onDelete={removeChat}
+          onRetry={() => void refreshChats()}
+          startResize={left.startResize}
+          resetWidth={left.reset}
           drawer={columns.narrow}
-          onClose={closeSidebar}
         />
       }
       main={
@@ -842,10 +1190,29 @@ export function App() {
           onInput={updateInput}
           onAction={handleAction}
           onPickContext={showMaterials}
+          chat={chatContext}
         />
       }
       inspector={
         <Inspector
+          tab={rightTab}
+          onTab={setRightTab}
+          fileCount={chatContext.files?.length ?? null}
+          materials={
+            <ChatPanel
+              manifest={manifest}
+              runtime={runtime}
+              context={safeContext}
+              inputs={inputs}
+              onInput={updateInput}
+              onAction={handleAction}
+              surfaceKey={assistantId}
+              scrollRequest={scrollRequest}
+              ready={Boolean(bundle)}
+              materialsOpen={materialsOpen}
+              onMaterialsOpen={setMaterialsOpen}
+            />
+          }
           manifest={manifest}
           runtime={runtime}
           context={safeContext}
@@ -855,26 +1222,14 @@ export function App() {
           topology={bundle?.topology ?? null}
           selectedNode={selectedNode}
           onClearNode={() => setSelectedNode(null)}
+          onSelectNode={selectNode}
+          eventsFocus={eventsFocus}
           scenarioTitle={label.label}
           threadId={threadId}
-          onClose={closeInspector}
+          startResize={right.startResize}
+          resetWidth={right.reset}
+          drawer={columns.narrow}
         />
-      }
-      console={
-        consoleOpen ? (
-          <ExecutionConsole
-            manifest={manifest}
-            runtime={runtime}
-            context={safeContext}
-            inputs={inputs}
-            onInput={updateInput}
-            onAction={handleAction}
-            tab={consoleTab}
-            onTab={setConsoleTab}
-            onClose={() => setConsoleOpen(false)}
-            onSelectNode={selectNode}
-          />
-        ) : null
       }
     >
       <SettingsPage
@@ -884,12 +1239,15 @@ export function App() {
         online={online}
         animated={animated}
         onToggleAnimation={toggleAnimation}
-        onResetLayout={resetLeftWidth}
+        onResetLayout={resetLayout}
+        admin={me?.admin ?? false}
+        service={me?.service ?? false}
       />
       <JournalPage
         open={section === "journal"}
         onClose={() => setSection("workspace")}
         context={journalContext}
+        serverLog={me?.admin ?? false}
       />
       {/*
         Карточку решает рантайм, а не флаг загрузки. Снимать её с экрана на

@@ -1,0 +1,726 @@
+/*
+ * Страницы входа Orbita в Keycloak.
+ *
+ * Значения — копия web/src/styles/tokens.css: страница входа отдаётся
+ * Keycloak'ом, собрать её вместе с интерфейсом нельзя, а выглядеть она должна
+ * его первым экраном. Правка фирменного цвета или шкалы там — правка и здесь.
+ * Копируется только то, что эта страница использует.
+ *
+ * Классы base-шаблонов Keycloak переназначены на эти в theme.properties.
+ * Правила по элементам (input, button, a внутри карточки) страхуют страницы,
+ * у которых свой набор классов: смена пароля, выход, ошибки.
+ */
+
+:root {
+  color-scheme: light;
+
+  --bg-main: #f6f3ed;
+  --bg-secondary: #fbfaf7;
+  --surface: #ffffff;
+  --surface-muted: #f2efe9;
+
+  --text-primary: #17202a;
+  --text-secondary: #667085;
+  --text-muted: #98a2b3;
+  --text-inverse: #ffffff;
+  --text-brand: #b23c0f;
+
+  --border: #e7e2da;
+  --border-strong: #d7d0c6;
+  --border-subtle: #efebe4;
+
+  --accent-orange: #ff6b2c;
+  --accent-orange-hover: #ed581c;
+  --accent-orange-soft: #fff0e8;
+  --accent-blue: #4c8df6;
+  --accent-blue-soft: #ecf3ff;
+  --accent-blue-border: #cfe0ff;
+
+  --success-soft: #e7f7f1;
+  --success-border: #b9e8d8;
+  --warning-soft: #fff6e6;
+  --warning-border: #f7dfb0;
+  --error: #e65b65;
+  --error-soft: #fdeded;
+  --error-border: #f6cdd0;
+
+  --on-orange-soft: var(--text-brand);
+  --on-blue-soft: #1f5fc4;
+  --on-success-soft: #127d5e;
+  --on-warning-soft: #9a6209;
+  --on-error-soft: #b2333d;
+
+  --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-2xl: 20px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --leading-tight: 1.3;
+  --leading-normal: 1.5;
+
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-lg: 12px;
+
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 6px 20px rgba(16, 24, 40, 0.06);
+  --shadow-focus: 0 0 0 3px rgba(255, 107, 44, 0.18);
+
+  --ease: cubic-bezier(0.32, 0.72, 0.35, 1);
+  --duration-fast: 120ms;
+  --transition-base: 160ms var(--ease);
+
+  --control-height-lg: 36px;
+
+  /* Значки — те же Lucide, что в интерфейсе, маской: цвет берётся из currentColor. */
+  --orb-icon-eye: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+  --orb-icon-eye-off: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49'/%3E%3Cpath d='M14.084 14.158a3 3 0 0 1-4.242-4.242'/%3E%3Cpath d='M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143'/%3E%3Cpath d='m2 2 20 20'/%3E%3C/svg%3E");
+  --orb-icon-circle-alert: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' x2='12' y1='8' y2='12'/%3E%3Cline x1='12' x2='12.01' y1='16' y2='16'/%3E%3C/svg%3E");
+  --orb-icon-triangle-alert: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+  --orb-icon-circle-check: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m16 9-5.5 5.5L8 12'/%3E%3C/svg%3E");
+  --orb-icon-info: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+  --orb-icon-rotate-ccw: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/%3E%3Cpath d='M3 3v5h5'/%3E%3C/svg%3E");
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: var(--space-8) var(--space-5);
+  overflow-x: hidden;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent-orange-soft);
+  color: var(--on-orange-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-orange);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ------------------------------------------------------------------ */
+/* Водяной знак                                                        */
+/* ------------------------------------------------------------------ */
+/* Тот же след марки, что в углу полотна схемы, и так же на грани видимости.
+   Вращение то же — медленное и выключаемое системной настройкой. */
+.orb-orbit {
+  position: fixed;
+  right: -180px;
+  bottom: -220px;
+  width: 640px;
+  height: 640px;
+  color: var(--text-primary);
+  opacity: 0.05;
+  pointer-events: none;
+}
+
+.orb-ring {
+  transform-origin: 260px 260px;
+  animation: orb-spin 90s linear infinite;
+}
+
+.orb-ring-2 {
+  animation-duration: 140s;
+  animation-direction: reverse;
+}
+
+.orb-ring-3 {
+  animation-duration: 210s;
+}
+
+@keyframes orb-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-ring {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Каркас                                                              */
+/* ------------------------------------------------------------------ */
+.orb-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  max-width: 400px;
+}
+
+.orb-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.orb-brand-mark {
+  flex: none;
+  color: var(--accent-orange);
+}
+
+.orb-brand-name {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+}
+
+/* Карточка — как окно подтверждения в интерфейсе: белая, с рамкой и тенью
+   слоя поверх фона. */
+.orb-card {
+  padding: var(--space-8);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.orb-card-head {
+  margin-bottom: var(--space-7);
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
+}
+
+#kc-page-title {
+  font-size: var(--text-2xl);
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: var(--text-lg);
+}
+
+p {
+  margin: 0 0 var(--space-4);
+}
+
+p:last-child {
+  margin-bottom: 0;
+}
+
+.orb-lead {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.orb-required {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.required {
+  color: var(--on-error-soft);
+}
+
+.orb-foot {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+/* Имя, под которым идёт вход, на втором шаге (пароль, OTP). */
+.orb-username {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-2) 0 var(--space-4);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.orb-username-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.orb-username-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-medium);
+}
+
+a.orb-username-reset {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-xs);
+}
+
+a.orb-username-reset:hover {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* Поля                                                                */
+/* ------------------------------------------------------------------ */
+.orb-field {
+  margin-bottom: var(--space-5);
+}
+
+.orb-field:last-child {
+  margin-bottom: 0;
+}
+
+label,
+.orb-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.orb-card input[type="text"],
+.orb-card input[type="email"],
+.orb-card input[type="password"],
+.orb-card input[type="tel"],
+.orb-card input[type="number"],
+.orb-card select,
+.orb-card textarea,
+.orb-input {
+  display: block;
+  width: 100%;
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-4);
+  font-family: inherit;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.orb-card textarea {
+  padding: var(--space-3) var(--space-4);
+}
+
+.orb-card input::placeholder {
+  color: var(--text-muted);
+}
+
+.orb-card input:hover,
+.orb-card select:hover,
+.orb-card textarea:hover {
+  border-color: var(--border-strong);
+}
+
+.orb-card input:focus,
+.orb-card select:focus,
+.orb-card textarea:focus {
+  outline: none;
+  border-color: var(--accent-orange);
+  box-shadow: var(--shadow-focus);
+}
+
+.orb-card input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.orb-card input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px rgba(230, 91, 101, 0.16);
+}
+
+/* Автозаполнение браузера красит поле в свой жёлтый — возвращаем белое. */
+.orb-card input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 40px var(--surface) inset;
+  -webkit-text-fill-color: var(--text-primary);
+}
+
+.orb-field-error {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--on-error-soft);
+}
+
+.orb-help {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* Пароль и кнопка «показать» — одно поле: кнопка стоит внутри рамки. */
+.orb-input-group {
+  position: relative;
+}
+
+.orb-input-group .orb-input {
+  padding-right: 40px;
+}
+
+.orb-reveal {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.orb-reveal:hover {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+}
+
+.orb-card input[type="checkbox"],
+.orb-card input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  margin: 0 var(--space-3) 0 0;
+  vertical-align: -3px;
+  accent-color: var(--accent-orange);
+  cursor: pointer;
+}
+
+.checkbox label,
+.radio label {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.orb-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  font-size: var(--text-sm);
+}
+
+.orb-options:empty,
+#kc-form-options:empty,
+.orb-options-links:empty {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Кнопки                                                              */
+/* ------------------------------------------------------------------ */
+.orb-btn,
+.orb-card button[type="submit"],
+.orb-card input[type="submit"],
+.orb-card input[type="button"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-5);
+  font-family: inherit;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-base), border-color var(--transition-base),
+    color var(--transition-base), transform var(--duration-fast) var(--ease);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.orb-btn:hover,
+.orb-card button[type="submit"]:hover,
+.orb-card input[type="submit"]:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-strong);
+}
+
+.orb-btn:active,
+.orb-card input[type="submit"]:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* Главное действие — одно на карточку, как и в интерфейсе. */
+.orb-btn-primary,
+.orb-card input.orb-btn-primary {
+  color: var(--text-inverse);
+  background: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+.orb-btn-primary:hover,
+.orb-card input.orb-btn-primary:hover {
+  color: var(--text-inverse);
+  background: var(--accent-orange-hover);
+  border-color: var(--accent-orange-hover);
+}
+
+.orb-btn-primary:disabled {
+  background: #f5b79c;
+  border-color: #f5b79c;
+  cursor: progress;
+}
+
+.orb-btn-block {
+  width: 100%;
+}
+
+#kc-form-buttons,
+.orb-buttons {
+  margin-top: var(--space-6);
+}
+
+/* Две кнопки рядом (выход, согласие): растягиваются поровну. */
+.orb-buttons {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.orb-buttons > * {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Ссылки                                                              */
+/* ------------------------------------------------------------------ */
+a {
+  color: var(--on-blue-soft);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color var(--transition-base), border-color var(--transition-base);
+}
+
+a:hover {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue-border);
+}
+
+#try-another-way,
+#kc-info {
+  display: block;
+  margin-top: var(--space-5);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+#kc-info {
+  padding-top: var(--space-5);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ------------------------------------------------------------------ */
+/* Сообщения                                                           */
+/* ------------------------------------------------------------------ */
+.orb-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+}
+
+.orb-alert .orb-icon {
+  margin-top: 1px;
+}
+
+.orb-alert-error {
+  color: var(--on-error-soft);
+  background: var(--error-soft);
+  border-color: var(--error-border);
+}
+
+.orb-alert-warning {
+  color: var(--on-warning-soft);
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+
+.orb-alert-success {
+  color: var(--on-success-soft);
+  background: var(--success-soft);
+  border-color: var(--success-border);
+}
+
+.orb-alert-info {
+  color: var(--on-blue-soft);
+  background: var(--accent-blue-soft);
+  border-color: var(--accent-blue-border);
+}
+
+/* Страницы «информация» и «ошибка»: текст и ссылка назад в приложение. */
+#kc-info-message p,
+#kc-error-message p {
+  color: var(--text-secondary);
+}
+
+#kc-info-message .instruction {
+  margin-top: var(--space-4);
+}
+
+#kc-info-message a,
+#kc-error-message a {
+  display: inline-block;
+  margin-top: var(--space-4);
+}
+
+/* ------------------------------------------------------------------ */
+/* Значки                                                              */
+/* ------------------------------------------------------------------ */
+.orb-icon {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+
+.orb-icon-eye { --icon: var(--orb-icon-eye); }
+.orb-icon-eye-off { --icon: var(--orb-icon-eye-off); }
+.orb-icon-error { --icon: var(--orb-icon-circle-alert); }
+.orb-icon-warning { --icon: var(--orb-icon-triangle-alert); }
+.orb-icon-success { --icon: var(--orb-icon-circle-check); }
+.orb-icon-info { --icon: var(--orb-icon-info); }
+.orb-icon-restart { --icon: var(--orb-icon-rotate-ccw); }
+
+/* ------------------------------------------------------------------ */
+/* Выбор языка — появляется, только если в realm их больше одного      */
+/* ------------------------------------------------------------------ */
+.orb-locale {
+  float: right;
+  position: relative;
+}
+
+.orb-locale button {
+  min-height: 26px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+
+.orb-locale-list {
+  display: none;
+  position: absolute;
+  right: 0;
+  z-index: 1;
+  min-width: 140px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.orb-locale button[aria-expanded="true"] + .orb-locale-list {
+  display: block;
+}
+
+.orb-locale-list a {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-xs);
+}
+
+.orb-locale-list a:hover {
+  background: var(--surface-muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* Узкий экран                                                         */
+/* ------------------------------------------------------------------ */
+@media (max-width: 480px) {
+  body {
+    place-items: start center;
+    padding-top: var(--space-7);
+  }
+
+  .orb-card {
+    padding: var(--space-6);
+  }
+
+  .orb-orbit {
+    width: 420px;
+    height: 420px;
+  }
+}

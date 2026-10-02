@@ -21,8 +21,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent import roles
+from agent.materials import materials_node
 from agent.nodes import (
     approve_node,
+    charged_stop,
     context_node,
     make_gate_node,
     make_role_node,
@@ -118,11 +120,27 @@ def build_graph(
     # в графе нет, а функция без объявления — узел без подписи, нарисованный
     # сырым именем. Оба случая доживают до экрана, потому что на экране их
     # никто не ждёт; поэтому здесь исключение, а не тест.
+    #
+    # Прелюдию чтения материалов сборщик подставляет сам: конвейер аналитики
+    # собирается по умолчанию, так его собирают граф `agent`, полтора десятка
+    # тестов и оценки, а проверка совместимости инструментов собирает свою
+    # версию из него через `dataclasses.replace`. Требовать от каждого вызова
+    # передать узел значило бы сломать их все ради значения, которое у этого
+    # этапа одно. Узнаётся этап по объекту, а не по имени: чужая прелюдия с
+    # ключом `materials` получила бы не свою функцию.
+    if prelude is None and pipeline.prelude is roles.MATERIALS:
+        prelude = materials_node
     _require(pipeline, "admission", pipeline.admission, admission is not None)
     _require(pipeline, "prelude", pipeline.prelude is not None, prelude is not None)
     _require(pipeline, "postlude", pipeline.postlude is not None, postlude is not None)
 
     builder = StateGraph(state_schema or State, context_schema=options_schema or Options)
+    # Узлы ролей и публикации видят состояние графа целиком. LangGraph выводит
+    # входную схему узла из аннотации его первого параметра, а общие узлы
+    # аннотированы общим `State`: поля конвейера до них не доезжали. Так реестр
+    # источников и строка «что прочитано» у конвейера подготовки теряли сводку
+    # прочитанной задачи (`prep_graph.State.ticket`).
+    wide = {"input_schema": state_schema} if state_schema else {}
     # Узел инструментов заводится только тогда, когда в конвейере есть кому в
     # него ходить. Инструменты привязываются к модели у всех ролей — иначе
     # менялся бы кешируемый префикс, — но переписку с ними ведут только
@@ -132,22 +150,24 @@ def build_graph(
     # выполниться никогда, — обещание вызова, которого граф не делает.
     # Конвейеры документов правят выпущенное на следующем ходе треда, а не
     # пишут заново: см. `context_node` и `make_role_node` (revisions).
-    builder.add_node(
-        "context",
-        partial(context_node, external_sources=pipeline.key == "agent", revisions=True),
-    )
+    builder.add_node("context", partial(context_node, revisions=True))
     if pipeline.has_tools:
         builder.add_node("tools", ToolNode(list(pipeline.tools or TOOLS)))
     builder.add_node("over_budget", partial(over_budget_node, pipeline=pipeline))
     builder.add_node("halted", partial(halted_node, pipeline=pipeline))
     builder.add_node("remember", remember_node)
-    builder.add_node("prepare_publish", partial(prepare_node, pipeline=pipeline))
-    builder.add_node("approve", partial(approve_node, pipeline=pipeline))
-    builder.add_node("publish", partial(publish_node, pipeline=pipeline))
+    builder.add_node("prepare_publish", partial(prepare_node, pipeline=pipeline), **wide)
+    builder.add_node("approve", partial(approve_node, pipeline=pipeline), **wide)
+    builder.add_node("publish", partial(publish_node, pipeline=pipeline), **wide)
+    # Роль, чей ответ оборвался на потолке длины, сперва записывает расход и
+    # только потом роняет прогон: см. `charged_stop`.
     for role in pipeline.roles:
         builder.add_node(
             role.key,
-            make_role_node(role, unstable_prefix, llm, pipeline=pipeline, revisions=True),
+            charged_stop(
+                make_role_node(role, unstable_prefix, llm, pipeline=pipeline, revisions=True)
+            ),
+            **wide,
         )
 
     # Ворота бюджета на входе в тред ведут через ноду контекста: справка и

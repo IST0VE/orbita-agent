@@ -178,6 +178,34 @@ def test_generated_invalid_plan_is_not_published(setup):
     assert publishers.documents() == []
 
 
+class CutModel(Model):
+    """Ответ, упёршийся в потолок длины: оборван, но оплачен."""
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        return AIMessage(
+            content=self.response,
+            response_metadata={
+                "finish_reason": "length",
+                "token_usage": {"prompt_tokens": 1000, "completion_tokens": 8000},
+            },
+        )
+
+
+def test_truncated_proposal_is_refused_but_charged(setup):
+    model = CutModel(plan()[:40])
+    graph = update_graph.build_graph(llm=model).compile(checkpointer=InMemorySaver())
+    state = graph.invoke({"messages": [HumanMessage("Обнови API по решению встречи.")]}, setup)
+
+    assert len(model.calls) == 1
+    assert "Генерация остановлена по лимиту" in state["error"]
+    assert state["publication"]["status"] == "failed"
+    assert state["usage"]["calls"] == 1
+    assert state["usage"]["output"] == 8000
+    assert state["cost"]["calls"] == 1
+    assert publishers.documents() == []
+
+
 def test_unresolved_questions_are_visible_without_spurious_changes(setup):
     _, state, _ = run(setup, plan([], ["Какой таймаут утвердили?"]))
     assert state["document"] == ORIGINAL
@@ -249,8 +277,14 @@ def test_confluence_receives_only_approved_document_not_change_report(setup, mon
 def test_manifest_has_independent_original_and_material_selectors():
     manifest = registry.resolve("update").value
     fields = {item["id"]: item for item in manifest["input"]}
-    assert fields["base_task"]["options"]["document_input"] == "base_document"
-    assert fields["task"]["options"]["document_input"] == "document"
+    # Один список файлов чата, две отметки в нём: основной и материалы.
+    picks = {pick["input"]: pick for pick in fields["task"]["options"]["pick"]}
+    assert fields["task"]["widget"] == "chat-files"
+    assert fields["task"]["options"]["fixed"] == "@chat"
+    assert picks["base_document"]["multiple"] is False
+    assert picks["document"]["multiple"] is True
+    # Папку основного документа интерфейс больше не шлёт: она та же, что у материалов.
+    assert "base_task" not in fields
     assert fields["base_document"]["target"] == "configurable.base_file"
     assert not fields["base_document"]["options"]["multiple"]
     assert fields["document"]["options"]["multiple"]

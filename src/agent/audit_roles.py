@@ -96,6 +96,23 @@ def brief(role: Role, task: str, artifacts: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+def subject(state: dict) -> str:
+    """Что сверялось — строкой под задачей: вердикт без этого не проверить."""
+    package = state.get("package") or {}
+    if not package.get("read"):
+        return ""
+    if package.get("kind") == "confluence":
+        where = f"Пакет: страница Confluence «{package.get('title') or ''}» — {package.get('url') or ''}"
+    else:
+        where = "Пакет: " + ", ".join(package.get("names") or [])
+    counted = (
+        f"Сверка кодом: требований с идентификаторами {package.get('requirements', 0)}, "
+        f"формальных находок {package.get('findings', 0)}."
+    )
+    tail = " Пакет обрезан по потолку чтения." if package.get("truncated") else ""
+    return f"{where}\n\n{counted}{tail}"
+
+
 PIPELINE = Pipeline(
     key="audit",
     title="Сверка пакета",
@@ -118,4 +135,15 @@ PIPELINE = Pipeline(
     # Три документа сверки — один отчёт, и читают его подряд: вердикт без
     # находок, на которые он ссылается, не проверяется.
     one_page=True,
+    # Страницу открывают ради вердикта, и он стоит первым. Трассировка и
+    # расхождения нужны, чтобы проверить вывод, и лежат за ним свёрнутыми;
+    # сверка кодом — приложением. Так же устроена страница подготовки задачи:
+    # до итога читатель доходил, пролистав рабочие этапы.
+    lead=("verdict",),
+    collapsed=("trace", "conflicts"),
+    appendix=((CHECKS, CHECKS_TITLE),),
+    subject=subject,
+    # Таблицы выравнивает код. Язык не правится: отчёт пишется на языке пакета,
+    # и его цитаты — слова документов, а не сбой генерации (`Pipeline.russian`).
+    tidy=True,
 )

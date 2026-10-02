@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agent import config as cfg
-from agent import confluence, outgoing, render
+from agent import confluence, credentials, outgoing, render
 
 
 class PublishError(RuntimeError):
@@ -70,6 +70,10 @@ class Publisher(Protocol):
         Ответ всегда есть: недоступная цель отдаёт `unknown` с причиной, а не
         роняет остановку — узнать судьбу страницы приятно, но не обязательно.
         """
+
+    # Необязательный метод: `verify(result, title, document) -> dict` —
+    # сверка после записи (`actions.VERIFIED`, `DIFFERS`, `UNVERIFIED` и
+    # `detail`). Цель без него записанное не перечитывает.
 
 
 class ConfluencePublisher:
@@ -108,6 +112,39 @@ class ConfluencePublisher:
             # Идентификатор нужен, чтобы показать diff: тело страницы отдаёт
             # только чтение по id, а поиск по заголовку его не возвращает.
             "page_id": str(existing.get("id") or ""),
+        }
+
+    def verify(self, result: dict, title: str, document: str) -> dict:
+        """
+        Страница после записи: та версия, тот заголовок, тот текст.
+
+        Текст сравнивается без разметки (`storage_to_text`) и без лишних
+        пробелов: Confluence переписывает storage format — атрибуты, пустые
+        абзацы, сущности, — и побайтовое сравнение расходилось бы на каждой
+        странице. Версия и заголовок сравниваются как есть: их wiki не трогает.
+        """
+        page_id = str(result.get("page_id") or "")
+        if not page_id:
+            return {"verified": "unverified", "detail": "запись не вернула идентификатор страницы"}
+        title, document = checked(title, document)
+        try:
+            s = confluence.load_settings()
+            data = confluence.backend(s).read_page(page_id, s)
+        except confluence.ConfluenceError as exc:
+            return {"verified": "unverified", "detail": f"страница не прочитана: {exc}"}
+        problems = []
+        version = (data.get("version") or {}).get("number")
+        if result.get("version") is not None and version != result.get("version"):
+            problems.append(f"версия {version}, а запись вернула {result.get('version')}")
+        if str(data.get("title") or "") != title:
+            problems.append("заголовок на странице другой")
+        stored = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
+        if _flat(confluence.storage_to_text(stored)) != _flat(confluence.storage_to_text(document)):
+            problems.append("текст страницы отличается от отправленного")
+        return {
+            "verified": "differs" if problems else "verified",
+            "detail": "; ".join(problems),
+            "remote_hash": hashlib.sha256(_flat(confluence.storage_to_text(stored)).encode()).hexdigest()[:32],
         }
 
 
@@ -179,6 +216,22 @@ class FilePublisher:
         if not path.exists():
             return {"action": "create", "path": str(path)}
         return {"action": "update", "path": str(path), "url": path.resolve().as_uri()}
+
+    def verify(self, result: dict, title: str, document: str) -> dict:
+        """Файл после записи байт в байт: диск разметку не переписывает."""
+        title, document = checked(title, document)
+        path = Path(str(result.get("path") or self.path_for(title)))
+        try:
+            stored = path.read_bytes()
+        except OSError as exc:
+            return {"verified": "unverified", "detail": f"файл не прочитан: {exc}"}
+        sent = f"# {title}\n\n{document}\n".encode()
+        same = stored == sent
+        return {
+            "verified": "verified" if same else "differs",
+            "detail": "" if same else "файл на диске отличается от записанного",
+            "remote_hash": hashlib.sha256(stored).hexdigest()[:32],
+        }
 
 
 class NullPublisher:
@@ -273,14 +326,54 @@ def legacy_slug(title: str, limit: int = 120) -> str:
     return flat[:limit] or "document"
 
 
-def directory() -> Path:
+#: Папка личных публикаций внутри `PUBLISH_DIR`: по подпапке на пользователя.
+USERS_DIR = "users"
+_OWNER_SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def root_directory() -> Path:
     """
-    Папка файловой цели. Относительный путь считается от рабочей папки —
+    Корень файловой цели. Относительный путь считается от рабочей папки —
     как и корень задач в `inputs.py`, и по той же причине: путь из `.env`
     обязан читаться одинаково у ноды публикации и у HTTP-роута.
     """
     path = Path(cfg.publish_dir()).expanduser()
     return path if path.is_absolute() else Path.cwd() / path
+
+
+def users_root() -> Path:
+    """Где лежат личные папки публикации."""
+    return root_directory() / USERS_DIR
+
+
+def owner_folder(subject: str) -> str:
+    """
+    Имя личной папки пользователя.
+
+    `sub` Keycloak — UUID и годится как есть: администратору проще найти папку
+    по id из консоли Keycloak, чем по отпечатку. Всё, что на безопасное имя
+    не похоже, заменяется отпечатком: в путь оно не попадает ни в каком виде.
+    """
+    if _OWNER_SAFE.fullmatch(subject):
+        return subject
+    return "u-" + hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+
+
+def directory() -> Path:
+    """
+    Папка файловой цели для того, кто сейчас работает.
+
+    Раньше папка была одна на всех: документы любого пользователя видел любой,
+    а одинаковый заголовок у двух пользователей перезаписывал чужой файл
+    (upsert по заголовку). Теперь у пользователя своя подпапка, а корень
+    остался админ-токену — скриптам, демо и интерфейсу без входа через Keycloak.
+    Кто работает, узнаётся так же, как для личных токенов Jira: из конфига
+    прогона или из HTTP-запроса (`credentials.current_subject`).
+    """
+    subject = credentials.current_subject()
+    if credentials.personal(subject):
+        return users_root() / owner_folder(str(subject))
+    return root_directory()
 
 
 def destination(publisher: Publisher) -> dict:
@@ -297,9 +390,10 @@ def destination(publisher: Publisher) -> dict:
     if publisher.name == "confluence":
         return {
             "base_url": cfg.confluence_base_url(),
-            "space_key": cfg.confluence_space_key(),
-            "space_id": cfg.confluence_space_id(),
-            "parent_id": cfg.confluence_parent_id(),
+            # Место — того, кто публикует: одобряется ровно то, куда уедет документ.
+            "space_key": credentials.value("CONFLUENCE_SPACE_KEY"),
+            "space_id": credentials.value("CONFLUENCE_SPACE_ID") or None,
+            "parent_id": credentials.value("CONFLUENCE_PARENT_PAGE_ID") or None,
             "api_path": cfg.confluence_api_path(),
             "version": cfg.confluence_api_version(),
         }
@@ -405,6 +499,27 @@ def current_text(publisher: Publisher, title: str, preview: dict) -> str | None:
             return None
         return page
     return None
+
+
+def _flat(text: str) -> str:
+    """Текст без переводов строк и лишних пробелов: для сверки после записи."""
+    return " ".join((text or "").split())
+
+
+def verify(publisher: Publisher, result: dict, title: str, document: str) -> dict:
+    """
+    Сверка записанного документа, если цель её умеет. Отказ — `unverified`.
+
+    Сверка ничего не меняет и не отменяет: документ уже записан. Поэтому любой
+    сбой чтения становится причиной в итоге, а не исключением в узле.
+    """
+    check = getattr(publisher, "verify", None)
+    if check is None or result.get("status") not in {"created", "updated"}:
+        return {}
+    try:
+        return dict(check(result, title, document))
+    except Exception as exc:  # noqa: BLE001 - сверка не роняет публикацию
+        return {"verified": "unverified", "detail": f"сверка не выполнена: {exc}"}
 
 
 def diff_of(before: str | None, after: str) -> dict:

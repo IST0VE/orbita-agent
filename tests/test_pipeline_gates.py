@@ -29,6 +29,11 @@ CONFIG = {"configurable": {"thread_id": "t-1"}}
 TASK = "Спроектировать асинхронную выгрузку заказов."
 
 
+def stages_of(result: dict) -> list[str]:
+    """Документы ролей в порядке появления: код кладёт рядом свои блоки и реестр."""
+    return [key for key in result["artifacts"] if key in roles.KEYS]
+
+
 def usage() -> dict:
     return {
         "token_usage": {
@@ -105,7 +110,7 @@ def test_pipeline_runs_through_without_the_flag():
 
     assert "__interrupt__" not in result
     assert model.calls == len(roles.ROLES)
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
 
 
 # --------------------------------------------------------------------------
@@ -144,7 +149,7 @@ def test_walking_every_gate_finishes_the_pipeline(gates_on):
         result = app.invoke(Command(resume=True), config=CONFIG)
 
     assert model.calls == len(roles.ROLES)
-    assert list(result["artifacts"]) == list(roles.KEYS)
+    assert stages_of(result) == list(roles.KEYS)
 
 
 def test_refusal_stops_the_pipeline_and_names_the_reason(gates_on):
@@ -218,7 +223,7 @@ def test_first_mode_asks_only_about_the_first_document(
 
     assert "__interrupt__" not in done
     assert model.calls == len(roles.ROLES)
-    assert set(done["artifacts"]) == set(roles.KEYS)
+    assert set(done["artifacts"]) & set(roles.KEYS) == set(roles.KEYS)
 
 
 def test_unknown_approval_mode_is_refused(monkeypatch: pytest.MonkeyPatch):

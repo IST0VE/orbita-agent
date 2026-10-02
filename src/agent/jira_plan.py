@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
 from agent import config as cfg
 
@@ -93,6 +93,18 @@ class Item:
     @property
     def is_epic(self) -> bool:
         return self.type == EPIC
+
+    def digest(self, source: str = "") -> str:
+        """
+        Отпечаток содержимого карточки: всё, из чего собирается запрос.
+
+        По нему следующий ход треда отличает неизменённую карточку от
+        исправленной (`jira_writer.operations`). Считается по полям плана, а
+        не по готовому описанию: в описании зависимости превращаются в ключи
+        трекера, и отпечаток менялся бы от того, что соседняя задача завелась.
+        """
+        canonical = json.dumps([asdict(self), source], ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
     def body(self, keys: dict[str, str] | None = None, source: str = "", *,
              mapped: set[str] | None = None) -> str:
@@ -176,6 +188,17 @@ class Plan:
                           ",".join(item.depends_on)])
             )
         return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+    def digest(self, source: str = "") -> str:
+        """
+        Отпечаток содержимого всех карточек, включая описания и критерии.
+
+        `fingerprint` описаний не видит и потому не годится для согласия:
+        исправленное описание при том же составе плана давало тот же отпечаток,
+        и согласие на старый текст отправляло новый.
+        """
+        joined = "\n".join(item.digest(source) for item in self.items)
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
 
     def table(self) -> str:
         """План списком — то, что оператор видит перед заведением задач."""

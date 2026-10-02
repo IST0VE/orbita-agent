@@ -27,30 +27,68 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Download,
   ExternalLink,
   FileText,
   Inbox,
+  Maximize2,
   RotateCcw,
   Search,
 } from "../../../ui/icons";
 import { EmptyState, Meter } from "../../../ui";
+import { downloadText, fileName } from "../../../lib/share";
+import { ARTIFACT_FILES, artifactMeta } from "./artifactMeta";
 
-export function ArtifactListWidget({ value }: WidgetProps) {
+export function ArtifactListWidget({ value, binding, onAction }: WidgetProps) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return <span className="hint">Документов пока нет.</span>;
   }
-  const entries = Object.entries(value);
+  // Пустой документ — этап ещё не отработал (`nt` заводит ключи заранее):
+  // строка, которая раскрывается в пустоту и скачивается пустым файлом, врёт.
+  const entries = Object.entries(value).filter(([, document]) => text(document).trim());
   if (!entries.length) return <span className="hint">Документов пока нет.</span>;
-  return <div className="artifact-list">{entries.map(([name, document]) => (
-    <details key={name}>
-      <summary>
-        <ChevronRight size={14} aria-hidden="true" />
-        <FileText size={14} aria-hidden="true" />
-        {name}
-      </summary>
-      <SafeMarkdown value={document} />
-    </details>
-  ))}</div>;
+  return <div className="artifact-list">{entries.map(([key, document]) => {
+    const body = text(document);
+    const { title, format } = artifactMeta(binding, key, body);
+    const file = ARTIFACT_FILES[format];
+    return <div className="artifact-item" key={key}>
+      <details>
+        <summary title={title}>
+          <ChevronRight size={14} aria-hidden="true" />
+          <FileText size={14} aria-hidden="true" />
+          <span className="truncate">{title}</span>
+        </summary>
+        {format === "markdown" ? <SafeMarkdown value={body} /> : <pre className="artifact-raw">{body}</pre>}
+      </details>
+      <div className="artifact-actions">
+        {/* Открыть — только текст: данные в главной области читались бы
+            как разметка, а в колонке они уже показаны как есть. */}
+        {format === "markdown" && onAction ? (
+          <button
+            type="button"
+            className="btn-ghost btn-icon btn-sm"
+            aria-label={`Открыть «${title}»`}
+            title="Открыть в рабочей области"
+            onClick={() => onAction({
+              kind: "publication.open",
+              payload: { title, text: body, file: fileName(title, file.extension) },
+            })}
+          >
+            <Maximize2 size={14} aria-hidden="true" />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="btn-ghost btn-icon btn-sm"
+          aria-label={`Скачать «${title}»`}
+          title={`Скачать файлом .${file.extension}`}
+          onClick={() => downloadText(fileName(title, file.extension), body, file.type)}
+        >
+          <Download size={14} aria-hidden="true" />
+        </button>
+      </div>
+    </div>;
+  })}</div>;
 }
 
 
@@ -305,7 +343,10 @@ export function PublishedListWidget({ value, binding, context, onAction }: Widge
       .then((response) => {
         if (!reading.current(request)) return;
         const document = response as { name: string; text: string };
-        onAction?.({ kind: "publication.open", payload: { title: title || document.name, text: document.text } });
+        onAction?.({
+          kind: "publication.open",
+          payload: { title: title || document.name, text: document.text, file: name },
+        });
         setError("");
       })
       .catch((reason: Error) => reading.current(request) && setError(reason.message));

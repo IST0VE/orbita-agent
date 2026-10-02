@@ -45,6 +45,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import LLMResult
 
 from agent import config as cfg
+from agent import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,13 @@ class MinuteBudget:
             return
         with self._lock:
             self._blocked_until = max(self._blocked_until, self._clock() + seconds)
+
+    def load(self) -> tuple[int, float, float]:
+        """Запросы и токены в окне сейчас и остаток паузы шлюза — для метрик."""
+        with self._lock:
+            now = self._clock()
+            requests, tokens = self._prune(now)
+            return requests, tokens, max(0.0, self._blocked_until - now)
 
 
 _budget = MinuteBudget()
@@ -275,11 +283,13 @@ class Pacer(BaseCallbackHandler):
         limit = cfg.llm_tokens_per_minute()
         if not requests and not limit:
             return
+        began = time.perf_counter()
         event = budget().reserve(
             estimate_tokens(messages, invocation_params=kwargs.get("invocation_params")),
             requests=requests,
             budget=limit,
         )
+        metrics.LLM_QUEUE_WAIT.observe(time.perf_counter() - began)
         with self._lock:
             self._pending[run_id] = event
 
