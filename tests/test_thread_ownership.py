@@ -74,13 +74,25 @@ with TestClient(app) as client:
     # Store — долгая память по всем пользователям; ассистенты — общие графы.
     assert client.post("/store/items/search", json={"namespace_prefix": []}, headers=as_("bob")).status_code == 403
     assert client.post("/assistants/search", json={}, headers=as_("alice")).status_code == 200
-    assert client.post("/assistants", json={"graph_id": "agent"}, headers=as_("alice")).status_code == 403
+    denied = client.post("/assistants", json={"graph_id": "agent"}, headers=as_("alice"))
+    assert denied.status_code == 403, (denied.status_code, denied.text)
     assert client.post("/runs/crons/search", json={}, headers=as_("alice")).status_code in (403, 404)
 print("ok")
 """
 
 
 def test_threads_are_private_to_their_owner(tmp_path):
+    # The server validates graph_id before authorization. A registered fixture
+    # ensures the assistant-creation assertion actually tests permissions.
+    (tmp_path / "fixture_graph.py").write_text(
+        "from langgraph.graph import END, START, StateGraph\n"
+        "builder = StateGraph(dict)\n"
+        "builder.add_node('noop', lambda state: {})\n"
+        "builder.add_edge(START, 'noop')\n"
+        "builder.add_edge('noop', END)\n"
+        "graph = builder.compile()\n",
+        encoding="utf-8",
+    )
     config = json.loads((ROOT / "langgraph.json").read_text(encoding="utf-8"))
     http = {**config["http"], "app": str(ROOT / "src/agent/api.py") + ":app"}
     auth_config = {**config["auth"], "path": str(ROOT / "src/agent/auth.py") + ":auth"}
@@ -90,6 +102,7 @@ def test_threads_are_private_to_their_owner(tmp_path):
         LANGGRAPH_HTTP=json.dumps(http),
         LANGGRAPH_AUTH=json.dumps(auth_config),
         LANGGRAPH_GRAPHS="{}",
+        LANGSERVE_GRAPHS=json.dumps({"agent": "./fixture_graph.py:graph"}),
         REDIS_URI="fake",
         DATABASE_URI=":memory:",
         LANGGRAPH_RUNTIME_EDITION="inmem",
