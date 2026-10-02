@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -153,6 +154,10 @@ def _root() -> Path:
 
 
 def env_path() -> Path:
+    # Mount the containing directory: atomic save uses os.replace(), which
+    # cannot replace a file that is itself a Docker bind mount.
+    if path := os.environ.get("ORBITA_ENV_FILE", "").strip():
+        return Path(path)
     return _root() / ".env"
 
 
@@ -501,6 +506,9 @@ def save(updates: dict[str, str], comments: dict[str, str] | None = None) -> dic
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
                 stream.write("\n".join(out) + "\n")
+            if path.exists():
+                # Preserve a deployment's shared group access after atomic save.
+                temporary.chmod(stat.S_IMODE(path.stat().st_mode))
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)

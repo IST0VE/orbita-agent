@@ -1,10 +1,35 @@
 """Tests for safe .env inspection and updates."""
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from agent import settings_io
+
+
+def test_deployment_env_override_keeps_schema_and_survives_atomic_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / ".env.example").write_text("AGENT_NAME=Orbita\n", encoding="utf-8")
+    target = tmp_path / "persistent" / ".env"
+    target.parent.mkdir()
+    target.write_text("AGENT_NAME=Before\n", encoding="utf-8")
+    target.chmod(0o660)
+    monkeypatch.setattr(settings_io, "_root", lambda: source)
+    monkeypatch.setenv("ORBITA_ENV_FILE", str(target))
+
+    settings_io.save({"AGENT_NAME": "After"})
+
+    assert "AGENT_NAME=After" in target.read_text(encoding="utf-8")
+    assert not (source / ".env").exists()
+    assert settings_io._example_path() == source / ".env.example"
+    assert not settings_io.can_edit("ORBITA_ENV_FILE")
+    if os.name == "posix":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o660
 
 
 @pytest.fixture

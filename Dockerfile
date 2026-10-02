@@ -36,6 +36,12 @@ WORKDIR /app
 COPY requirements.lock ./
 RUN pip install -r requirements.lock
 
+# SDK tokenizers otherwise fetch their vocabulary on first use. Keep the cache
+# in the image so importing an encoding also works without network access.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+RUN python -c "import tiktoken; [tiktoken.get_encoding(n) for n in tiktoken.list_encoding_names()]" \
+    && chmod -R a+rX /opt/tiktoken-cache
+
 COPY pyproject.toml README.md LICENSE ./
 COPY packages ./packages
 COPY src ./src
