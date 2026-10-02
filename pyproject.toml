@@ -38,7 +38,10 @@ dependencies = [
     "httpx2>=2.12.0",
     # Проверка токенов входа (OIDC_ISSUER): подпись RS256/ES256 по JWKS realm.
     # Уже приезжает с langgraph-api; названа потому, что её импортирует security.py.
-    "pyjwt[crypto]>=2.10",
+    "pyjwt[crypto]>=2.15",
+    # Patched urllib3 is required by requests; keep fresh installs above the
+    # vulnerable versions as well as the application lock.
+    "urllib3>=2.8",
     # База приложения: личные подключения Jira и Confluence (db.py, credentials.py).
     # Шифрует их `cryptography` — она уже приезжает с pyjwt[crypto].
     "psycopg[binary,pool]>=3.2",

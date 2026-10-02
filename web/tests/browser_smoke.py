@@ -117,6 +117,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.startswith("/api/chats/") and self.path.endswith("/turns"):
+            return self.reply({"thread_id": self.path.split("/")[3], "head": "test", "turns": []})
         REQUESTS.append(self.path)
         if self.path == "/info":
             return self.reply({})

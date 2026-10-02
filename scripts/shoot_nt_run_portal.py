@@ -42,8 +42,8 @@ from portal_shots import (
     settle_after_click,
     shoot,
     shoot_box,
-    shown,
     show_chat,
+    shown,
     view,
     zoom_out,
 )

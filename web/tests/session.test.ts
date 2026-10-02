@@ -11,6 +11,7 @@ type Browser = {
   session: Map<string, string>;
   assigned: string[];
   tokenCalls: URLSearchParams[];
+  navigated: Promise<void>;
   setVisible: (visible: boolean) => void;
   fire: (type: string) => void;
 };
@@ -32,12 +33,14 @@ function browser(t: TestContext, options: { tokens?: object; token: () => Respon
   const listeners = new Map<string, Array<() => void>>();
   const listen = (type: string, handler: () => void) => listeners.set(type, [...(listeners.get(type) ?? []), handler]);
   const assigned: string[] = [];
+  let finishNavigation!: () => void;
+  const navigated = new Promise<void>((resolve) => { finishNavigation = resolve; });
   const tokenCalls: URLSearchParams[] = [];
   const doc = { visibilityState: "visible", addEventListener: listen };
   const win = {
     location: {
       origin: "http://localhost:5173", href: "http://localhost:5173/", pathname: "/", search: "", hash: "",
-      assign: (url: string) => { assigned.push(url); },
+      assign: (url: string) => { assigned.push(url); finishNavigation(); },
     },
     history: { replaceState: () => undefined },
     addEventListener: listen,
@@ -72,6 +75,7 @@ function browser(t: TestContext, options: { tokens?: object; token: () => Respon
     session,
     assigned,
     tokenCalls,
+    navigated,
     setVisible: (visible) => { doc.visibilityState = visible ? "visible" : "hidden"; },
     fire: (type) => { for (const handler of listeners.get(type) ?? []) handler(); },
   };
@@ -118,7 +122,7 @@ test("coming back to the tab refreshes the token before the user sends anything"
   assert.deepEqual(tab.assigned, []);
 });
 
-test("an ended session waits for a hidden tab and then logs in again, marking the return", async (t) => {
+test("an ended session waits for a hidden tab and then logs in again, marking the return", { timeout: 5_000 }, async (t) => {
   const tab = browser(t, {
     tokens: fresh(10 * 60_000),
     token: () => Response.json({ error: "invalid_grant" }, { status: 400 }),
@@ -136,8 +140,9 @@ test("an ended session waits for a hidden tab and then logs in again, marking th
 
   tab.setVisible(true);
   tab.fire("visibilitychange");
-  await settle();
-  await settle();
+  // PKCE uses asynchronous WebCrypto: wait for navigation itself, rather
+  // than assuming its digest finishes within two event-loop iterations.
+  await tab.navigated;
 
   assert.equal(tab.assigned.length, 1);
   assert.ok(tab.assigned[0].startsWith(`${KEYCLOAK}/auth?`), tab.assigned[0]);
