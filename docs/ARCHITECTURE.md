@@ -31,7 +31,7 @@ flowchart TB
 
 ## Графы и общий конвейер
 
-В [`langgraph.json`](../langgraph.json) зарегистрированы девять графов. Шесть используют общий сборщик конвейеров; `update`, `nt` и `nt_run` строят собственные последовательности и используют общие компоненты Orbita.
+В [`langgraph.json`](../langgraph.json) зарегистрированы десять графов. Семь используют общий сборщик конвейеров; `update`, `nt` и `nt_run` строят собственные последовательности и используют общие компоненты Orbita.
 
 | Graph ID | Исходник | Модельные роли |
 | :--- | :--- | :--- |
@@ -41,6 +41,7 @@ flowchart TB
 | `audit` | [`audit_graph.py`](../src/agent/audit_graph.py) | trace, conflicts, verdict |
 | `jira` | [`jira_graph.py`](../src/agent/jira_graph.py) | scope, backlog, review, issues |
 | `metrics` | [`flow_graph.py`](../src/agent/flow_graph.py) | summary; показатели потока доски Jira считает код ([`flow.py`](../src/agent/flow.py)) |
+| `pm` | [`pm_graph.py`](../src/agent/pm_graph.py) | status, priorities, plan; этап спринта, ёмкость, план до черты и прогноз релизов считает код ([`pm.py`](../src/agent/pm.py)) |
 | `update` | [`update_graph.py`](../src/agent/update_graph.py) | changes; затем проверка и применение кодом |
 | `nt` | [`nt_graph.py`](../src/agent/nt_graph.py) | Расчёты SLA кодом, затем ограниченное исследование и отчёт модели |
 | `nt_run` | [`nt_run_graph.py`](../src/agent/nt_run_graph.py) | Планировщик с инструментами; проверка и запуск кодом; вложенный `nt` |

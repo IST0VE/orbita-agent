@@ -11,6 +11,7 @@
 
 import type { Assistant } from "../api";
 import {
+  CalendarRange,
   ChartColumn,
   ClipboardList,
   FileSearch,
@@ -40,6 +41,7 @@ const CATEGORY: Record<string, ScenarioCategory> = {
   jira: "tasks",
   agent: "tasks",
   metrics: "tasks",
+  pm: "tasks",
   drawio: "docs",
   update: "docs",
   audit: "docs",
@@ -52,6 +54,7 @@ const ICON: Record<string, LucideIcon> = {
   jira: SquareKanban,
   agent: Waypoints,
   metrics: ChartColumn,
+  pm: CalendarRange,
   drawio: Network,
   update: SquarePen,
   audit: FileSearch,

@@ -21,6 +21,7 @@ from agent import (
     jira_graph,
     nt_graph,
     nt_run_graph,
+    pm_graph,
     prep_graph,
     update_graph,
 )
@@ -45,7 +46,7 @@ from agent.ui_engine.registry import ManifestNotFound, UiRegistry, registry
 
 def test_all_builtin_graphs_have_valid_versioned_manifests():
     assert registry.graph_ids() == (
-        "agent", "audit", "drawio", "jira", "metrics", "nt", "nt_run", "prep", "update"
+        "agent", "audit", "drawio", "jira", "metrics", "nt", "nt_run", "pm", "prep", "update"
     )
     for graph_id in registry.graph_ids():
         item = registry.resolve(graph_id)
@@ -116,6 +117,7 @@ def test_manifest_nodes_match_the_compiled_graph():
         "metrics": flow_graph.graph,
         "nt": nt_graph.graph,
         "nt_run": nt_run_graph.graph,
+        "pm": pm_graph.graph,
         "prep": prep_graph.graph,
         "update": update_graph.graph,
     }

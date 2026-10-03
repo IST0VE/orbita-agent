@@ -59,6 +59,14 @@ def test_compose_starts_the_frontend_after_a_healthy_agent():
     assert web["cap_drop"] == ["ALL"]
 
 
+def test_every_built_image_has_a_fixed_name():
+    """Без `image:` имя образа зависит от папки проекта: после docker save/load
+    в другую папку Compose его не находит и собирает заново."""
+    for name, service in SERVICES.items():
+        if "build" in service:
+            assert service.get("image"), name
+
+
 def test_the_agent_healthcheck_authenticates():
     """`/ok` закрыт токеном: проверка без него не станет здоровой никогда."""
     test = " ".join(SERVICES["agent"]["healthcheck"]["test"])

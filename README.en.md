@@ -12,7 +12,7 @@ Python · LangGraph · React · Local MVP
 
 Orbita helps analysts turn tasks, files and connected Jira/Confluence sources into requirements, API contracts, architecture documents and implementation tasks. Its web interface shows the graph, stage documents, approvals and estimated model costs.
 
-## Eight workflows
+## Ten workflows
 
 | Graph | Purpose |
 | :--- | :--- |
@@ -21,11 +21,13 @@ Orbita helps analysts turn tasks, files and connected Jira/Confluence sources in
 | `drawio` | Read a `.drawio` file and document its components and flows |
 | `audit` | Check a document package for traceability, formal defects and contradictions |
 | `jira` | Turn analysis into backlog and cards; optionally create issues or prepare manual forms |
+| `metrics` | Measure Jira board flow, throughput, sprint delivery and the Orbita pilot; code computes metrics and the model summarizes them |
+| `pm` | Report sprint, epic and release status, priority conflicts and a proposed next sprint plan from the Jira board |
 | `update` | Propose source-backed replacements, validate them and save a separate revision after approval |
 | `nt` | Analyze completed load tests: baseline, deterministic SLA verdict, anomaly ranking and bounded LLM investigation |
 | `nt_run` | Prepare a k6 scenario, approve and execute smoke/main tests through a local runner, monitor and invoke `nt` |
 
-Five workflows share a pipeline builder; `update`, `nt` and `nt_run` have dedicated graphs using shared Orbita components. Select workflows individually; `nt_run` also invokes `nt` internally after the main load test. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the completed-test analysis workflow, including load plateaus, diagnostic completeness and comparable-run checks. Live test control is outside this workflow. The SLA verdict is computed from the server-owned metric map; when explicitly enabled, the model may compose a query for a metric outside that map — the code validates it, the operator approves execution, and the resulting series is evidence only.
+Seven workflows share a pipeline builder; `update`, `nt` and `nt_run` have dedicated graphs using shared Orbita components. Select workflows individually; `nt_run` also invokes `nt` internally after the main load test. Inputs and examples are in the [workflow guide](docs/WORKFLOWS.md), in Russian. See [NT setup and scope](docs/NT.md) for the completed-test analysis workflow, including load plateaus, diagnostic completeness and comparable-run checks. Live test control is outside this workflow. The SLA verdict is computed from the server-owned metric map; when explicitly enabled, the model may compose a query for a metric outside that map — the code validates it, the operator approves execution, and the resulting series is evidence only.
 
 For new load tests, follow [NT execution setup](docs/NT_RUN.md): the runner and k6 start with the one-command Docker setup; without Docker, run the runner separately. The runner's `completed` status, k6 measurements and the historical SLA verdict are separate results. Model-written conclusions do not override `analysis_result`. See the [testbed walkthrough](docs/NT_RUN_TESTBED.md) for reproducible commands and limitations of simulated telemetry.
 

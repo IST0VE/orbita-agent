@@ -7,6 +7,7 @@ from agent.ui_engine.graph_manifests.jira import MANIFEST as JIRA
 from agent.ui_engine.graph_manifests.metrics import MANIFEST as METRICS
 from agent.ui_engine.graph_manifests.nt import MANIFEST as NT
 from agent.ui_engine.graph_manifests.nt_run import MANIFEST as NT_RUN
+from agent.ui_engine.graph_manifests.pm import MANIFEST as PM
 from agent.ui_engine.graph_manifests.prep import MANIFEST as PREP
 from agent.ui_engine.graph_manifests.update import MANIFEST as UPDATE
 
@@ -14,6 +15,6 @@ from agent.ui_engine.graph_manifests.update import MANIFEST as UPDATE
 # манифеста, а тот — из ключа конвейера, поэтому новый конвейер добавляется
 # одной строкой здесь. Раньше их было три: имя в этом файле, имя в `__all__`
 # и вызов регистрации в `registry.py` — и все три повторяли ключ графа.
-MANIFESTS = (AGENT, AUDIT, DRAWIO, JIRA, METRICS, NT, NT_RUN, PREP, UPDATE)
+MANIFESTS = (AGENT, AUDIT, DRAWIO, JIRA, METRICS, NT, NT_RUN, PM, PREP, UPDATE)
 
 __all__ = ["MANIFESTS"]

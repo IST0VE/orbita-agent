@@ -167,6 +167,9 @@ SETTINGS: tuple[Setting, ...] = (
         "PIPELINE_APPROVAL_STAGES", kind="choice", choices=cfg.PIPELINE_APPROVAL_STAGES_MODES
     ),
     Setting("PIPELINE_REQUIRE_APPROVAL", kind="bool"),
+    Setting("PM_BACKLOG_LIMIT", kind="int", minimum=20, maximum=2000),
+    Setting("PM_EPICS", kind="int", minimum=0, maximum=30),
+    Setting("PM_VELOCITY_SPRINTS", kind="int", minimum=2, maximum=20),
     Setting("POSTGRES_URI", kind="text", secret=True),
     Setting("PREP_LINKED_ISSUES", kind="int", minimum=0, maximum=20),
     Setting("PREP_LINKED_PAGES", kind="int", minimum=0, maximum=10),

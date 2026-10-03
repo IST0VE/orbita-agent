@@ -132,6 +132,10 @@ services:
   # переменной ORBITA_WEB_PORT — в окружении или в .env.
   web:
     build: ./web
+    # Имя образа задано явно. Без него Compose называет образ по папке проекта
+    # (<папка>-web), и в другой папке — например, на ВМ после docker save/load —
+    # не находит его и собирает фронт заново, а без сети сборка падает на npm.
+    image: orbita-web:local
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true

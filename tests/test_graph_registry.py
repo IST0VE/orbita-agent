@@ -55,7 +55,7 @@ def test_every_named_node_exists_in_the_compiled_graph():
                 assert fnmatch.filter(real, node), (spec.name, node)
 
 
-@pytest.mark.parametrize("name", ["agent", "prep", "drawio", "audit", "jira"])
+@pytest.mark.parametrize("name", ["agent", "prep", "drawio", "audit", "jira", "pm"])
 def test_pipeline_stops_follow_the_roles_of_the_pipeline(name):
     """Пауза — в каждой роли, ворота — перед каждой ролью после первой."""
     spec = graph_registry.get(name)

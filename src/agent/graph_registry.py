@@ -195,6 +195,23 @@ GRAPHS: tuple[GraphSpec, ...] = (
         ),
     ),
     _pipeline(
+        "pm",
+        "agent.pm_graph",
+        ("status", "priorities", "plan"),
+        effects=(
+            # Jira граф только читает: план — предложение, состав спринта в
+            # трекере не меняется. Наружу уходит лишь то же, что у `metrics`:
+            # история доски, которую сбор метрик потока копит для скорости.
+            Effect(
+                "flow",
+                ("board",),
+                "задачи и спринты доски Jira в Postgres (POSTGRES_URI), прочитанные "
+                "токеном пользователя прогона",
+                SKIPPED,
+            ),
+        ),
+    ),
+    _pipeline(
         "jira",
         "agent.jira_graph",
         ("scope", "backlog", "review", "issues"),
